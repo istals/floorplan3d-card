@@ -803,6 +803,33 @@ try {
   check('mower node moves with the live position', Math.hypot(a.x - b.x, a.z - b.z) > 0.01, JSON.stringify([a, b]));
   check('the mower marker is replaced by the object', !a.marker && !b.marker);
   check('mower glow takes the mowing colour', b.em > 0.1, JSON.stringify(b));
+  // warning over the mower: error = red, stuck (mowing, no movement for N min, fake clock) = yellow, docked = none
+  await page.evaluate('window.__demoMowerPaused = true');
+  const setMs = (state) => page.evaluate(`(() => { const c = ${card}, st = c._hass.states, s = st['lawn_mower.demo'];
+    c.hass = { ...c._hass, states: { ...st, 'lawn_mower.demo': { ...s, state: ${JSON.stringify(state)} } } }; })()`);
+  const warn = () => page.evaluate(`(() => { const w = ${card}._view.warning; return w ? { kind: w.kind, visible: w.sprite.visible } : null; })()`);
+  await setMs('error');
+  await sleep(150);
+  const w1 = await warn();
+  check('mower error shows the red warning', !!w1 && w1.kind === 'error' && w1.visible, JSON.stringify(w1));
+  const f0 = await page.evaluate(`${card}._view.stats.frames`);
+  await sleep(1300);
+  check('the warning pulses (frames only while shown)', (await page.evaluate(`${card}._view.stats.frames`)) - f0 >= 2);
+  await setMs('mowing');
+  await sleep(150);
+  check('no warning while mowing normally', (await warn()) === null);
+  await page.evaluate(`(() => { const real = Date.now; window.__realNow = real; Date.now = () => real() + 6 * 60000; })()`);
+  await page.evaluate(`${card}._updateMowerWarning()`);
+  const w2 = await warn();
+  check('mowing without movement shows the yellow stuck warning', !!w2 && w2.kind === 'stuck' && w2.visible, JSON.stringify(w2));
+  await setMs('docked');
+  await sleep(150);
+  check('docked: no warning', (await warn()) === null);
+  const f1 = await page.evaluate(`${card}._view.stats.frames`);
+  await sleep(1300);
+  check('no frames rendered while idle without a warning', (await page.evaluate(`${card}._view.stats.frames`)) - f1 <= 1);
+  await page.evaluate('Date.now = window.__realNow; window.__demoMowerPaused = false');
+  await setMs('mowing');
   // the demo model's climate unit shows its temperature as a label
   await page.waitForFunction(`[...${card}.shadowRoot.querySelectorAll('.fp-obj-label')].some((x) => x.textContent.includes('21.5'))`, { timeout: 3000 }).catch(() => {});
   const lbl = await page.evaluate(`(() => { const e = [...${card}.shadowRoot.querySelectorAll('.fp-obj-label')].find((x) => x.textContent.includes('21.5')); return e ? e.textContent : null; })()`);

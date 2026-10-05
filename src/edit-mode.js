@@ -1272,6 +1272,7 @@ export class EditMode {
     const ids = Object.keys(states).sort();
     const posIds = ids.filter((id) => /^(device_tracker|sensor|lawn_mower|vacuum)\./.test(id));
     const picIds = ids.filter((id) => /^(image|camera)\./.test(id));
+    const errIds = ids.filter((id) => /^(binary_sensor|sensor)\./.test(id));
     const datalist = (id, list) => `<datalist id="${id}">${list.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
     const floorOpts = this.floors.map((f) => `<option value="${esc(f.id)}" ${f.id === this.card._mowerFloor() ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
     const cal = m.calibration || [];
@@ -1288,6 +1289,10 @@ export class EditMode {
         <label>y attribute <input data-field="mower-yattr" value="${esc(m.y_attr || 'y')}"></label></div>` : ''}
       <label>Floor <select data-field="mower-floor">${floorOpts}</select></label>
       <label class="check"><input type="checkbox" data-field="mower-trail" ${m.trail !== false ? 'checked' : ''}> Show trail (this session)</label>
+      <div class="sub">Warning</div>
+      <label>Error entity (optional) <input list="fp-err-ents" data-field="mower-error-entity" value="${esc(m.error_entity || '')}" placeholder="binary_sensor.mower_error"></label>
+      ${datalist('fp-err-ents', errIds)}
+      <label>Stuck after (minutes, 0 = off) <input type="number" min="0" max="120" step="1" data-field="mower-stuck-min" value="${m.stuck_minutes === undefined ? 5 : Number(m.stuck_minutes) || 0}"></label>
       <p class="hint mower-live">${this._mowerLiveHtml()}${this._mapInfoHtml()}</p>`;
     if (!m.entity) return out;
 
@@ -2307,6 +2312,10 @@ export class EditMode {
     } else if (f === 'mower-floor') {
       this.card._setFloor(el.value);
       this.setMower({ floor_id: el.value });
+    } else if (f === 'mower-error-entity') {
+      this.setMower({ error_entity: el.value.trim() });
+    } else if (f === 'mower-stuck-min') {
+      this.setMower({ stuck_minutes: Math.max(0, Math.min(120, Math.round(Number(el.value) || 0))) });
     } else if (f === 'mower-trail') {
       this.setMower({ trail: el.checked });
     } else if (f === 'ov-edit-only') {

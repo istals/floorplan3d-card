@@ -17,6 +17,7 @@ import {
   defaultViewId, viewCut, orderViews, unmatchedSelectors, sectionPlane, sectionCamera, zoomToFor, roomAt, exteriorShown, cameraToCard, topCameraToCard,
 } from './views.js';
 import { readSource, mowerTransform, overlayUrl } from './mower.js';
+import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from './mower-warning.js';
 import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint } from './mower-image.js';
 import { ObjectLayer } from './objects/layer.js';
 import { bindObjects, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
@@ -42,6 +43,7 @@ const MOON_EVERY_MS = 60000;
 const DAY_SUN = [200, 40]; // manual Day: sun azimuth / elevation (deg)
 const NIGHT_MOON = [160, 35]; // manual Night: moon azimuth / elevation
 const CLICK_SLOP_PX = 5;
+const WARN_ID = '__mower_warning__'; // tap target of the warning when the mower is a marker, not a model object
 const OBJECT_HIT_PX = { touch: 52, mouse: 30 };
 const TRAIL_STEP_M = 0.15;
 const TRAIL_MAX = 3000;
@@ -437,6 +439,7 @@ class Floorplan3dCard extends HTMLElement {
       }
       this._updateObjects();
       this._refreshAttached(); // the model (re)placed: attached markers follow their objects
+      this._updateMowerWarning(); // the ground under the mower changed
       this._scheduleSurfaces(); // auto-placed markers onto (or off) the model's surfaces
       this._notice.textContent = err || '';
       this._notice.hidden = !err;
@@ -578,6 +581,9 @@ class Floorplan3dCard extends HTMLElement {
     if (this._ro) this._ro.disconnect();
     clearInterval(this._skyTimer);
     this._skyTimer = null;
+    clearTimeout(this._stuckTimer);
+    this._stuckTimer = null;
+    if (this._view) this._view.setMowerWarning(null); // its pulse timer
     this._setCameraTimer(0);
     this._setImageTimer(0);
     clearTimeout(this._mapReprocTimer);
@@ -662,6 +668,8 @@ class Floorplan3dCard extends HTMLElement {
           const mi = this.mapInfo();
           if (mi.stripes) extra.push({ kind: 'info', label: 'Stripes', value: mi.stripes });
           if (mi.mowed) extra.push({ kind: 'info', label: 'Mowed', value: mi.mowed });
+          const wt = this._warningText();
+          if (wt) extra.unshift({ kind: 'info', label: wt.label, value: wt.value });
         }
         return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra };
       },
@@ -864,6 +872,52 @@ class Floorplan3dCard extends HTMLElement {
       this._view.setTrail(null);
     }
     this._refreshMapOverlay();
+    this._updateMowerWarning();
+  }
+
+  // ---------- warning over the mower (error / stuck) ----------
+  // The lawn_mower state entity: the bound mower object's, else the one of the position entity's device.
+  _mowerStateEntity() {
+    const cfg = this._layout && this._layout.mower;
+    if (!cfg || !cfg.entity) return null;
+    const o = this._objects && this._objects.mowerEntity();
+    if (o) return o;
+    if (cfg.entity.startsWith('lawn_mower.')) return cfg.entity;
+    const h = this._hass, reg = h && h.entities && h.entities[cfg.entity];
+    if (reg && reg.device_id) {
+      const sib = Object.keys(h.entities).find((e) => e.startsWith('lawn_mower.') && h.entities[e].device_id === reg.device_id);
+      if (sib) return sib;
+    }
+    return cfg.entity;
+  }
+
+  // Red warning on error, yellow when mowing but not moving; the position is the live one (gps / xy / image).
+  _updateMowerWarning() {
+    clearTimeout(this._stuckTimer);
+    this._stuckTimer = null;
+    const cfg = this._layout && this._layout.mower, h = this._hass, view = this._view;
+    if (!view) return;
+    if (!cfg || !cfg.entity || !h) { this._stuck = null; this._warning = null; view.setMowerWarning(null); return; }
+    const ms = h.states[this._mowerStateEntity()], es = cfg.error_entity ? h.states[cfg.error_entity] : null;
+    const live = this._mowerLive, pos = live && live.x !== undefined ? [live.x, live.y] : null;
+    const minutes = cfg.stuck_minutes === undefined ? STUCK_DEFAULT_MIN : Number(cfg.stuck_minutes) || 0;
+    const now = Date.now();
+    this._stuck = stuckStep(this._stuck, { now, pos, state: ms && ms.state, minutes });
+    const kind = errorKind(ms, es) || (this._stuck.stuck ? 'stuck' : null);
+    this._warning = kind ? { kind, minutes } : null;
+    if (kind && pos) view.setMowerWarning({ kind, x: pos[0], y: pos[1], floorId: live.floorId });
+    else view.setMowerWarning(null);
+    const due = stuckDueIn(this._stuck, now, minutes);
+    if (due !== null && this.isConnected) this._stuckTimer = setTimeout(() => this._updateMowerWarning(), due + 100);
+    if (this._popup && this._popup.el) this._popup.update();
+  }
+
+  // Popup row for the warning: { label, value } or null.
+  _warningText() {
+    const w = this._warning, h = this._hass, cfg = this._layout && this._layout.mower;
+    if (!w || !h || !cfg) return null;
+    if (w.kind === 'stuck') return { label: 'Stuck?', value: `no movement for ${w.minutes} min` };
+    return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], cfg.error_entity ? h.states[cfg.error_entity] : null) || 'error' };
   }
 
   // ---------- mower position from the live map image ----------
@@ -1599,6 +1653,14 @@ class Floorplan3dCard extends HTMLElement {
   // The nearest tappable object (visible, bound, not hidden, level shown) within radius px of a client point.
   _objectHit(x, y, radius, all = false) {
     const layer = this._objects;
+    this._hitWarning = false;
+    if (!all && this._hass) { // the warning sprite stands for the mower object (or the mower marker)
+      const w = this._view.warningWorld(), p = w && this._view.projectWorld(w);
+      if (p && Math.hypot(p[0] - x, p[1] - y) <= radius) {
+        this._hitWarning = true;
+        return (layer && layer.mowerId()) || WARN_ID;
+      }
+    }
     if (!layer || !layer.model || !this._hass) return null;
     const groups = this._groups || {};
     const levelShown = this._levelShown();
@@ -1635,7 +1697,8 @@ class Floorplan3dCard extends HTMLElement {
     if (e.target !== canvas) e.stopPropagation(); // the object wins over a marker under the finger
     const g = { id, x: e.clientX, y: e.clientY, pointerId: e.pointerId, long: false };
     // edit mode (Objects tab): a tap selects the object's row; no hold action
-    if (!this._editing) {
+    g.warn = this._hitWarning;
+    if (!this._editing && !g.warn) {
       g.timer = setTimeout(() => {
         g.long = true;
         g.timer = null;
@@ -1650,7 +1713,8 @@ class Floorplan3dCard extends HTMLElement {
       const tap = !g.long && Math.hypot(ev.clientX - g.x, ev.clientY - g.y) < CLICK_SLOP_PX;
       this._endGesture();
       if (tap) {
-        if (this._editing) this._edit.selectObject(id);
+        if (g.warn) { if (id === WARN_ID) this._moreInfo(this._mowerStateEntity()); else this._openObjectPopup(id); } // the warning always opens the mower popup
+        else if (this._editing) this._edit.selectObject(id);
         else this._taps.tap(`object:${id}`, !!this._objectActions(id).double_tap, () => this._runObjectAction(id, 'tap'), () => this._runObjectAction(id, 'double_tap'));
       }
     };

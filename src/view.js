@@ -290,6 +290,7 @@ export class FloorplanView {
     this.stripeArrow = null;
     this.onMapImage = null; // (image, width, height) -> processed { canvas, width, height } | null
     this.trail = null;
+    this.warning = null; // { sprite, kind, floorId, timer }
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
     this.objectsGroup = new THREE.Group(); // model objects: the light pool sub-group (ObjectLayer.lights) and object labels
@@ -1373,6 +1374,75 @@ export class FloorplanView {
     this.dirty = true;
   }
 
+  // Warning over the mower: { kind: 'error' | 'stuck', x, y, floorId } or null. A world-size sprite 0.6 m
+  // above the ground under the mower, pulsing at 2 Hz by a timer that exists only while it is shown
+  // (the render loop stays idle otherwise).
+  setMowerWarning(w) {
+    const cur = this.warning;
+    if (!w) {
+      if (cur) {
+        clearInterval(cur.timer);
+        this.mowerGroup.remove(cur.sprite);
+        cur.sprite.material.map.dispose();
+        cur.sprite.material.dispose();
+        this.warning = null;
+        this.dirty = true;
+      }
+      return;
+    }
+    const y = this.groundHeight(w.x, w.y, w.floorId) + 0.6;
+    if (cur && cur.kind === w.kind) {
+      const at = cur.sprite.position;
+      if (at.x !== w.x || at.y !== y || at.z !== -w.y || cur.floorId !== w.floorId) {
+        at.set(w.x, y, -w.y);
+        cur.floorId = w.floorId;
+        this._warningVisible();
+        this.dirty = true;
+      }
+      return;
+    }
+    this.setMowerWarning(null);
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const col = w.kind === 'stuck' ? '#f5b800' : '#e53935';
+    g.beginPath();
+    g.moveTo(64, 10); g.lineTo(122, 112); g.lineTo(6, 112); g.closePath();
+    g.fillStyle = col; g.fill();
+    g.lineWidth = 8; g.lineJoin = 'round'; g.strokeStyle = '#ffffff'; g.stroke();
+    g.fillStyle = w.kind === 'stuck' ? '#3a2e00' : '#ffffff';
+    g.font = 'bold 66px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('!', 64, 80);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }));
+    sprite.scale.set(0.5, 0.5, 1);
+    sprite.renderOrder = 20; // above objects
+    sprite.position.set(w.x, y, -w.y);
+    sprite.userData.helper = true; // never picked by the model ray
+    sprite.raycast = () => {};
+    this.mowerGroup.add(sprite);
+    let bright = true;
+    const timer = setInterval(() => {
+      bright = !bright;
+      sprite.material.opacity = bright ? 1 : 0.55;
+      this.dirty = true;
+    }, 500);
+    this.warning = { sprite, kind: w.kind, floorId: w.floorId, timer };
+    this._warningVisible();
+    this.dirty = true;
+  }
+
+  _warningVisible() {
+    this.warning.sprite.visible = this._mowerShows(this.warning.floorId);
+  }
+
+  // World position of the warning sprite while shown (the tap target), else null.
+  warningWorld() {
+    const w = this.warning;
+    return w && w.sprite.visible ? w.sprite.position.clone() : null;
+  }
+
   // Move one handle without rebuilding the overlay (vertex drag).
   moveHandle(element, x, y, floorId) {
     const c = this.cssObjects.find((o) => o.kind === 'handle' && o.obj.element === element);
@@ -1833,6 +1903,7 @@ export class FloorplanView {
     }
     for (const o of this.overlayGroup.children) if (!o.isCSS2DObject) o.visible = this._shows(o.userData.floorId);
     if (this.trail) this.trail.visible = this._mowerShows(this.trail.userData.floorId);
+    if (this.warning) this._warningVisible();
     if (this.model) {
       const assign = this.modelLevels || {};
       if (!this._modelVisibility) {
@@ -2345,6 +2416,7 @@ export class FloorplanView {
     this.onObjectsInvalidate = null;
     this.setMapOverlay(null);
     this.setTrail(null);
+    this.setMowerWarning(null);
     for (const s of Object.values(this.skySprites)) {
       if (!s) continue;
       if (s.material.map !== sunTexture) s.material.map.dispose();

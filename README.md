@@ -189,6 +189,13 @@ In the **Mower** tab:
 
 The mower's own marker follows the live position and draws a trail for the current session.
 
+A pulsing **warning** appears over the mower (marker or model, also in top view): red when the mower
+entity's state is `error` or the optional **Error entity** (Mower tab) reports a problem (a
+`binary_sensor` that is on, or a sensor whose state is not empty / none / ok / no error / unknown /
+unavailable); yellow *Stuck?* when the state is `mowing` and the detected position (GPS, x/y or map
+image) moved less than 0.3 m for **Stuck after** minutes (default 5, 0 = off; never while docked,
+paused or returning). Tap it for the mower popup with the error text and Start / Dock.
+
 ### Map picture (Sunseeker live map)
 
 The live map is mostly dark green (unmowed), with light mowed stripes, grey no-mow areas, a boundary

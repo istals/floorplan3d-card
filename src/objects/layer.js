@@ -97,6 +97,16 @@ export class ObjectLayer {
     return null;
   }
 
+  mowerId() {
+    const m = this._mower();
+    return m ? m.id : null;
+  }
+
+  mowerEntity() {
+    const m = this._mower();
+    return m ? m.entity : null;
+  }
+
   mowerBound() {
     return !!this._mower();
   }
