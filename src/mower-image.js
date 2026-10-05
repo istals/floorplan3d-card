@@ -164,6 +164,231 @@ export function imageScale(width) {
   return width > MAX_SAMPLE_WIDTH ? MAX_SAMPLE_WIDTH / width : 1;
 }
 
+// ---------- map image processing (one pass per refresh) ----------
+// Working size of the processed map: masks, statistics and the visible texture (<= 1024 px wide).
+export const MAP_WORK_WIDTH = 1024;
+const MAP_WORK_HEIGHT = 2048;
+
+export function mapWorkSize(width, height) {
+  const s = Math.min(1, MAP_WORK_WIDTH / width, MAP_WORK_HEIGHT / height);
+  return { width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) };
+}
+
+// Look of the processed map (before the overlay opacity): mowed stripes = their own colour lightened
+// halfway to white at ~60 % alpha; no-mow = dark, hatched (diagonal lines every 8 px).
+const MOWED_ALPHA = 150, NOMOW_RGB = 24, NOMOW_LINE_ALPHA = 200, NOMOW_GAP_ALPHA = 90;
+
+function grow(bufs, key, Type, n) {
+  if (!bufs[key] || bufs[key].length < n) bufs[key] = new Type(n);
+  return bufs[key];
+}
+
+// Colour distance (max channel difference) when within tol, else -1.
+function within(rgba, k, c, tol) {
+  const d = Math.max(Math.abs(rgba[k] - c[0]), Math.abs(rgba[k + 1] - c[1]), Math.abs(rgba[k + 2] - c[2]));
+  return d <= tol ? d : -1;
+}
+
+// Pixels of the mower icon: pixels of its colour near the blob centroid, their 4-connected
+// neighbours of the same colour, then dilated by `dilate` px (the icon's outline / anti-aliasing).
+function iconMask(rgba, w, h, blob, dilate, bufs) {
+  const n = w * h;
+  const mask = grow(bufs, 'icon', Uint8Array, n).subarray(0, n);
+  const stack = grow(bufs, 'stack', Int32Array, n);
+  mask.fill(0);
+  const tol = blob.tolerance ?? 40;
+  const ok = (i) => rgba[i * 4 + 3] >= 128 && within(rgba, i * 4, blob.color, tol) >= 0;
+  const r = Number(blob.count) > 0 ? Math.sqrt(blob.count / Math.PI) * 1.5 + 2 : 8;
+  const cx = blob.px, cy = blob.py;
+  let top = 0, found = 0;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(h - 1, Math.ceil(cy + r)); y++) {
+    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(w - 1, Math.ceil(cx + r)); x++) {
+      const i = y * w + x;
+      if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r && ok(i)) { mask[i] = 1; stack[top++] = i; }
+    }
+  }
+  while (top) {
+    const i = stack[--top];
+    const x = i % w, y = (i - x) / w;
+    found++;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+    if (x > 0 && !mask[i - 1] && ok(i - 1)) { mask[i - 1] = 1; stack[top++] = i - 1; }
+    if (x < w - 1 && !mask[i + 1] && ok(i + 1)) { mask[i + 1] = 1; stack[top++] = i + 1; }
+    if (y > 0 && !mask[i - w] && ok(i - w)) { mask[i - w] = 1; stack[top++] = i - w; }
+    if (y < h - 1 && !mask[i + w] && ok(i + w)) { mask[i + w] = 1; stack[top++] = i + w; }
+  }
+  if (!found) return null;
+  const d = Math.max(0, Math.round(dilate || 0));
+  if (d) {
+    // square dilation, separable: rows into tmp, then columns back into the mask (bounding box only)
+    const tmp = grow(bufs, 'tmp', Uint8Array, n);
+    const bx0 = Math.max(0, x0 - d), bx1 = Math.min(w - 1, x1 + d), by0 = Math.max(0, y0 - d), by1 = Math.min(h - 1, y1 + d);
+    for (let y = by0; y <= by1; y++) {
+      for (let x = bx0; x <= bx1; x++) {
+        let v = 0;
+        for (let t = Math.max(0, x - d); t <= Math.min(w - 1, x + d) && !v; t++) v = mask[y * w + t];
+        tmp[y * w + x] = v;
+      }
+    }
+    for (let y = by0; y <= by1; y++) {
+      for (let x = bx0; x <= bx1; x++) {
+        let v = 0;
+        for (let t = Math.max(by0, y - d); t <= Math.min(by1, y + d) && !v; t++) v = tmp[t * w + x];
+        mask[y * w + x] = v;
+      }
+    }
+  }
+  return mask;
+}
+
+// The map picture as it is drawn on the lawn. rgba: w x h pixels; opts:
+//   bg / mowed / nomow: { color: [r, g, b], tolerance } (each optional; a pixel matching several
+//     goes to the nearest), iconBlob: { px, py, count, color, tolerance } (working pixels) to hide,
+//   dilate: px around the icon, zoneMask: Uint8Array (1 = inside) or null.
+// Background -> transparent, mowed -> light translucent, no-mow -> dark hatched, icon and outside the
+// zone -> transparent, the rest unchanged. No options: a plain copy (no keying).
+// bufs: an object whose typed arrays are reused between calls (grown as needed).
+// -> { data (w*h*4), mowedMask (w*h, 1 = mowed), mowed, background, zone (pixel counts) }
+export function processMap(rgba, w, h, opts = {}, bufs = {}) {
+  const n = w * h;
+  const out = grow(bufs, 'out', Uint8ClampedArray, n * 4).subarray(0, n * 4);
+  const mowedMask = grow(bufs, 'mowed', Uint8Array, n).subarray(0, n);
+  mowedMask.fill(0);
+  const cls = [];
+  for (const [kind, c] of [['bg', opts.bg], ['mowed', opts.mowed], ['nomow', opts.nomow]]) {
+    if (c && Array.isArray(c.color)) cls.push({ kind, color: c.color, tol: c.tolerance ?? 30 });
+  }
+  const icon = opts.iconBlob && Array.isArray(opts.iconBlob.color) ? iconMask(rgba, w, h, opts.iconBlob, opts.dilate ?? 3, bufs) : null;
+  const zone = opts.zoneMask || null;
+  let mowed = 0, background = 0, zoneCount = 0;
+  for (let i = 0, k = 0, y = 0, x = 0; i < n; i++, k += 4) {
+    if (zone && !zone[i]) {
+      out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
+    } else {
+      if (zone) zoneCount++;
+      let kind = null, best = 256;
+      for (const c of cls) {
+        const d = within(rgba, k, c.color, c.tol);
+        if (d >= 0 && d < best) { best = d; kind = c.kind; }
+      }
+      if (rgba[k + 3] < 128) kind = null;
+      if (kind === 'mowed') { mowed++; mowedMask[i] = 1; }
+      else if (kind === 'bg') background++;
+      if (icon && icon[i]) {
+        out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
+      } else if (kind === 'bg') {
+        out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
+      } else if (kind === 'mowed') {
+        out[k] = (rgba[k] + 255) >> 1;
+        out[k + 1] = (rgba[k + 1] + 255) >> 1;
+        out[k + 2] = (rgba[k + 2] + 255) >> 1;
+        out[k + 3] = Math.min(rgba[k + 3], MOWED_ALPHA);
+      } else if (kind === 'nomow') {
+        out[k] = out[k + 1] = out[k + 2] = NOMOW_RGB;
+        out[k + 3] = (x + y) % 8 < 3 ? NOMOW_LINE_ALPHA : NOMOW_GAP_ALPHA;
+      } else {
+        out[k] = rgba[k];
+        out[k + 1] = rgba[k + 1];
+        out[k + 2] = rgba[k + 2];
+        out[k + 3] = rgba[k + 3];
+      }
+    }
+    if (++x === w) { x = 0; y++; }
+  }
+  return { data: out, mowedMask, mowed, background, zone: zoneCount };
+}
+
+// Polygon [[px, py], ...] (pixel coordinates, continuous) -> mask of the pixels whose centres lie
+// inside (even-odd). out: optional reused Uint8Array. -> { mask, count }
+export function zoneMask(points, w, h, out = null) {
+  const n = w * h;
+  const mask = out && out.length >= n ? out.subarray(0, n) : new Uint8Array(n);
+  mask.fill(0);
+  let count = 0;
+  const xs = [];
+  const m = points.length;
+  for (let y = 0; y < h; y++) {
+    const yc = y + 0.5;
+    xs.length = 0;
+    for (let a = 0, b = m - 1; a < m; b = a++) {
+      const [xa, ya] = points[a], [xb, yb] = points[b];
+      if ((ya <= yc) !== (yb <= yc)) xs.push(xa + ((yc - ya) / (yb - ya)) * (xb - xa));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const from = Math.max(0, Math.ceil(xs[k] - 0.5)), to = Math.min(w, Math.ceil(xs[k + 1] - 0.5));
+      for (let x = from; x < to; x++) { mask[y * w + x] = 1; count++; }
+    }
+  }
+  return { mask, count };
+}
+
+// Plan polygon -> working pixel polygon of an imgW x imgH map drawn at w x h through the overlay.
+export function zonePixels(polygon, overlay, imgW, imgH, w, h) {
+  const sx = w / imgW, sy = h / imgH;
+  return polygon.map(([x, y]) => {
+    const q = planToPixel(x, y, imgW, imgH, overlay);
+    return [q.px * sx, q.py * sy];
+  });
+}
+
+// Dominant direction of the mowed stripes: structure tensor of Sobel gradients on the mask
+// downscaled to <= 256 px (block means). Gradients run across the stripes, so the stripes lie 90°
+// from the dominant gradient. -> { angle (degrees 0..180, counter-clockwise from image right, image
+// up), coherence (0..1) } or null (no mowed pixels, or no clear direction).
+export function stripeAngle(mask, w, h, minCoherence = 0.3) {
+  const f = Math.max(1, Math.ceil(Math.max(w, h) / 256));
+  const gw = Math.floor(w / f), gh = Math.floor(h / f);
+  if (gw < 3 || gh < 3) return null;
+  const g = new Float32Array(gw * gh);
+  for (let y = 0; y < gh * f; y++) {
+    const row = y * w, gy = ((y / f) | 0) * gw;
+    for (let x = 0; x < gw * f; x++) if (mask[row + x]) g[gy + ((x / f) | 0)] += 1;
+  }
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let y = 1; y < gh - 1; y++) {
+    for (let x = 1; x < gw - 1; x++) {
+      const i = y * gw + x;
+      const tl = g[i - gw - 1], tc = g[i - gw], tr = g[i - gw + 1];
+      const ml = g[i - 1], mr = g[i + 1];
+      const bl = g[i + gw - 1], bc = g[i + gw], br = g[i + gw + 1];
+      const gx = tr + 2 * mr + br - tl - 2 * ml - bl;
+      const gy = bl + 2 * bc + br - tl - 2 * tc - tr;
+      sxx += gx * gx;
+      syy += gy * gy;
+      sxy += gx * gy;
+    }
+  }
+  const energy = sxx + syy;
+  if (!(energy > 0)) return null;
+  const coherence = Math.hypot(sxx - syy, 2 * sxy) / energy;
+  if (coherence < minCoherence) return null;
+  const phi = 0.5 * Math.atan2(2 * sxy, sxx - syy); // gradient direction, image y down
+  const deg = (-(phi + Math.PI / 2) * 180) / Math.PI; // stripes, image y up
+  return { angle: ((deg % 180) + 180) % 180, coherence };
+}
+
+const AXES = ['N–S', 'NE–SW', 'E–W', 'SE–NW'];
+
+// Stripe angle on the image (stripeAngle) -> compass axis on the plan through the overlay rotation
+// (degrees counter-clockwise). -> { bearing: 0..179 (clockwise from north), label }
+export function stripeBearing(angle, rotation = 0) {
+  const plan = angle + (Number(rotation) || 0);
+  const b = ((Math.round(90 - plan) % 180) + 180) % 180;
+  return { bearing: b, label: AXES[Math.round(b / 45) % 4] };
+}
+
+// Share of the lawn mowed: mowed / zone pixels when clipped to a zone, else mowed / (mowed +
+// background). -> 0..1 or null (nothing to compare with)
+export function mowedShare({ mowed, background, zone, zoned }) {
+  const total = zoned ? zone : mowed + background;
+  return total > 0 ? Math.min(1, mowed / total) : null;
+}
+
 // ---------- browser: load an image URL into pixels (one reused canvas) ----------
 let canvas = null;
 
@@ -222,5 +447,59 @@ export async function readImagePixels(url) {
     return imagePixels(img.src, img.width, img.height);
   } finally {
     img.done();
+  }
+}
+
+// ---------- browser: the processed map (reused canvases, buffers and zone mask) ----------
+function makeCanvas(w, h) {
+  if (typeof document !== 'undefined') return Object.assign(document.createElement('canvas'), { width: w, height: h });
+  return new OffscreenCanvas(w, h);
+}
+
+export class MapProcessor {
+  constructor() {
+    this.bufs = {};
+    this.work = null; // the decoded image at working size (read back)
+    this.canvas = null; // the processed picture (texture source)
+    this._out = null; // ImageData of this.canvas
+    this._zone = { key: null, mask: null, count: 0 };
+  }
+
+  // src: decoded image (imgW x imgH). opts: { bg, mowed, nomow ({ color, tolerance }), iconBlob
+  // ({ px, py, count } in image pixels + color, tolerance), dilate, zone (plan polygon) and overlay
+  // (alignment, for the zone) }. -> { canvas, width, height, mowed, background, zone, zoned, angle }
+  run(src, imgW, imgH, opts = {}) {
+    const { width: w, height: h } = mapWorkSize(imgW, imgH);
+    if (!this.work) this.work = makeCanvas(w, h);
+    if (this.work.width !== w) this.work.width = w;
+    if (this.work.height !== h) this.work.height = h;
+    const wctx = this.work.getContext('2d', { willReadFrequently: true });
+    wctx.clearRect(0, 0, w, h);
+    wctx.drawImage(src, 0, 0, w, h);
+    const rgba = wctx.getImageData(0, 0, w, h).data;
+    let zoneMaskArr = null;
+    if (opts.zone && opts.overlay) {
+      const o = opts.overlay;
+      const key = [JSON.stringify(opts.zone), o.x, o.y, o.rotation, o.width, w, h, imgW, imgH].join('|');
+      if (key !== this._zone.key) {
+        const z = zoneMask(zonePixels(opts.zone, o, imgW, imgH, w, h), w, h, this._zone.mask);
+        this._zone = { key, mask: z.mask, count: z.count };
+      }
+      zoneMaskArr = this._zone.mask;
+    }
+    const sx = w / imgW;
+    const b = opts.iconBlob;
+    const iconBlob = b ? { ...b, px: b.px * sx, py: b.py * sx, count: b.count == null ? null : b.count * sx * sx } : null;
+    const r = processMap(rgba, w, h, { bg: opts.bg, mowed: opts.mowed, nomow: opts.nomow, iconBlob, dilate: opts.dilate ?? 3, zoneMask: zoneMaskArr }, this.bufs);
+    if (!this.canvas) this.canvas = makeCanvas(w, h);
+    if (this.canvas.width !== w || this.canvas.height !== h || !this._out || this._out.width !== w || this._out.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+      this._out = new ImageData(w, h);
+    }
+    this._out.data.set(r.data);
+    this.canvas.getContext('2d', { willReadFrequently: true }).putImageData(this._out, 0, 0); // CPU-side: it is uploaded, not drawn
+    const s = opts.mowed ? stripeAngle(r.mowedMask, w, h) : null;
+    return { canvas: this.canvas, width: w, height: h, mowed: r.mowed, background: r.background, zone: r.zone, zoned: !!zoneMaskArr, angle: s ? s.angle : null };
   }
 }

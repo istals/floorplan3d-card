@@ -189,6 +189,25 @@ In the **Mower** tab:
 
 The mower's own marker follows the live position and draws a trail for the current session.
 
+### Map picture (Sunseeker live map)
+
+The live map is mostly dark green (unmowed), with light mowed stripes, grey no-mow areas, a boundary
+line and a large mower icon. Under **Map picture** in the Mower tab, each refresh of the picture is
+processed once before it is drawn on the lawn (large pictures on a copy at most 1024 px wide):
+- **Pick background colour**, then click the dark green on the map: it becomes transparent, so the
+  model's lawn shows through. Without a background colour the picture is drawn as it is.
+- **Pick mowed colour** (click a light stripe): mowed pixels stay as subtle light stripes.
+- **Pick no-mow colour** (click a grey area): no-mow areas are drawn dark, translucent and hatched.
+- Each picked colour has a **Tolerance** slider and a **Clear** link.
+- **Hide mower icon on the map** (live map image source; on by default): the detected icon (plus
+  3 px) is removed from the picture, so only the mower model or marker shows the mower.
+- **Clip to zone**: pixels outside the zone outline are not drawn. *Automatic* uses the model zone
+  (room or outdoor outline) under the map's centre, e.g. `garden`; or pick a zone, or *None*.
+  The clip applies once a colour is picked or the icon is hidden.
+- With a mowed colour, the mower popup and the Mower tab show **Stripes** (the stripe direction as
+  a compass axis on the plan, e.g. `60° (NE–SW)`) and **Mowed** (mowed pixels / zone pixels; without
+  a zone, mowed / (mowed + background)). **Show the stripe direction on the lawn** adds an arrow.
+
 ### Sunseeker without GPS (position from the live map image)
 
 Models without latitude / longitude still render a map with the mower on it. In the **Mower** tab:

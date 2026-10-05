@@ -181,6 +181,11 @@ export class ObjectPopup {
     if (!r) return null;
     this._links = [];
     const rows = popupRows(r.obj, r.chain, r.states || {}, r.groups || {}, r.popup || null);
+    // read-only rows from the card (e.g. the mower's Stripes / Mowed), above the links
+    if (Array.isArray(r.extra) && r.extra.length) {
+      const at = rows.findIndex((x) => x.kind === 'link');
+      rows.splice(at < 0 ? rows.length : at, 0, ...r.extra.map((x) => ({ kind: 'info', label: x.label, value: x.value })));
+    }
     for (const row of rows) if (row.kind === 'link') this._links.push(row.action);
     return rows;
   }

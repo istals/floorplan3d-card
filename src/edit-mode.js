@@ -7,7 +7,7 @@ import { roomFloorId, LEVEL_SPACING } from './layout.js';
 import { pointInPolygon, signedArea } from './placement.js';
 import { buildMarkers, areaName } from './registry.js';
 import { readSource, calibrationError, overlayUrl } from './mower.js';
-import { readImagePixels, planToPixel, medianColor, fitOverlay } from './mower-image.js';
+import { readImagePixels, imagePixels, planToPixel, medianColor, fitOverlay } from './mower-image.js';
 import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
 import { levelsFromFloorMap } from './bindings.js';
@@ -54,7 +54,7 @@ export class EditMode {
     this._outlineModel = null;
     this.doorMode = false;
     this.calibrating = null; // { src } waiting for a click on the plan
-    this.colorPick = false; // waiting for a click on the mower icon in the map overlay
+    this.colorPick = false; // waiting for a click on the map overlay: true = mower icon, 'bg' / 'mowed' / 'nomow' = map colours
     this.overlayMove = false;
     this.aligning = null; // { pairs: [{ px, py, plan }], pending: { px, py } | null } "Align by points"
     this.drag = null;
@@ -226,9 +226,11 @@ export class EditMode {
     if (this.colorPick) {
       const p = this._mapPoint(e);
       if (!p) return;
+      const kind = this.colorPick;
       this.colorPick = false;
       this._syncStageClasses();
-      this._pickMowerColor(p[0], p[1]);
+      if (kind === true) this._pickMowerColor(p[0], p[1]);
+      else this._pickMapColor(kind, p[0], p[1]);
       return;
     }
     if (this.calibrating) {
@@ -539,7 +541,16 @@ export class EditMode {
   onStates() {
     if (this.tab !== 'mower') return;
     const el = this.panel.querySelector('.mower-live');
-    if (el) el.innerHTML = this._mowerLiveHtml();
+    if (el) el.innerHTML = this._mowerLiveHtml() + this._mapInfoHtml();
+  }
+
+  // "Stripes: 45° (NE–SW) · Mowed: 37 %" from the processed map, or ''.
+  _mapInfoHtml() {
+    const mi = this.card.mapInfo ? this.card.mapInfo() : {};
+    const parts = [];
+    if (mi.stripes) parts.push(`Stripes: ${esc(mi.stripes)}`);
+    if (mi.mowed) parts.push(`Mowed: ${esc(mi.mowed)}`);
+    return parts.length ? `<br><span class="map-info">${parts.join(' · ')}</span>` : '';
   }
 
   _mowerLiveHtml() {
@@ -632,6 +643,27 @@ export class EditMode {
       // start tracking at the clicked icon (not the largest blob of its colour)
       this.card._imageBlob = { px: q.px, py: q.py, count: null, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, color };
       this.setMower({ image: { tolerance: 40, min_pixels: 4, ...ic, color } });
+    } catch (e) {
+      console.warn('floorplan3d: could not read the mower map image', e);
+      this.message = { text: "Can't read the map image.", error: true };
+      this.render();
+    }
+  }
+
+  // Map colour (background / mowed / no-mow) under a plan point: median of the 5x5 pixels of the
+  // loaded overlay picture there.
+  _pickMapColor(kind, x, y) {
+    const o = this.mower().overlay;
+    const img = this.view.mapPlane && this.view.mapPlane.userData.loaded && this.view.mapPlane.userData.loaded.image;
+    if (!o || !img) { this.message = { text: 'Wait for the map image to load.', error: true }; this.render(); return; }
+    try {
+      const px = imagePixels(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+      const q = planToPixel(x, y, px.imgW, px.imgH, o);
+      const k = px.width / px.imgW;
+      const i = Math.floor(q.px * k), j = Math.floor(q.py * k);
+      if (i < 0 || j < 0 || i >= px.width || j >= px.height) { this.message = { text: 'That point is outside the map image.', error: true }; this.render(); return; }
+      this.message = null;
+      this.setOverlay({ [`${kind}_color`]: medianColor(px.data, px.width, px.height, i, j) });
     } catch (e) {
       console.warn('floorplan3d: could not read the mower map image', e);
       this.message = { text: "Can't read the map image.", error: true };
@@ -1256,7 +1288,7 @@ export class EditMode {
         <label>y attribute <input data-field="mower-yattr" value="${esc(m.y_attr || 'y')}"></label></div>` : ''}
       <label>Floor <select data-field="mower-floor">${floorOpts}</select></label>
       <label class="check"><input type="checkbox" data-field="mower-trail" ${m.trail !== false ? 'checked' : ''}> Show trail (this session)</label>
-      <p class="hint mower-live">${this._mowerLiveHtml()}</p>`;
+      <p class="hint mower-live">${this._mowerLiveHtml()}${this._mapInfoHtml()}</p>`;
     if (!m.entity) return out;
 
     if (m.source !== 'image') out += this._calibrationHtml(m, cal, err, fitName);
@@ -1272,7 +1304,7 @@ export class EditMode {
     const o = m.overlay;
     let out = '<div class="sub">Mower icon on the map</div>';
     out += `<label>Image entity <input list="fp-pic-ents" data-field="mower-img-entity" value="${esc(ic.entity || '')}" placeholder="${esc((o && o.entity) || 'same as the overlay')}"></label>`;
-    if (this.colorPick) {
+    if (this.colorPick === true) {
       out += `<section class="box"><p>Click the mower icon on the map overlay. Esc cancels.</p>
         <div class="row"><button data-act="img-pick-cancel">Cancel</button></div></section>`;
     }
@@ -1321,6 +1353,7 @@ export class EditMode {
         + slider('height_offset', 'Height offset (m)', -0.5, 0.5, 0.01, o.height_offset ?? 0)
         + (o.entity.startsWith('camera.') ? slider('refresh', 'Refresh every (s)', 1, 120, 1, o.refresh ?? 10) : '');
       out += `<label class="check"><input type="checkbox" data-field="ov-edit-only" ${o.edit_only ? 'checked' : ''}> Show the map only in edit mode</label>`;
+      out += this._mapProcessingHtml(m, o, slider);
       const a = this.aligning;
       if (a) {
         const n = a.pairs.length + 1;
@@ -1333,6 +1366,40 @@ export class EditMode {
         <button data-act="ov-remove">Remove overlay</button></div>
         <p class="hint">The map lies on the model's surface under its centre; adjust with the height offset.</p>`;
     }
+    return out;
+  }
+
+  // Map picture processing: picked colours (background transparent, mowed stripes, shaded no-mow),
+  // the mower icon hidden, clipped to a zone, the stripe direction arrow.
+  _mapProcessingHtml(m, o, slider) {
+    let out = '<div class="sub">Map picture</div>';
+    if (this.colorPick && this.colorPick !== true) {
+      out += `<section class="box"><p>Click the ${{ bg: 'background', mowed: 'mowed stripe', nomow: 'no-mow area' }[this.colorPick]} colour on the map overlay. Esc cancels.</p>
+        <div class="row"><button data-act="map-pick-cancel">Cancel</button></div></section>`;
+    }
+    const kinds = [['bg', 'Pick background colour', 'Background: transparent'], ['mowed', 'Pick mowed colour', 'Mowed stripes: light'], ['nomow', 'Pick no-mow colour', 'No-mow areas: shaded']];
+    for (const [k, label, what] of kinds) {
+      const c = o[`${k}_color`];
+      const sw = Array.isArray(c) ? `<span class="swatch" style="display:inline-block;width:18px;height:18px;border-radius:4px;vertical-align:middle;border:1px solid var(--divider-color);background:rgb(${c.map(Number).join(',')})"></span> ${what}
+        <button class="link" data-act="map-clear" data-kind="${k}">Clear</button>` : '';
+      out += `<div class="row"><button data-act="map-pick" data-kind="${k}" ${this.colorPick ? 'disabled' : ''}>${label}</button> ${sw}</div>`;
+      if (Array.isArray(c)) out += slider(`${k}_tolerance`, 'Tolerance', 0, 128, 1, o[`${k}_tolerance`] ?? 30);
+    }
+    if (m.source === 'image') {
+      out += `<label class="check"><input type="checkbox" data-field="ov-hide-icon" ${o.hide_icon !== false ? 'checked' : ''}> Hide mower icon on the map</label>`;
+    }
+    const zones = this.card._zones || [];
+    const auto = this.card.mapZone({ ...o, zone: 'auto' });
+    const zsel = o.zone || 'auto';
+    out += `<label>Clip to zone <select data-field="ov-zone">
+      <option value="auto" ${zsel === 'auto' ? 'selected' : ''}>Automatic (${esc(auto ? auto.id : 'none at the map centre')})</option>
+      <option value="none" ${zsel === 'none' ? 'selected' : ''}>None</option>
+      ${zones.map((z) => `<option value="${esc(z.id)}" ${zsel === z.id ? 'selected' : ''}>${esc(z.id)}</option>`).join('')}</select></label>`;
+    if (Array.isArray(o.mowed_color)) {
+      out += `<label class="check"><input type="checkbox" data-field="ov-stripe-arrow" ${o.stripe_arrow ? 'checked' : ''}> Show the stripe direction on the lawn</label>`;
+    }
+    out += `<p class="hint">Pick colours by clicking them on the map. Without a background colour the picture is drawn as it is.
+      The zone clip applies once a colour is picked or the icon is hidden.</p>`;
     return out;
   }
 
@@ -2138,7 +2205,15 @@ export class EditMode {
         this.overlayMove = false;
         if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
         break;
-      case 'img-pick-cancel': this.colorPick = false; break;
+      case 'img-pick-cancel': case 'map-pick-cancel': this.colorPick = false; break;
+      case 'map-pick':
+        this.colorPick = btn.dataset.kind;
+        this.calibrating = null;
+        this.overlayMove = false;
+        this.aligning = null;
+        if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
+        break;
+      case 'map-clear': this.setOverlay({ [`${btn.dataset.kind}_color`]: null }); return;
       case 'cal-del': this.setMower({ calibration: (this.mower().calibration || []).filter((_, i) => i !== Number(btn.dataset.i)) }); return;
       case 'trail-clear': this.card.clearTrail(); break;
       case 'ov-move': this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
@@ -2236,6 +2311,12 @@ export class EditMode {
       this.setMower({ trail: el.checked });
     } else if (f === 'ov-edit-only') {
       this.setOverlay({ edit_only: el.checked });
+    } else if (f === 'ov-hide-icon') {
+      this.setOverlay({ hide_icon: el.checked });
+    } else if (f === 'ov-stripe-arrow') {
+      this.setOverlay({ stripe_arrow: el.checked });
+    } else if (f === 'ov-zone') {
+      this.setOverlay({ zone: el.value === 'auto' ? null : el.value });
     } else if (f === 'ov-entity') {
       const v = el.value.trim();
       if (!v) this.setMower({ overlay: null });

@@ -287,6 +287,8 @@ export class FloorplanView {
     this._stemsOn = false;
     this._stemRes = null; // shared geometries + materials of the current stems
     this.mapPlane = null;
+    this.stripeArrow = null;
+    this.onMapImage = null; // (image, width, height) -> processed { canvas, width, height } | null
     this.trail = null;
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
@@ -1190,13 +1192,16 @@ export class FloorplanView {
   setMapOverlay(o) {
     if (!o || !o.url) {
       if (this.mapPlane) {
+        const u = this.mapPlane.userData;
         this.mowerGroup.remove(this.mapPlane);
         this.mapPlane.geometry.dispose();
-        if (this.mapPlane.material.map) this.mapPlane.material.map.dispose();
+        if (u.rawTex) u.rawTex.dispose();
+        if (u.canvasTex) u.canvasTex.dispose();
         this.mapPlane.material.dispose();
         this.mapPlane = null;
         this.dirty = true;
       }
+      this.setStripeArrow(null);
       return;
     }
     if (!this.mapPlane) {
@@ -1234,18 +1239,92 @@ export class FloorplanView {
       new THREE.TextureLoader().load(o.url, (tex) => {
         if (plane.userData.url !== o.url || this.mapPlane !== plane) { tex.dispose(); return; }
         tex.colorSpace = THREE.SRGBColorSpace;
-        const old = plane.material.map;
-        plane.material.map = tex;
-        plane.material.needsUpdate = true;
-        if (old) old.dispose();
-        plane.userData.aspect = tex.image.height / tex.image.width;
+        const old = plane.userData.rawTex;
+        plane.userData.rawTex = tex;
+        // the size may change between refreshes: aspect from this picture
+        const W = tex.image.naturalWidth || tex.image.width, H = tex.image.naturalHeight || tex.image.height;
+        plane.userData.aspect = H / W;
         plane.userData.loaded = { url: o.url, image: tex.image, at: Date.now() };
         plane.scale.set(w, 1, w * plane.userData.aspect);
+        this._applyMapImage(plane);
+        if (old && old !== tex) old.dispose();
         plane.visible = this._mapShown(plane);
         this.dirty = true;
       }, undefined, () => console.warn('floorplan3d: could not load mower map', o.url));
     }
     if (plane.material.map) plane.visible = this._mapShown(plane);
+    this.dirty = true;
+  }
+
+  // The loaded picture through onMapImage (image, width, height) -> { canvas, width, height } | null:
+  // a processed canvas is drawn through one reused CanvasTexture (new only when its size changes),
+  // null draws the picture as loaded.
+  _applyMapImage(plane) {
+    const ld = plane.userData.loaded;
+    if (!ld) return;
+    const img = ld.image;
+    let res = null;
+    try {
+      res = this.onMapImage ? this.onMapImage(img, img.naturalWidth || img.width, img.naturalHeight || img.height) : null;
+    } catch (e) {
+      console.warn('floorplan3d: could not process the mower map', e);
+    }
+    const mat = plane.material;
+    let next = plane.userData.rawTex;
+    if (res && res.canvas) {
+      let ct = plane.userData.canvasTex;
+      if (ct && (ct.image !== res.canvas || ct.userData.w !== res.width || ct.userData.h !== res.height)) {
+        ct.dispose();
+        ct = null;
+      }
+      if (!ct) {
+        ct = new THREE.CanvasTexture(res.canvas);
+        ct.colorSpace = THREE.SRGBColorSpace;
+        ct.userData = { w: res.width, h: res.height };
+        plane.userData.canvasTex = ct;
+      }
+      ct.needsUpdate = true;
+      next = ct;
+    }
+    if (mat.map !== next) {
+      mat.map = next;
+      mat.needsUpdate = true;
+    }
+    this.dirty = true;
+  }
+
+  // Run the map processing again on the loaded picture (settings changed, no new image).
+  reprocessMap() {
+    if (this.mapPlane && this.mapPlane.userData.loaded) this._applyMapImage(this.mapPlane);
+  }
+
+  // Stripe direction arrow on the lawn: { x, y, angle (degrees ccw from east), length } or null.
+  // A double-headed line just above the map.
+  setStripeArrow(a) {
+    const plane = this.mapPlane;
+    const sig = a && plane ? [a.x, a.y, Math.round(a.angle * 10), a.length, plane.position.y, plane.visible].join('|') : '';
+    if (this.stripeArrow && this.stripeArrow.userData.sig === sig) return;
+    if (this.stripeArrow) {
+      this.mowerGroup.remove(this.stripeArrow);
+      this.stripeArrow.geometry.dispose();
+      this.stripeArrow.material.dispose();
+      this.stripeArrow = null;
+      this.dirty = true;
+    }
+    if (!sig) return;
+    const r = (a.angle * Math.PI) / 180, L = a.length / 2, hd = Math.min(0.6, a.length * 0.15);
+    const pt = (d, side) => {
+      const c = Math.cos(r), s = Math.sin(r);
+      return new THREE.Vector3(a.x + c * d - s * side, plane.position.y + 0.05, -(a.y + s * d + c * side));
+    };
+    const pts = [pt(-L, 0), pt(L, 0)];
+    for (const e of [1, -1]) pts.push(pt(e * L, 0), pt(e * (L - hd), hd * 0.6), pt(e * L, 0), pt(e * (L - hd), -hd * 0.6));
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    this.stripeArrow = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+    this.stripeArrow.renderOrder = 3;
+    this.stripeArrow.userData = { sig, helper: true };
+    this.stripeArrow.visible = plane.visible;
+    this.mowerGroup.add(this.stripeArrow);
     this.dirty = true;
   }
 
@@ -1760,6 +1839,7 @@ export class FloorplanView {
       c.obj.element.classList.toggle('fp-faded', st ? !!st.faded : !!this.model && this.visibleFloor === 'all' && c.floorId !== top);
     }
     if (this.mapPlane && this.mapPlane.material.map) this.mapPlane.visible = this._mapShown(this.mapPlane);
+    if (this.stripeArrow) this.stripeArrow.visible = !!this.mapPlane && this.mapPlane.visible;
     // shadow map and occlusion only when their inputs changed (not on every state update)
     const model = this._modelSig();
     if (model !== this._shadowSig) {

@@ -2078,6 +2078,84 @@ try {
   await ev(`${card}._view.setCamera({ position: [16.5, 9, 8], target: [16.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-aligned.png') });
+
+  // map picture processing on the live map: background transparent, mowed stripes light, no-mow shaded,
+  // the icon hidden (or not), clipped to the garden zone; stripes / mowed share; a size change keeps it right
+  await ev('window.__demoMowerPaused = true');
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: {} }, mower: { ...l.mower, source: 'image', calibration: [],
+    image: { color: [255, 59, 48], tolerance: 40, min_pixels: 4 },
+    overlay: { entity: 'image.sunseeker_live_map', x: 17.5, y: 1.5, rotation: 0, width: 9, opacity: 0.55, refresh: 10, height_offset: 0,
+      bg_color: [47, 93, 44], mowed_color: [127, 194, 111], nomow_color: [140, 140, 140] } } }); })()`);
+  const tick = async () => { await ev('window.__demoMowerPaused = false'); await sleep(700); await ev('window.__demoMowerPaused = true'); await sleep(300); };
+  await tick();
+  const processed = (w) => until(`(() => { const c = ${card}, p = c._view.mapPlane; const t = p && p.material.map, im = p && p.userData.loaded && p.userData.loaded.image;
+    return !!t && t.isCanvasTexture && !!im && (im.naturalWidth || im.width) === ${w} && t.image.width === ${w} && !!c._imageBlob && c._imageBlob.imgW === ${w} && !!c._mapStats; })()`, `the processed ${w} px map`, 15000);
+  check('map processed into a canvas texture', await processed(450));
+  const mapCheck = () => ev(`(() => {
+    const c = ${card}, p = c._view.mapPlane, img = p.userData.loaded.image, o = c._layout.mower.overlay;
+    const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height, cv = p.material.map.image, w = cv.width, h = cv.height;
+    const out = cv.getContext('2d').getImageData(0, 0, w, h).data;
+    const tmp = Object.assign(document.createElement('canvas'), { width: w, height: h }), g = tmp.getContext('2d', { willReadFrequently: true });
+    g.drawImage(img, 0, 0, w, h);
+    const raw = g.getImageData(0, 0, w, h).data;
+    const near = (k, col, tol) => Math.max(Math.abs(raw[k] - col[0]), Math.abs(raw[k + 1] - col[1]), Math.abs(raw[k + 2] - col[2])) <= tol;
+    const n = { bg: [0, 0], mowed: [0, 0], nomow: [0, 0], outside: [0, 0] };
+    const b = c._imageBlob, bx = b.px * w / W, by = b.py * h / H, r = 16 * w / 450;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const k = (y * w + x) * 4, a = out[k + 3], px = o.x + ((x + 0.5) / w - 0.5) * o.width;
+      if (Math.hypot(x + 0.5 - bx, y + 0.5 - by) < r) continue; // the icon
+      if (px > 21.05) { n.outside[0]++; if (a === 0) n.outside[1]++; continue; }
+      if (px > 20.95) continue;
+      if (near(k, o.bg_color, 6)) { n.bg[0]++; if (a === 0) n.bg[1]++; }
+      else if (near(k, o.mowed_color, 6)) { n.mowed[0]++; if (a > 0 && a < 255 && out[k] >= raw[k]) n.mowed[1]++; }
+      else if (near(k, o.nomow_color, 6)) { n.nomow[0]++; if (a > 0 && a < 255 && out[k] < 80) n.nomow[1]++; }
+    }
+    const ki = (Math.floor(by) * w + Math.floor(bx)) * 4;
+    return { w, h, W, H, n, iconRaw: [raw[ki], raw[ki + 1], raw[ki + 2]], iconOut: [out[ki], out[ki + 1], out[ki + 2], out[ki + 3]],
+      info: c.mapInfo(), zone: c._mapStats && c._mapStats.zone, aspect: p.userData.aspect, sz: p.scale.z }; })()`);
+  const mapOk = (m, label) => {
+    const all = (k, min) => m.n[k][0] >= min && m.n[k][1] === m.n[k][0];
+    check(`${label}: background pixels transparent`, all('bg', 1000), JSON.stringify(m.n.bg));
+    check(`${label}: mowed stripes light and translucent`, all('mowed', 1000), JSON.stringify(m.n.mowed));
+    check(`${label}: no-mow pixels shaded`, all('nomow', 100), JSON.stringify(m.n.nomow));
+    check(`${label}: outside the garden zone transparent`, m.zone === 'garden' && all('outside', 100), JSON.stringify({ zone: m.zone, outside: m.n.outside }));
+    check(`${label}: mower icon hidden`, m.iconRaw[0] > 200 && m.iconRaw[1] < 120 && m.iconOut[3] === 0, JSON.stringify([m.iconRaw, m.iconOut]));
+    check(`${label}: stripes and mowed share`, /^(5[7-9]|6[0-3])° \(NE–SW\)$/.test(m.info.stripes || '') && /^\d+ %$/.test(m.info.mowed || ''), JSON.stringify(m.info));
+  };
+  const m1 = await mapCheck();
+  mapOk(m1, 'live map');
+  await commitMower({}, { hide_icon: false });
+  check('icon shown when "Hide mower icon" is off', await until(`(() => { const c = ${card}, p = c._view.mapPlane, b = c._imageBlob, cv = p.material.map.image;
+    const d = cv.getContext('2d').getImageData(Math.floor(b.px * cv.width / b.imgW), Math.floor(b.py * cv.height / b.imgH), 1, 1).data; return d[0] > 200 && d[1] < 120 && d[3] === 255; })()`, 'the icon'));
+  await commitMower({}, { hide_icon: true });
+  await ev(`${card}._edit.render()`);
+  check('Mower tab shows stripes and mowed share', /Stripes: \d+° \(.+\) · Mowed: \d+ %/.test(await ev(`${card}.shadowRoot.querySelector('.mower-live').textContent`)),
+    await ev(`${card}.shadowRoot.querySelector('.mower-live').textContent`));
+  check('Mower tab has the map picture controls', await ev(`(() => { const s = ${card}.shadowRoot; const t = [...s.querySelectorAll('.panel button')].map((b) => b.textContent.trim());
+    return ['Pick background colour', 'Pick mowed colour', 'Pick no-mow colour'].every((x) => t.includes(x)) && !!s.querySelector('[data-field=ov-hide-icon]') && !!s.querySelector('[data-field=ov-zone]'); })()`));
+  const popRows = await ev(`(() => { const c = ${card}, o = c._objects.objectAt('mower'); if (!o) return null; c._popup.open(o.obj, null);
+    const t = [...c.shadowRoot.querySelectorAll('.fp-popup .fp-pop-row')].map((r) => r.textContent.trim()); c._popup.close(); return t; })()`);
+  check('mower popup shows Stripes and Mowed', !!popRows && popRows.some((t) => /^Stripes\s*\d+°/.test(t)) && popRows.some((t) => /^Mowed\s*\d+ %/.test(t)), JSON.stringify(popRows));
+  // the camera image changes size between refreshes: same alignment, masks follow
+  await ev('window.__demoMapScale = 2');
+  await tick();
+  check('map processed at the new size', await processed(900));
+  const m2 = await mapCheck();
+  check('size change keeps the aspect and the plane size', Math.abs(m2.aspect - m1.aspect) < 1e-9 && Math.abs(m2.sz - m1.sz) < 1e-9 && m2.w === 900, JSON.stringify([m1.aspect, m2.aspect, m2.w]));
+  mapOk(m2, 'resized live map');
+  await ev('window.__demoMapScale = 1');
+  await tick();
+  await processed(450);
+  const tex1 = await ev(`${card}._view.mapPlane.material.map.uuid`);
+  await tick();
+  await processed(450);
+  check('same-size refreshes reuse the canvas texture', (await ev(`${card}._view.mapPlane.material.map.uuid`)) === tex1);
+  await commitMower({}, { stripe_arrow: true });
+  check('stripe arrow on the lawn', await until(`!!${card}._view.stripeArrow && ${card}._view.stripeArrow.visible`, 'the stripe arrow'));
+  await ev(`${card}._view.setCamera({ position: [17.5, 24, 6], target: [17.5, 0, -1.5] }, { instant: true })`);
+  await settle(page, card);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-processed.png') });
+  await ev('window.__demoMowerPaused = false');
   allErrors.push(...s.errors);
 } finally {
   await s.close();

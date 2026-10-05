@@ -17,13 +17,14 @@ import {
   defaultViewId, viewCut, orderViews, unmatchedSelectors, sectionPlane, sectionCamera, zoomToFor, roomAt, exteriorShown, cameraToCard, topCameraToCard,
 } from './views.js';
 import { readSource, mowerTransform, overlayUrl } from './mower.js';
-import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, imagePixels } from './mower-image.js';
+import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, imagePixels, MapProcessor, mowedShare, stripeBearing } from './mower-image.js';
 import { ObjectLayer } from './objects/layer.js';
 import { bindObjects, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, actionCall, TapSequencer } from './actions.js';
+import { pointInPolygon, signedArea, centroid } from './placement.js';
 import { surfaceKind, surfaceKey, surfaceSearch, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
 
 const VERSION = '0.4.1';
@@ -643,6 +644,7 @@ class Floorplan3dCard extends HTMLElement {
     });
     this._editBtn.addEventListener('click', () => this._toggleEdit());
     this._view = new FloorplanView(this._stage);
+    this._view.onMapImage = (img, w, h) => this._onMapImage(img, w, h);
     this._objects = new ObjectLayer(this._view);
     this._view.onObjectsInvalidate = () => this._updateObjects(); // view, section or placement changed
     this._popup = new ObjectPopup(this._stage, {
@@ -653,7 +655,13 @@ class Floorplan3dCard extends HTMLElement {
       resolve: (id) => {
         const o = this._objects.objectAt(id);
         if (!o || !this._hass || (o.binding && o.binding.hidden)) return null;
-        return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup };
+        const extra = [];
+        if (o.obj.type === 'mower') { // from the processed live map
+          const mi = this.mapInfo();
+          if (mi.stripes) extra.push({ kind: 'info', label: 'Stripes', value: mi.stripes });
+          if (mi.mowed) extra.push({ kind: 'info', label: 'Mowed', value: mi.mowed });
+        }
+        return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra };
       },
     });
     this._view.onRender = () => this._popup.position();
@@ -864,16 +872,19 @@ class Floorplan3dCard extends HTMLElement {
     const entity = ic.entity || (cfg.overlay && cfg.overlay.entity);
     const st = entity && this._hass.states[entity];
     const ready = !!(st && ic.color && cfg.overlay);
-    this._setImageTimer(ready ? Math.max(2, Number(cfg.overlay.refresh) || 10) : 0);
+    // the overlay's own picture: detection runs on each loaded overlay image (one fetch per refresh)
+    const driven = ready && this._mapDriven(cfg);
+    this._setImageTimer(ready && !driven ? Math.max(2, Number(cfg.overlay.refresh) || 10) : 0);
     if (!ready) {
       this._imageBlob = null;
       this._imageResult = !st ? { error: entity ? `Map image ${entity} not found.` : 'Set the map overlay first.' } : null;
       return null;
     }
-    const key = [entity, st.last_updated, st.state, ic.color.join(','), ic.tolerance, ic.min_pixels].join('|');
+    const key = [entity, driven ? '' : st.last_updated, driven ? '' : st.state, ic.color.join(','), ic.tolerance, ic.min_pixels].join('|');
     if (key !== this._imageKey) {
       this._imageKey = key;
-      this._detectMower();
+      if (driven) this._view.reprocessMap(); // detection settings changed: run again on the loaded picture
+      else this._detectMower();
     }
     const b = this._imageBlob;
     if (!b) return null;
@@ -889,8 +900,37 @@ class Floorplan3dCard extends HTMLElement {
     this._imageTimer = seconds ? setInterval(() => this._detectMower(), seconds * 1000) : null;
   }
 
-  // Read the map image, find the icon colour, store the pixel. Async (fetch + createImageBitmap),
-  // one run at a time; skipped while disconnected or the tab is hidden.
+  // The mower icon is looked for on the overlay's own picture (no separate image entity).
+  _mapDriven(cfg) {
+    const ic = cfg && cfg.source === 'image' && cfg.image;
+    const o = cfg && cfg.overlay;
+    return !!(ic && ic.color && o && o.entity && (!ic.entity || ic.entity === o.entity));
+  }
+
+  // Find the icon colour in sampled pixels (imagePixels / readImagePixels), track it, store the pixel.
+  // -> { result, found } (found: the blob seen in this picture, image pixels)
+  _detectOn(img, ic) {
+    const k = img.imgW / img.width; // sampled canvas -> image pixels
+    const old = this._imageBlob;
+    const sameColor = !!old && String(old.color) === String(ic.color);
+    // the picture may change size between refreshes: the track scales with it (same geometry)
+    const rs = sameColor && old.imgW > 0 ? img.imgW / old.imgW : 1;
+    const track = sameColor ? { px: (old.px * rs) / k, py: (old.py * rs) / k, count: old.count == null ? null : (old.count * rs * rs) / (k * k), misses: old.misses || 0 } : null;
+    const b = findBlob(img.data, img.width, img.height, ic.color, ic.tolerance ?? 40, { minPixels: ic.min_pixels ?? 4, prev: track });
+    const step = stepTrack(track, b);
+    if (step.found) {
+      this._imageBlob = { px: b.px * k, py: b.py * k, count: b.count * k * k, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, color: ic.color };
+      return { result: { count: b.count }, found: this._imageBlob };
+    }
+    if (!sameColor) this._imageBlob = null; // a stale position of another colour would mislead
+    else if (rs !== 1) { // last known position and count, in this picture's pixels
+      this._imageBlob = { ...old, px: old.px * rs, py: old.py * rs, count: old.count == null ? null : old.count * rs * rs, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, misses: step.track.misses };
+    } else this._imageBlob = { ...old, misses: step.track.misses }; // last known position, count kept
+    return { result: { missing: true }, found: null };
+  }
+
+  // Read the map image (a separate image entity), find the icon colour, store the pixel. Async
+  // (fetch + createImageBitmap), one run at a time; skipped while disconnected or the tab is hidden.
   async _detectMower() {
     if (!this.isConnected || !this._hass || !this._layout) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
@@ -898,32 +938,13 @@ class Floorplan3dCard extends HTMLElement {
     const cfg = this._layout.mower;
     const ic = (cfg && cfg.source === 'image' && cfg.image) || null;
     const entity = ic && (ic.entity || (cfg.overlay && cfg.overlay.entity));
-    if (!ic || !ic.color || !entity) return;
-    // the overlay just loaded this picture (< 1 s ago): read it instead of downloading it again
-    const plane = this._view && this._view.mapPlane, ov = plane && plane.userData.loaded;
-    const fresh = ov && ov.url === plane.userData.url && cfg.overlay && cfg.overlay.entity === entity && Date.now() - ov.at < 1000 ? ov.image : null;
-    const url = fresh ? null : overlayUrl(this._hass, entity, Date.now());
-    if (!fresh && !url) return;
+    if (!ic || !ic.color || !entity || this._mapDriven(cfg)) return;
+    const url = overlayUrl(this._hass, entity, Date.now());
+    if (!url) return;
     this._imageBusy = true;
     let result;
     try {
-      const img = fresh
-        ? imagePixels(fresh, fresh.naturalWidth || fresh.width, fresh.naturalHeight || fresh.height)
-        : await readImagePixels(url);
-      const k = img.imgW / img.width; // sampled canvas -> image pixels
-      const old = this._imageBlob;
-      const sameColor = !!old && String(old.color) === String(ic.color);
-      const track = sameColor ? { px: old.px / k, py: old.py / k, count: old.count == null ? null : old.count / (k * k), misses: old.misses || 0 } : null;
-      const b = findBlob(img.data, img.width, img.height, ic.color, ic.tolerance ?? 40, { minPixels: ic.min_pixels ?? 4, prev: track });
-      const step = stepTrack(track, b);
-      if (step.found) {
-        this._imageBlob = { px: b.px * k, py: b.py * k, count: b.count * k * k, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, color: ic.color };
-        result = { count: b.count };
-      } else {
-        result = { missing: true };
-        if (!sameColor) this._imageBlob = null; // a stale position of another colour would mislead
-        else this._imageBlob = { ...old, misses: step.track.misses }; // last known position, count kept
-      }
+      result = this._detectOn(await readImagePixels(url), ic).result;
     } catch (e) {
       console.warn('floorplan3d: could not read the mower map image', e);
       result = { error: "Can't read the map image." };
@@ -973,6 +994,101 @@ class Floorplan3dCard extends HTMLElement {
     this._view.setTrail(null);
   }
 
+  // One pass per loaded map picture (view.onMapImage): mower detection (when it reads the overlay's
+  // picture), then the processed picture (transparent background, mowed stripes, shaded no-mow, hidden
+  // icon, clipped to a zone) and its statistics. -> { canvas, width, height } or null (drawn as loaded).
+  _onMapImage(image, W, H) {
+    const cfg = this._layout && this._layout.mower;
+    const o = cfg && cfg.overlay;
+    if (!o || !W || !H) return null;
+    let blob = null;
+    if (this._mapDriven(cfg)) {
+      const d = this._detectOn(imagePixels(image, W, H), cfg.image);
+      blob = d.found;
+      this._imageResult = d.result;
+      if (!this._mowerRefreshQueued) {
+        this._mowerRefreshQueued = true;
+        queueMicrotask(() => {
+          this._mowerRefreshQueued = false;
+          if (!this._view || !this._layout || !this._layout.mower) return;
+          this._refreshMower(false);
+          if (this._editing && this._edit) this._edit.onStates();
+        });
+      }
+    }
+    const s = this._mapSettings(o, blob);
+    const was = this._mapStats;
+    if (!s) {
+      this._mapStats = null;
+      if (was) this._mapStatsChanged();
+      return null;
+    }
+    this._mapProc = this._mapProc || new MapProcessor();
+    const r = this._mapProc.run(image, W, H, s);
+    this._mapStats = {
+      zone: s.zoneId || null,
+      angle: s.mowed ? r.angle : null,
+      share: s.mowed ? mowedShare(r) : null,
+    };
+    if (!was || was.angle !== this._mapStats.angle || was.share !== this._mapStats.share) this._mapStatsChanged();
+    return r;
+  }
+
+  _mapStatsChanged() {
+    if (this._popup) this._popup.update();
+    if (this._editing && this._edit) this._edit.onStates();
+    if (this._view) this._stripeArrow();
+  }
+
+  // Processing settings of the overlay (null: none set, the picture is drawn as loaded).
+  // blob: the mower icon found in this very picture (image pixels) or null.
+  _mapSettings(o, blob) {
+    const col = (c, t, d) => (Array.isArray(c) && c.length >= 3 ? { color: c.map(Number), tolerance: Number(t ?? d) } : null);
+    const bg = col(o.bg_color, o.bg_tolerance, 30), mowed = col(o.mowed_color, o.mowed_tolerance, 30), nomow = col(o.nomow_color, o.nomow_tolerance, 30);
+    const ic = this._layout.mower.image || {};
+    const iconBlob = blob && o.hide_icon !== false ? { px: blob.px, py: blob.py, count: blob.count, color: ic.color, tolerance: ic.tolerance ?? 40 } : null;
+    const explicitZone = !!o.zone && o.zone !== 'auto' && o.zone !== 'none';
+    if (!bg && !mowed && !nomow && !iconBlob && !explicitZone) return null;
+    const zone = this.mapZone(o);
+    return { bg, mowed, nomow, iconBlob, dilate: 3, zone: zone ? zone.polygon : null, zoneId: zone ? zone.id : null, overlay: o };
+  }
+
+  // Zone the map is clipped to: overlay.zone = a zone id, 'none', or unset / 'auto' = the zone
+  // (model room / outdoor outline) containing the overlay centre, the smallest one.
+  mapZone(o) {
+    const zones = this._zones || [];
+    if (!o || o.zone === 'none') return null;
+    if (o.zone && o.zone !== 'auto') return zones.find((z) => z.id === o.zone) || null;
+    const c = [Number(o.x) || 0, Number(o.y) || 0];
+    let best = null, area = Infinity;
+    for (const z of zones) {
+      if (!pointInPolygon(c, z.polygon)) continue;
+      const a = Math.abs(signedArea(z.polygon));
+      if (a < area) { area = a; best = z; }
+    }
+    return best;
+  }
+
+  // "Stripes" / "Mowed" texts from the last processed map (null each when unknown).
+  mapInfo() {
+    const st = this._mapStats, o = this._layout && this._layout.mower && this._layout.mower.overlay;
+    if (!st || !o) return { stripes: null, mowed: null };
+    const b = st.angle != null ? stripeBearing(st.angle, o.rotation) : null;
+    return {
+      stripes: b ? `${b.bearing}° (${b.label})` : null,
+      mowed: st.share != null ? `${Math.round(st.share * 100)} %` : null,
+    };
+  }
+
+  _stripeArrow() {
+    const o = this._layout && this._layout.mower && this._layout.mower.overlay;
+    const st = this._mapStats;
+    if (!o || !o.stripe_arrow || !st || st.angle == null) { this._view.setStripeArrow(null); return; }
+    const z = this.mapZone(o);
+    const c = z ? centroid(z.polygon) : [o.x || 0, o.y || 0];
+    this._view.setStripeArrow({ x: c[0], y: c[1], angle: st.angle + (Number(o.rotation) || 0), length: Math.min(4, (o.width || 20) / 3) });
+  }
+
   _refreshMapOverlay() {
     const cfg = this._layout.mower;
     const o = cfg && cfg.overlay;
@@ -980,6 +1096,7 @@ class Floorplan3dCard extends HTMLElement {
     if (!st) {
       this._view.setMapOverlay(null);
       this._setCameraTimer(0);
+      this._mapProcKey = null;
       return;
     }
     const camera = o.entity.startsWith('camera.');
@@ -992,6 +1109,17 @@ class Floorplan3dCard extends HTMLElement {
       floorId: this._mowerFloor(), heightOffset: o.height_offset || 0,
       hidden: !!o.edit_only && !this._editing, // detection keeps reading the loaded image
     });
+    // processing settings (and the alignment, which moves the zone clip) changed: process the
+    // loaded picture again
+    const z = this.mapZone(o);
+    const pk = JSON.stringify([o.bg_color, o.bg_tolerance, o.mowed_color, o.mowed_tolerance, o.nomow_color, o.nomow_tolerance,
+      o.hide_icon, o.zone, z && z.id, z && z.polygon, o.x, o.y, o.rotation, o.width]);
+    if (pk !== this._mapProcKey) {
+      const first = this._mapProcKey == null;
+      this._mapProcKey = pk;
+      if (!first) this._view.reprocessMap();
+    }
+    this._stripeArrow();
   }
 
   _setCameraTimer(seconds) {

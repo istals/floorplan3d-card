@@ -10,25 +10,49 @@ const areaFloor = {
   utility: 'ground', terrace: 'ground', garden: 'ground', garage: 'ground',
   kids_room: 'first', landing: 'first', office: 'first', master_bedroom: 'first', bathroom_2: 'first',
 };
-// Live map image like a robot mower integration renders it: the 9 x 17 m lawn of mower-map.svg
-// (50 px/m, centred on the garden) with the mower as a coloured dot. Aligned as the overlay at
-// (16.5, 1.5), width 9, the dot sits where the fake mower is.
+// Live map image like a robot mower integration renders it (Sunseeker live map): the 9 x 17 m lawn of
+// mower-map.svg (50 px/m, centred on the garden) on a dark green background (unmowed), light mowed
+// stripes at 30° (counter-clockwise from east), grey no-mow areas, a blue boundary and the mower as a
+// red dot with a white ring. Aligned as the overlay at (16.5, 1.5), width 9, the dot sits where the
+// fake mower is. window.__demoMapScale (headless checks) renders it larger: the size changes.
 let liveCanvas = null;
 function liveMap(t) {
   if (typeof document === 'undefined') return '';
-  const c = (liveCanvas = liveCanvas || Object.assign(document.createElement('canvas'), { width: 450, height: 850 }));
+  const s = (typeof window !== 'undefined' && window.__demoMapScale) || 1;
+  const c = (liveCanvas = liveCanvas || document.createElement('canvas'));
+  if (c.width !== 450 * s) c.width = 450 * s;
+  if (c.height !== 850 * s) c.height = 850 * s;
   const g = c.getContext('2d');
-  g.fillStyle = '#1d3b1f';
+  g.setTransform(s, 0, 0, s, 0, 0);
+  g.fillStyle = '#2f5d2c';
   g.fillRect(0, 0, 450, 850);
-  g.fillStyle = '#3f8f3a';
-  g.fillRect(25, 25, 400, 800);
-  g.fillStyle = '#58a852';
-  for (let y = 80; y < 825; y += 80) g.fillRect(25, y - 9, 400, 18);
+  g.save();
+  g.beginPath();
+  g.rect(25, 25, 400, 800);
+  g.clip();
+  g.translate(225, 425);
+  g.rotate((-30 * Math.PI) / 180); // canvas y points down: -30° turns the bands counter-clockwise
+  g.fillStyle = '#7fc26f';
+  for (let y = -700; y < 700; y += 60) g.fillRect(-700, y, 1400, 30);
+  g.restore();
+  g.fillStyle = '#8c8c8c'; // no-mow: a flower bed and a shed
+  g.beginPath();
+  g.arc(225, 395, 34, 0, Math.PI * 2);
+  g.fill();
+  g.fillRect(60, 700, 70, 50);
+  g.strokeStyle = '#4a8fd6'; // boundary
+  g.lineWidth = 4;
+  g.strokeRect(25, 25, 400, 800);
   g.fillStyle = '#f0f0f0';
   g.fillRect(360, 770, 50, 40); // dock
-  g.fillStyle = '#ff3b30'; // the mower
+  const mx = 225 + 200 * Math.cos(t), my = 425 - 200 * Math.sin(t);
+  g.fillStyle = '#ffffff'; // the mower: red dot, white ring
   g.beginPath();
-  g.arc(225 + 200 * Math.cos(t), 425 - 200 * Math.sin(t), 9, 0, Math.PI * 2);
+  g.arc(mx, my, 12, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#ff3b30';
+  g.beginPath();
+  g.arc(mx, my, 9, 0, Math.PI * 2);
   g.fill();
   return c.toDataURL('image/png');
 }
