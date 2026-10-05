@@ -51,7 +51,7 @@ export async function openDemo(query = {}, viewport = { width: 1400, height: 560
   try {
     const { page, errors } = await newPage(browser, viewport);
     const q = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined));
-    await page.goto(`${base}/demo/index.html?${q}`, { waitUntil: 'networkidle0', timeout: 120000 });
+    await page.goto(`${base}/demo/index.html?${q}`, { waitUntil: 'load', timeout: 120000 });
     await page.waitForFunction(() => {
       const c = document.querySelector('floorplan3d-card');
       return c && c.shadowRoot && c.shadowRoot.querySelectorAll('.fp-marker').length > 0;
