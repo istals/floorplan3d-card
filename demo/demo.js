@@ -23,6 +23,8 @@ for (const c of cards) {
     height: params.get('height') || '460px', view: params.get('view') || c.dataset.view || '3d', floor: params.get('floor') || undefined,
     // ?model=1 loads the generated demo house, any other value is used as the model url
     ...(model ? { model: model === '1' ? '/demo/house.glb' : model, model_opacity: 0.95 } : {}),
+    // example actions (see README): double tap the mower marker to open the garden camera
+    actions: { 'lawn_mower.demo': { double_tap_action: { action: 'more-info', entity: 'camera.garden' } } },
     ...(params.get('merge') === '0' ? { merge: false } : {}), // ?merge=0: every model part its own mesh
   });
 }

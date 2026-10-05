@@ -31,6 +31,8 @@ export const DEMO_LAYOUT = {
     entity: 'device_tracker.sunseeker_position',
     source: 'gps',
     floor_id: 'ground',
+    error_entity: 'binary_sensor.demo_mower_error',
+    stuck_minutes: 5,
     // garden centre (16.5, 1.5); second point 4 m north of it
     calibration: [
       { src: [45.0, 10.0], plan: [16.5, 1.5] },

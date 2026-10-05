@@ -28,7 +28,7 @@ import { resolveActions, actionCall, TapSequencer } from './actions.js';
 import { pointInPolygon, signedArea } from './placement.js';
 import { surfaceKind, surfaceKey, surfaceSearch, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const NONE = Object.freeze({}); // stable stand-in for a missing layout.objects / groups (binding cache key)
 // HA frontend navigation: push the path and tell the router.
 function navigate(path, replace = false) {

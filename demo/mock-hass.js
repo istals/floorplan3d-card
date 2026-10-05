@@ -111,6 +111,7 @@ device('outdoor_temp', 'Outdoor sensor', 'terrace', [sensor('sensor.outdoor_temp
 device('mower', 'Mower', 'garden', [
   ['lawn_mower.demo', 'mowing', { battery_level: 76 }], sensor('sensor.demo_mower_battery', 76, 'battery', '%'),
   ['device_tracker.sunseeker_position', 'not_home', { latitude: 45.0, longitude: 10.0 }],
+  ['binary_sensor.demo_mower_error', 'off', { device_class: 'problem' }],
 ]);
 device('garden_cam', 'Garden camera', 'garden', [['camera.garden', 'idle']]);
 device('mower_map', 'Sunseeker map', 'garden', [['image.sunseeker_map', '2026-01-01T00:00:00+00:00', { entity_picture: '/demo/mower-map.svg' }]]);

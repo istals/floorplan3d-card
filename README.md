@@ -196,6 +196,12 @@ unavailable); yellow *Stuck?* when the state is `mowing` and the detected positi
 image) moved less than 0.3 m for **Stuck after** minutes (default 5, 0 = off; never while docked,
 paused or returning). Tap it for the mower popup with the error text and Start / Dock.
 
+### Mower map how-to
+
+1. **Overlay**: pick the map image / camera entity. 2. **Align by points** until it sits on the lawn.
+3. **Pick background / mowed / no-mow colours** (Map picture). 4. Source **Live map image**, then
+**Pick mower colour**. 5. Optionally set an **Error entity** and **Stuck after** minutes for the warning.
+
 ### Map picture (Sunseeker live map)
 
 The live map is mostly dark green (unmowed), with light mowed stripes, grey no-mow areas, a boundary
