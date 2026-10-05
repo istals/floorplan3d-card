@@ -1426,7 +1426,7 @@ export class FloorplanView {
     const timer = setInterval(() => {
       bright = !bright;
       sprite.material.opacity = bright ? 1 : 0.55;
-      this.dirty = true;
+      if (sprite.visible) this.dirty = true; // no frames for a warning on a hidden floor
     }, 500);
     this.warning = { sprite, kind: w.kind, floorId: w.floorId, timer };
     this._warningVisible();

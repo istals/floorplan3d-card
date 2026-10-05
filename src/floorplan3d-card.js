@@ -916,6 +916,7 @@ class Floorplan3dCard extends HTMLElement {
   _warningText() {
     const w = this._warning, h = this._hass, cfg = this._layout && this._layout.mower;
     if (!w || !h || !cfg) return null;
+    if (w.kind === 'stuck' && !(this._mowerLive && this._mowerLive.x !== undefined)) return { label: 'Position', value: 'no position reading' };
     if (w.kind === 'stuck') return { label: 'Stuck?', value: `no movement for ${w.minutes} min` };
     return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], cfg.error_entity ? h.states[cfg.error_entity] : null) || 'error' };
   }

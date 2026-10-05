@@ -46,10 +46,12 @@ describe('stuck detector', () => {
     const st = stuckStep(null, { now: 99 * T, pos: [0, 0], state: 'mowing', minutes: 0 });
     expect(st.stuck).toBe(false);
   });
-  it('a missing position keeps the clock (image detection miss)', () => {
-    const st = run([[0, [0, 0]], [3, null], [6, null]]);
-    expect(st.stuck).toBe(true);
+  it('missing readings never count as stuck time', () => {
+    expect(run([[0, [0, 0]], [3, null], [6, null]]).stuck).toBe(false);
     expect(run([[0, null]]).stuck).toBe(false);
+    expect(run([[0, [0, 0]], [1, null], [11, [0.1, 0]]]).stuck).toBe(false); // 10 min without readings
+    expect(run([[0, [0, 0]], [1, null], [11, [0.1, 0]], [14, [0.1, 0]]]).stuck).toBe(false);
+    expect(run([[0, [0, 0]], [1, null], [11, [0.1, 0]], [16.5, [0.1, 0]]]).stuck).toBe(true); // 5 min of readings after
   });
   it('resumes cleanly after a dock', () => {
     const st = run([[0, [0, 0]], [9, [0, 0]], [10, [0, 0], 'docked'], [11, [0, 0], 'mowing']]);

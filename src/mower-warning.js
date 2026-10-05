@@ -37,15 +37,17 @@ export function errorText(mowerState, errorState) {
 export function stuckStep(st, { now, pos, state, minutes }) {
   const prev = st || { anchor: null, since: null, stuck: false };
   if (!(minutes > 0) || String(state).toLowerCase() !== 'mowing') return { anchor: null, since: null, stuck: false };
-  if (!pos) return prev.anchor ? { ...prev, stuck: now - prev.since >= minutes * 60000 } : prev;
+  // No reading: the clock pauses (lostAt); the time without readings is not added when they return.
+  if (!pos) return prev.anchor ? { ...prev, lostAt: prev.lostAt ?? now, stuck: false } : prev;
   if (!prev.anchor || Math.hypot(pos[0] - prev.anchor[0], pos[1] - prev.anchor[1]) >= STUCK_MOVE_M) {
     return { anchor: [pos[0], pos[1]], since: now, stuck: false };
   }
-  return { ...prev, stuck: now - prev.since >= minutes * 60000 };
+  const since = prev.lostAt === undefined || prev.lostAt === null ? prev.since : prev.since + (now - prev.lostAt);
+  return { anchor: prev.anchor, since, stuck: now - since >= minutes * 60000 };
 }
 
 // ms until the detector would flag (null when it cannot).
 export function stuckDueIn(st, now, minutes) {
-  if (!st || !st.anchor || st.stuck || !(minutes > 0)) return null;
+  if (!st || !st.anchor || st.stuck || st.lostAt !== undefined && st.lostAt !== null || !(minutes > 0)) return null;
   return Math.max(0, st.since + minutes * 60000 - now);
 }
