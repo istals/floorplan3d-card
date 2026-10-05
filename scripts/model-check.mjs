@@ -694,13 +694,26 @@ try {
   check('actions: hold with perform-action calls the service with data and target',
     (await lastCall()) === JSON.stringify(['light', 'turn_on', { brightness: 42 }, { entity_id: 'light.demo_hall' }]) && !(await page.evaluate(`!!${card}.shadowRoot.querySelector('.fp-popup')`)), await lastCall());
 
-  // missing target: no call, a visible message
-  await setActions({ 'object:lamp_hall': { hold_action: { action: 'perform-action', perform_action: 'light.turn_on' } } });
+  // a malformed perform_action: no call, a visible message; no target is fine (HA allows target-less actions)
+  await setActions({ 'object:lamp_hall': { hold_action: { action: 'perform-action', perform_action: 'turn_on' } } });
   n0 = await calls();
   p = await at('lamp_hall');
   await hold(p);
-  const toast = await page.evaluate(`(() => { const t = ${card}.shadowRoot.querySelector('.fp-toast'); return t && !t.hidden ? t.textContent : null; })()`);
-  check('actions: perform-action without a target -> no call, a message in the card', (await calls()) === n0 && /target/.test(toast || ''), String(toast));
+  const toastText = () => page.evaluate(`(() => { const t = ${card}.shadowRoot.querySelector('.fp-toast'); return t && !t.hidden ? t.textContent : null; })()`);
+  let toast = await toastText();
+  check('actions: a malformed perform_action -> no call, a message in the card', (await calls()) === n0 && /domain\.action/.test(toast || ''), String(toast));
+  await setActions({ 'object:lamp_hall': { hold_action: { action: 'perform-action', perform_action: 'script.good_night' } } });
+  p = await at('lamp_hall');
+  await hold(p);
+  check('actions: perform-action without a target calls the service', (await lastCall()) === JSON.stringify(['script', 'good_night', {}]), await lastCall());
+  // a rejected service call: a message, no unhandled rejection
+  await page.evaluate(`(() => { const c = ${card}; window.__demoMowerPaused = true; window.__realHass = c._hass;
+    c._hass = { ...c._hass, callService: () => Promise.reject(new Error('Service not found')) }; })()`);
+  p = await at('lamp_hall');
+  await hold(p);
+  toast = await toastText();
+  check('actions: a failing service call shows its error in the card', toast === 'Service not found', String(toast));
+  await page.evaluate(`(() => { const c = ${card}; window.__demoMowerPaused = false; if (c._hass.callService !== window.__realHass.callService) c._hass = window.__realHass; })()`);
 
   // double tap on the living lamp; the hall lamp's single taps stay immediate
   await setActions({ 'object:lamp_living': { double_tap_action: { action: 'perform-action', perform_action: 'light.turn_off', target: { entity_id: 'light.demo_living' } } } });

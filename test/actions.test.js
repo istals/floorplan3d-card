@@ -113,13 +113,35 @@ describe('validateAction / actionCall', () => {
     expect(actionCall({ action: 'perform-action', perform_action: 'script.good_night' }, ctx)).toMatchObject({ kind: 'service', domain: 'script', service: 'good_night' });
   });
 
-  it('perform-action: missing fields are messages, never calls', () => {
+  it('perform-action: missing / malformed perform_action is a message, never a call; no target is fine', () => {
     expect(actionCall({ action: 'perform-action' }, ctx)).toMatchObject({ kind: 'error', message: expect.stringContaining('perform_action') });
     expect(actionCall({ action: 'perform-action', perform_action: 'nodot' }, ctx)).toMatchObject({ kind: 'error' });
-    expect(actionCall({ action: 'perform-action', perform_action: 'light.turn_on' }, ctx)).toMatchObject({ kind: 'error', message: expect.stringContaining('target') });
-    expect(actionCall({ action: 'perform-action', perform_action: 'light.turn_on', target: {} }, ctx)).toMatchObject({ kind: 'error' });
-    expect(validateAction({ action: 'perform-action', perform_action: 'light.turn_on' })).toMatch(/target/);
+    expect(actionCall({ action: 'perform-action', perform_action: 'light.turn_on' }, ctx)).toEqual({ kind: 'service', domain: 'light', service: 'turn_on', data: {}, confirm: null });
+    expect(validateAction({ action: 'perform-action', perform_action: 'light.turn_on' })).toBe(null);
+    expect(validateAction({ action: 'perform-action' })).toMatch(/perform_action/);
     expect(validateAction({ action: 'toggle' })).toBe(null);
+  });
+
+  it('perform-action: legacy service / service_data accepted as fallbacks', () => {
+    expect(actionCall({ action: 'perform-action', service: 'light.turn_on', service_data: { brightness: 5 } }, ctx))
+      .toMatchObject({ kind: 'service', domain: 'light', service: 'turn_on', data: { brightness: 5 } });
+    // the new keys win
+    expect(actionCall({ action: 'perform-action', perform_action: 'switch.turn_on', service: 'light.turn_on', data: { a: 1 }, service_data: { b: 2 } }, ctx))
+      .toMatchObject({ domain: 'switch', data: { a: 1 } });
+  });
+
+  it('url: only http(s) or a local path', () => {
+    expect(actionCall({ action: 'url', url_path: 'http://x' }, ctx)).toMatchObject({ kind: 'url' });
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', ' JavaScript:x', 'ftp://x', '//evil.example']) {
+      expect(actionCall({ action: 'url', url_path: bad }, ctx)).toMatchObject({ kind: 'error' });
+    }
+  });
+
+  it('confirmation exemptions: no dialog for a listed user', () => {
+    const a = { action: 'toggle', confirmation: { text: 'Sure?', exemptions: [{ user: 'u1' }] } };
+    expect(actionCall(a, { ...ctx, userId: 'u1' }).confirm).toBe(null);
+    expect(actionCall(a, { ...ctx, userId: 'u2' }).confirm).toBe('Sure?');
+    expect(actionCall(a, ctx).confirm).toBe('Sure?');
   });
 
   it('assist, popup, none, unknown', () => {

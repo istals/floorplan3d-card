@@ -637,7 +637,7 @@ class Floorplan3dCard extends HTMLElement {
     this._objects = new ObjectLayer(this._view);
     this._view.onObjectsInvalidate = () => this._updateObjects(); // view, section or placement changed
     this._popup = new ObjectPopup(this._stage, {
-      onAction: (domain, service, data) => this._hass && this._hass.callService(domain, service, data),
+      onAction: (domain, service, data) => this._callService(domain, service, data),
       onLink: (action) => this._runAction(action, {}),
       project: (w) => this._view.projectWorld(w),
       anchor: (id) => this._objects.anchorOf(id),
@@ -1506,7 +1506,7 @@ class Floorplan3dCard extends HTMLElement {
     const target = actionTarget(o.obj, o.binding, this._groups || {}, this._hass.states);
     const st = target && this._hass.states[target];
     if (!st || st.state === 'unavailable' || st.state === 'unknown') return false;
-    this._hass.callService(...toggleCall(target));
+    this._callService(...toggleCall(target));
     return true;
   }
 
@@ -1562,7 +1562,7 @@ class Floorplan3dCard extends HTMLElement {
 
   // Runs one HA action (after the in-card confirmation when it asks for one).
   _runAction(action, ctx) {
-    const call = actionCall(action, { entity: ctx.entity || null });
+    const call = actionCall(action, { entity: ctx.entity || null, userId: (this._hass && this._hass.user && this._hass.user.id) || null });
     if (call.kind === 'none') return;
     if (call.kind === 'error') { this._toast(call.message); return; }
     if (call.confirm) this._confirm(call.confirm, () => this._execCall(call, ctx));
@@ -1572,9 +1572,7 @@ class Floorplan3dCard extends HTMLElement {
   _execCall(call, ctx) {
     switch (call.kind) {
       case 'service':
-        if (!this._hass) return;
-        if (call.target) this._hass.callService(call.domain, call.service, call.data, call.target);
-        else this._hass.callService(call.domain, call.service, call.data);
+        this._callService(call.domain, call.service, call.data, call.target);
         break;
       case 'more-info': this._moreInfo(call.entityId); break;
       case 'navigate': navigate(call.path, call.replace); break;
@@ -1591,6 +1589,18 @@ class Floorplan3dCard extends HTMLElement {
         else if (ctx.entity) this._moreInfo(ctx.entity);
         break;
       default:
+    }
+  }
+
+  // hass.callService with a failure (rejected promise or a throw) shown as a toast, never unhandled.
+  _callService(domain, service, data, target) {
+    if (!this._hass) return;
+    const fail = (err) => this._toast((err && err.message) || 'Action failed');
+    try {
+      const p = target ? this._hass.callService(domain, service, data, target) : this._hass.callService(domain, service, data);
+      if (p && typeof p.catch === 'function') p.catch(fail);
+    } catch (err) {
+      fail(err);
     }
   }
 

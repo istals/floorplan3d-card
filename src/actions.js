@@ -7,9 +7,6 @@ const KIND_SET = new Set(KINDS);
 export const WHICH = ['tap', 'hold', 'double_tap'];
 export const DOUBLE_TAP_MS = 250;
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean']);
-// services that are commonly called without any target
-const TARGETLESS = new Set(['script', 'notify', 'persistent_notification']);
-const TARGET_KEYS = ['entity_id', 'device_id', 'area_id', 'floor_id', 'label_id'];
 
 const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const domainOf = (e) => String(e).split('.')[0];
@@ -24,7 +21,7 @@ export function toggleCall(entity) {
 export function normAction(v) {
   if (typeof v === 'string') return KIND_SET.has(v) ? { action: v } : null;
   if (!plain(v)) return null;
-  if (v.action === 'call-service') {
+  if (v.action === 'call-service' || (v.action === 'perform-action' && (v.service !== undefined || v.service_data !== undefined))) {
     const { service, service_data: sd, ...rest } = v;
     const out = { ...rest, action: 'perform-action' };
     if (service !== undefined && out.perform_action === undefined) out.perform_action = service;
@@ -61,28 +58,31 @@ export function resolveActions({ modelUi, layoutUi, yaml, kind = 'object', id, e
   return out;
 }
 
-const hasTarget = (o) => plain(o) && TARGET_KEYS.some((k) => o[k] !== undefined && o[k] !== null && o[k] !== '' && !(Array.isArray(o[k]) && !o[k].length));
+// url_path: http(s) or a path on the HA host; never javascript: / data: and the like
+const safeUrl = (u) => /^https?:\/\//i.test(u) || (u.startsWith('/') && !u.startsWith('//'));
 
 /** A message for an action missing a required field, else null (entity-based actions are checked at run time). */
 export function validateAction(a) {
   if (!a) return null;
   switch (a.action) {
     case 'navigate': return a.navigation_path ? null : 'navigate needs navigation_path';
-    case 'url': return a.url_path ? null : 'url needs url_path';
+    case 'url':
+      if (!a.url_path) return 'url needs url_path';
+      return safeUrl(String(a.url_path)) ? null : 'url_path must start with http://, https:// or /';
     case 'perform-action': {
       const s = a.perform_action;
       if (!s) return 'perform-action needs perform_action (domain.action)';
       if (typeof s !== 'string' || !/^[a-z0-9_]+\.[a-z0-9_]+$/.test(s)) return `perform_action "${s}" is not domain.action`;
-      if (!TARGETLESS.has(domainOf(s)) && !hasTarget(a.target) && !hasTarget(a.data)) return `${s} needs a target (entity_id, device_id or area_id)`;
       return null;
     }
     default: return null;
   }
 }
 
-function confirmText(a, call) {
+function confirmText(a, call, userId) {
   const c = a.confirmation;
   if (!c || call.kind === 'none' || call.kind === 'error') return null;
+  if (plain(c) && userId && Array.isArray(c.exemptions) && c.exemptions.some((x) => plain(x) && x.user === userId)) return null;
   if (plain(c) && typeof c.text === 'string' && c.text) return c.text;
   const what = {
     service: () => `run ${call.domain}.${call.service}`,
@@ -93,7 +93,8 @@ function confirmText(a, call) {
 }
 
 /**
- * What to do for an action. ctx.entity: the entity toggle / more-info act on by default.
+ * What to do for an action. ctx.entity: the entity toggle / more-info act on by default; ctx.userId:
+ * the HA user (confirmation.exemptions [{ user }] skip the dialog).
  * Returns { kind: 'service', domain, service, data, target? } | { kind: 'more-info', entityId } |
  * { kind: 'navigate', path, replace } | { kind: 'url', url, newTab } | { kind: 'assist', action } |
  * { kind: 'popup' } | { kind: 'none' } | { kind: 'error', message }; each with confirm (text | null).
@@ -135,7 +136,7 @@ export function actionCall(action, ctx = {}) {
       default: call = { kind: 'none' };
     }
   }
-  call.confirm = a ? confirmText(a, call) : null;
+  call.confirm = a ? confirmText(a, call, ctx.userId || null) : null;
   return call;
 }
 

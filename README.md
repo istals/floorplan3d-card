@@ -273,9 +273,11 @@ has no marker: the object is the control.
 
 Objects and markers take Home Assistant's standard actions: `tap_action`, `hold_action` (500 ms)
 and `double_tap_action`, each `{ action: ... }` with `toggle`, `more-info` (optional `entity`),
-`navigate` (`navigation_path`), `url` (`url_path`; a path starting with `/` opens in the same tab),
-`perform-action` (`perform_action`, `data`, `target`), `assist`, `none`, plus `popup` (the object's
-popup). `confirmation: true` (or `{ text: ... }`) asks first in a small dialog in the card.
+`navigate` (`navigation_path`), `url` (`url_path`: `http(s)://…` opens a new tab, a path starting
+with `/` the same tab; other schemes are refused), `perform-action` (`perform_action`, `data`,
+`target`; the older `service` / `service_data` work too), `assist`, `none`, plus `popup` (the
+object's popup). `confirmation: true` (or `{ text: ..., exemptions: [{ user: <user id> }] }`) asks
+first in a small dialog in the card, except for the listed users.
 Later wins: the model's `fp.ui` (old `tap` / `hold` keys still work) → the Objects tab → the card
 YAML `actions:`, keyed `object:<id>` (model objects), `<entity_id>` or `device:<device_id>` (objects
 and markers):
@@ -298,8 +300,8 @@ actions:
 Defaults: lamps toggle on tap and open the popup on hold; markers toggle lights / switches / fans /
 input booleans and open more-info otherwise, hold opens more-info. A single tap waits 250 ms for a
 second tap only on objects or markers that have a `double_tap_action`; everything else reacts at
-once. An action missing a field (e.g. `perform-action` without a target) does nothing and shows a
-short message. Popup rows can end with links: `history`, `logbook` (open HA's history / logbook for
+once. An action missing a field (e.g. `navigate` without `navigation_path`) does nothing and shows
+a short message; a failed service call shows its error the same way. Popup rows can end with links: `history`, `logbook` (open HA's history / logbook for
 the entity), `statistics` (the entity's more-info) and custom `{ label, navigate }` or `{ label, url }`.
 
 ### Views
