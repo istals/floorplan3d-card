@@ -504,7 +504,7 @@ export class FloorplanView {
   setModel(opts) {
     const base = opts && (opts.id || opts.url);
     const id = base && opts.merge === false ? base + '#nomerge' : base; // merge on / off is a reload
-    if (id && opts.reload && this.model && this.model.id === id) this._disposeModel(); // load again (e.g. merge with new keep rules)
+    if (id && opts.reload && this.model && this.model.id === id) this._disposeModel(true); // load again (e.g. merge with new keep rules)
     if (!id) {
       this._disposeModel();
       return Promise.resolve(null);
@@ -543,13 +543,16 @@ export class FloorplanView {
       return Promise.resolve(null);
     }
     if (this._modelId === id) return this._modelLoading; // already on its way
-    this._disposeModel();
+    this._disposeModel(true); // another model follows: keep the model look (no shader rebuild there and back)
     this._modelId = id;
     const label = opts.name || opts.url || 'model';
     this._modelLoading = new Promise((resolve) => {
       const fail = (err) => {
         console.warn('floorplan3d: could not load model', label, err);
-        if (this._modelId === id) this._modelId = null;
+        if (this._modelId === id) {
+          this._modelId = null;
+          if (!this.model && this._modelLook) this._applyLook(); // nothing follows: the no-model look
+        }
         resolve(`Could not load model ${label}`);
       };
       const onLoad = (gltf) => {
@@ -723,7 +726,11 @@ export class FloorplanView {
       if (g) triangles += Math.floor((g.index ? g.index.count : g.attributes.position ? g.attributes.position.count : 0) / 3);
       if (o.frustumCulled) { o.frustumCulled = false; culled.push(o); }
     });
-    const hidden = this.scene.children.filter((c) => c !== this.modelGroup && !c.isLight && c.visible);
+    // the object light pool stays (its group, not the rest of the objects): without its lights the model's
+    // shaders would compile once more just for this render
+    const pool = this.objectLayer && this.objectLayer.lights;
+    const hidden = this.scene.children.filter((c) => c !== this.modelGroup && !c.isLight && c.visible && !(pool && c === pool.parent));
+    if (pool && pool.parent && pool.parent.visible) hidden.push(...pool.parent.children.filter((c) => c !== pool && c.visible));
     for (const c of hidden) c.visible = false;
     let calls;
     try {
@@ -923,26 +930,31 @@ export class FloorplanView {
     this.dirty = true;
   }
 
-  _disposeModel() {
+  // keepLook: a model is about to replace this one, so the renderer keeps the model look (tone mapping,
+  // shadows) meanwhile; switching to the no-model look and back would rebuild every shader twice.
+  _disposeModel(keepLook = false) {
     this._modelId = null;
     this._modelVisibility = null;
-    if (!this.model) return;
+    if (!this.model) {
+      if (!keepLook && this._modelLook) this._applyLook();
+      return;
+    }
     this.highlightModelNode(null);
-    if (this.objectLayer) this.objectLayer.setModel(null); // restores cloned materials before they are disposed
+    if (this.objectLayer) this.objectLayer.setModel(null, { keepLights: keepLook }); // restores cloned materials before they are disposed
     this._clearGroup(this.modelGroup);
     this.model = null;
     this.mergeStats = null;
     this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); this._mowerGround.clear();
     this._cancelOcclusion();
     this._clearOcclusion();
-    this._applyLook();
+    if (!keepLook) this._applyLook();
     this.dirty = true;
   }
 
   setDaylight(day) {
     this.daylight = !!day;
     this.sky = { night: day ? 0 : 1, sunDir: null };
-    this._applyLook();
+    if (this.model || !this._modelId) this._applyLook(); // a model on its way applies its look
   }
 
   // night 0..1 and the unit vector toward the sun (world) or null (fixed bearing from fp.north).
@@ -952,7 +964,7 @@ export class FloorplanView {
     const old = this.sky;
     this.sky = { night, sunDir, sun };
     this.daylight = night < 0.5;
-    if (!this.model) { this._applyLook(); return; }
+    if (!this.model) { if (!this._modelId) this._applyLook(); return; } // a model on its way applies its look
     this._applyLights();
     const a = old.sunDir, b = sunDir;
     let moved = (!!a !== !!b);
@@ -1092,6 +1104,7 @@ export class FloorplanView {
   // Renderer, light and shadow settings for model / no model and day / night.
   _applyLook() {
     const r = this.renderer, day = this.model ? this.daylight : true, sun = this.sun, hemi = this.hemi;
+    this._modelLook = !!this.model;
     if (this.model) {
       r.toneMapping = THREE.ACESFilmicToneMapping;
       r.toneMappingExposure = 1.25;
@@ -1411,26 +1424,48 @@ export class FloorplanView {
     return !plane.userData.hidden && this._mowerShows(plane.userData.floorId);
   }
 
-  // Mower trail: plan points [[x, y], ...] on one floor, or null.
+  // Mower trail: plan points [[x, y], ...] on one floor, or null. One Line and one material for the
+  // view's life (a new material per update would compile a new shader each time): the points go into a
+  // reused position buffer (grown when full), drawRange says how many; null / < 2 points draws none.
   setTrail(points, floorId) {
-    if (this.trail) {
-      this.mowerGroup.remove(this.trail);
-      this.trail.geometry.dispose();
-      this.trail.material.dispose();
-      this.trail = null;
-    }
-    if (points && points.length > 1) {
-      // each point on the ground under it (the lawn, whatever the HA floor's elevation), 4 cm up
-      const geo = new THREE.BufferGeometry().setFromPoints(points.map(([x, y]) => new THREE.Vector3(x, this.mowerHeight(x, y, floorId) + 0.04, -y)));
-      const color = this.theme.primary || 0x03a9f4;
-      this.trail = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8, depthTest: false }));
+    const n = points && points.length > 1 ? points.length : 0;
+    if (!n && (!this.trail || !this.trail.geometry.drawRange.count)) return;
+    if (!this.trail) {
+      this.trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthTest: false }));
       this.trail.renderOrder = 3;
-      this.trail.userData.floorId = floorId;
+      this.trail.frustumCulled = false; // the buffer is larger than the drawn part: no stale bounds
       this.trail.userData.helper = true;
-      this.trail.visible = this._mowerShows(floorId);
       this.mowerGroup.add(this.trail);
     }
+    const line = this.trail;
+    let attr = line.geometry.getAttribute('position');
+    if (n && (!attr || attr.count < n)) {
+      const cap = Math.max(64, n, attr ? attr.count * 2 : 0);
+      const geo = new THREE.BufferGeometry();
+      attr = new THREE.BufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', attr);
+      line.geometry.dispose();
+      line.geometry = geo;
+    }
+    // each point on the ground under it (the lawn, whatever the HA floor's elevation), 4 cm up
+    for (let i = 0; i < n; i++) {
+      const [x, y] = points[i];
+      attr.setXYZ(i, x, this.mowerHeight(x, y, floorId) + 0.04, -y);
+    }
+    if (n) attr.needsUpdate = true;
+    line.geometry.setDrawRange(0, n);
+    line.material.color.set(this.theme.primary || 0x03a9f4); // a uniform: no recompile
+    line.userData.floorId = floorId;
+    line.visible = !!n && this._mowerShows(floorId);
     this.dirty = true;
+  }
+
+  _disposeTrail() {
+    if (!this.trail) return;
+    this.mowerGroup.remove(this.trail);
+    this.trail.geometry.dispose();
+    this.trail.material.dispose();
+    this.trail = null;
   }
 
   // Warning over the mower: { kind: 'error' | 'stuck', x, y, floorId } or null. A world-size sprite 0.6 m
@@ -1961,7 +1996,7 @@ export class FloorplanView {
       st.line.visible = shown && st.line.userData.height > 0.01;
     }
     for (const o of this.overlayGroup.children) if (!o.isCSS2DObject) o.visible = this._shows(o.userData.floorId);
-    if (this.trail) this.trail.visible = this._mowerShows(this.trail.userData.floorId);
+    if (this.trail) this.trail.visible = this.trail.geometry.drawRange.count > 0 && this._mowerShows(this.trail.userData.floorId);
     if (this.warning) this._warningVisible();
     if (this.model) {
       const assign = this.modelLevels || {};
@@ -2474,7 +2509,7 @@ export class FloorplanView {
     if (this.objectLayer) this.objectLayer.dispose();
     this.onObjectsInvalidate = null;
     this.setMapOverlay(null);
-    this.setTrail(null);
+    this._disposeTrail();
     this.setMowerWarning(null);
     for (const s of Object.values(this.skySprites)) {
       if (!s) continue;

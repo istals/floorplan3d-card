@@ -53,7 +53,10 @@ export class ObjectLayer {
     view.objectLayer = this; // the view resets us when it drops the model
   }
 
-  setModel(model) {
+  // keepLights: another model replaces this one (a reload), so the pool stays in the scene meanwhile
+  // (dark): dropping it and adding it back would compile every lit shader twice.
+  setModel(model, { keepLights = false } = {}) {
+    this._keepLights = !model && keepLights;
     if (model && this.model === model) return;
     for (const p of this.parts.values()) p.type.dispose(p.part);
     this.parts.clear();
@@ -74,7 +77,7 @@ export class ObjectLayer {
         }
       }
     }
-    this.view.objectsGroup.visible = !!model;
+    this.view.objectsGroup.visible = !!model || this._keepLights;
     this._showLights();
     this._applyPose();
     this.view.markDirty();
@@ -82,7 +85,7 @@ export class ObjectLayer {
 
   // The pool joins the scene only with a model and lights on (a change recompiles the shaders once).
   _showLights() {
-    const on = !!this.model && this._lightsOn;
+    const on = (!!this.model || !!this._keepLights) && this._lightsOn;
     if (this.lights.visible === on) return false;
     this.lights.visible = on;
     return true;

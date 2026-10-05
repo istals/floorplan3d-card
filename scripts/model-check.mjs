@@ -422,6 +422,23 @@ try {
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model && !!${card}._view.mergeStats`, { timeout: 10000 });
   const stats = () => page.evaluate(`JSON.stringify(${card}._view.mergeStats)`).then(JSON.parse);
+  // shader programs created since the last read: per render, the ids new in renderer.info.programs
+  await page.evaluate(`(() => { const r = ${card}._view.renderer, seen = new Set(r.info.programs.map((p) => p.id)), f = r.render.bind(r);
+    window.__newPrograms = [];
+    r.render = (sc, cam) => { f(sc, cam); for (const p of r.info.programs) if (!seen.has(p.id)) { seen.add(p.id); window.__newPrograms.push(p.id); } }; })()`);
+  // created: new programs; transient: created but already released (compiled for a passing state);
+  // otherNew: new programs used by materials outside the model
+  const programs = () => page.evaluate(`(() => { const v = ${card}._view, r = v.renderer, other = new Set(), live = new Set(r.info.programs.map((p) => p.id));
+    v.scene.traverse((o) => { if (!o.material) return; let inModel = false; for (let n = o; n; n = n.parent) if (n === v.modelGroup) inModel = true;
+      if (!inModel) for (const m of [].concat(o.material)) { const p = r.properties.get(m).currentProgram; if (p) other.add(p.id); } });
+    const created = window.__newPrograms.splice(0);
+    return { live: live.size, created: created.length, transient: created.filter((id) => !live.has(id)).length, otherNew: created.filter((id) => other.has(id)).length }; })()`);
+  await sleep(1000);
+  await programs();
+  await sleep(10000); // the demo mower moves every 500 ms: trail, marker, map
+  const moving = await programs();
+  check('mower moving for 10 s: no new shader programs (the trail keeps its material)', moving.created === 0
+    && await page.evaluate(`!!${card}._view.trail && ${card}._view.trail.geometry.drawRange.count > 1`), JSON.stringify(moving));
   const on = await stats();
   check('merge: fewer meshes and draw calls, same triangles', on.enabled && on.after.meshes < on.before.meshes && on.after.calls < on.before.calls
     && on.after.triangles === on.before.triangles && on.merged > 0, JSON.stringify(on));
@@ -450,9 +467,13 @@ try {
   // the owner and material of a merged mesh: find one of its source meshes with merge off
   const probe = await page.evaluate(`(() => { let o = null; ${card}._view.model.root.traverse((x) => { if (!o && /^fp_merged_/.test(x.name)) o = x; });
     return { owner: o.parent.name, mat: o.material.name }; })()`);
+  // settle first: leaving edit mode rebuilds its outlines over the next frames (their shaders come and go)
+  for (let i = 0, quiet = 0; i < 20 && quiet < 2; i++) { await sleep(500); quiet = (await programs()).created ? 0 : quiet + 1; }
   await page.evaluate(`${card}.setConfig({ ...${card}._config, merge: false })`);
   await page.waitForFunction(`!!${card}._view.mergeStats && !${card}._view.mergeStats.enabled`, { timeout: 10000 });
   await sleep(300);
+  const reload = await programs();
+  check('merge reload: only the model\'s own shaders compile, once (no look / light-pool round trip)', reload.transient === 0 && reload.otherNew === 0, JSON.stringify(reload));
   const off = await stats();
   check('merge: false reloads with every mesh and the old draw-call count', off.after.meshes === on.before.meshes && off.after.calls === on.before.calls && off.merged === 0, JSON.stringify(off));
   const targets = await page.evaluate(`(() => { const c = ${card}; const t = [];
@@ -2063,8 +2084,8 @@ try {
   // the demo model's mower object stands on the lawn, its trail lies on it
   const mowerY = `(() => { const o = ${card}._objects.objectAt('mower'); return o && o.obj.node ? o.obj.node.getWorldPosition(o.obj.node.position.clone()).y : null; })()`;
   check('mower model on the lawn with the floor at 7 m', await until(`(() => { const y = ${mowerY}; return y !== null && y < 1; })()`, 'the mower model on the lawn'), String(await ev(mowerY)));
-  check('trail drawn on the lawn', await until(`(() => { const t = ${card}._view.trail; if (!t) return false; const a = t.geometry.attributes.position;
-    for (let i = 0; i < a.count; i++) if (Math.abs(a.getY(i) + t.position.y - 0.04) > 0.03) return false; return a.count > 1; })()`, 'the trail', 15000));
+  check('trail drawn on the lawn', await until(`(() => { const t = ${card}._view.trail; if (!t) return false; const a = t.geometry.attributes.position, n = a ? Math.min(a.count, t.geometry.drawRange.count) : 0;
+    for (let i = 0; i < n; i++) if (Math.abs(a.getY(i) + t.position.y - 0.04) > 0.03) return false; return n > 1; })()`, 'the trail', 15000));
   // without the model's mower object: the live marker, on the lawn too
   await ev(`(() => { const c = ${card}; c._commit({ ...c._layout, objects: { ...(c._layout.objects || {}), mower: { hidden: true } } }); })()`);
   const markerY = `(() => { const c = ${card}, o = c._mowerMarkerId && c._view.markerObjects.get(c._mowerMarkerId); return o ? o.obj.position.y : null; })()`;
