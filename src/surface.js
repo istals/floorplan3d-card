@@ -137,3 +137,29 @@ export function surfaceKey(kind, floorId, p, roomId = '') {
   const mm = (v) => Math.round(v * 1000);
   return `${kind}|${floorId}|${roomId}|${mm(p.x)},${mm(p.y)},${mm(p.z)}`;
 }
+
+// Ground under the mower (marker, trail, model, map): one ray per GROUND_CELL square, cast at the cell
+// centre and remembered (misses too) until the model placement key changes or clear().
+export const GROUND_CELL = 0.5;
+export class GroundCache {
+  constructor(cell = GROUND_CELL) {
+    this.cell = cell;
+    this.key = null;
+    this.map = new Map();
+  }
+
+  clear() {
+    this.map.clear();
+  }
+
+  // ray(cx, cy) -> any value (null = no ground); cached per cell
+  get(x, y, key, ray) {
+    if (key !== this.key) { this.key = key; this.map.clear(); }
+    const i = Math.floor(x / this.cell), j = Math.floor(y / this.cell);
+    const k = i + ',' + j;
+    if (this.map.has(k)) return this.map.get(k);
+    const v = ray((i + 0.5) * this.cell, (j + 0.5) * this.cell) ?? null;
+    this.map.set(k, v);
+    return v;
+  }
+}

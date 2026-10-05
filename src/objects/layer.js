@@ -104,9 +104,9 @@ export class ObjectLayer {
   // { x, y, floorId, heading } (plan metres, radians ccw from east) or null: moves the mower node.
   // Unchanged poses do nothing (no matrix work, no frame).
   setMowerPose(pose) {
-    const next = pose ? { x: pose.x, y: pose.y, floorId: pose.floorId, heading: pose.heading } : null;
+    const next = pose ? { x: pose.x, y: pose.y, floorId: pose.floorId, heading: pose.heading, ground: Number.isFinite(pose.ground) ? pose.ground : null } : null;
     const a = this._pose, b = next;
-    if (a === b || (a && b && a.x === b.x && a.y === b.y && a.floorId === b.floorId && Object.is(a.heading, b.heading))) return;
+    if (a === b || (a && b && a.x === b.x && a.y === b.y && a.floorId === b.floorId && Object.is(a.heading, b.heading) && a.ground === b.ground)) return;
     this._pose = next;
     this._applyPose();
     this.view.markDirty();

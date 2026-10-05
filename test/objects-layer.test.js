@@ -272,6 +272,20 @@ describe('ObjectLayer', () => {
     expect(node.position.distanceTo(p0)).toBeCloseTo(0);
   });
 
+  it('mower stands on the ground when it is known (pose.ground), keeping its own height over its level', () => {
+    const m = model([{ id: 'mw', x: 1, type: 'mower' }]);
+    const node = m.manifest.objects[0].node;
+    layer.setModel(m);
+    layer.setBindings(bind([['mw', 'lawn_mower.m']]), {});
+    layer.update({ 'lawn_mower.m': st('mowing') }, ctx);
+    const localY = node.getWorldPosition(new THREE.Vector3()).y - (m.manifest.levels[0].elevation || 0);
+    layer.setMowerPose({ x: 2, y: 4, floorId: 'up', heading: 0, ground: 0.25 }); // floor 'up' is at 3 m
+    expect(node.getWorldPosition(new THREE.Vector3()).y).toBeCloseTo(0.25 + localY);
+    layer.setMowerPose({ x: 2, y: 4, floorId: 'up', heading: 0, ground: null });
+    expect(node.getWorldPosition(new THREE.Vector3()).y).toBeCloseTo(3 + localY);
+    layer.setModel(null);
+  });
+
   it('mower height is relative to its own floor: upper-floor node stays put on the same floor', () => {
     const m = model([{ id: 'mw', x: 1, type: 'mower' }]);
     m.manifest.levels[0].elevation = 3;

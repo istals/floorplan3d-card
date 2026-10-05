@@ -10,7 +10,8 @@ import { centroid } from './placement.js';
 import { wallSegments } from './layout.js';
 import { levelVisible, measuredElevations } from './bindings.js';
 import { buildManifest, threeAdapter } from './manifest.js';
-import { sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoom, topZoom, nodeIndex, parseSelector, matches, viewTree, escapeName } from './views.js';
+import { outdoorShown, sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoom, topZoom, nodeIndex, parseSelector, matches, viewTree, escapeName } from './views.js';
+import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
 import {
@@ -306,6 +307,9 @@ export class FloorplanView {
     this._occTimer = null;
     this._occBoxes = null; // [{ mesh, box }] world boxes of occluding model meshes (cached per placement)
     this._surfMeshes = null; // [{ mesh, box }] model meshes devices stick to (cached per placement)
+    this._ground = new GroundCache(); // ground under the mower, per 0.5 m cell (cleared with _surfMeshes)
+    this._groundLevel = null; // level id of the lawn under the map overlay
+    this.mowerMarkerId = null; // the live mower's marker (shown with the outdoors)
     this._surfRay = new THREE.Raycaster();
     this._preview = null; // drag preview (ring, tinted face, label), created on first use
     this._bounds = null; // { house: Box3, centre: Vector3, radius } for the depth range
@@ -517,7 +521,7 @@ export class FloorplanView {
           }
         });
         this.model.opacity = opacity;
-        this._occBoxes = null; this._surfMeshes = null; // placement changed
+        this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); // placement changed
         this._bounds = this._sceneBounds();
       }
       if (this.model) this._fitShadow();
@@ -656,7 +660,7 @@ export class FloorplanView {
 
   // Caches that hold model meshes, after a merge on a placed model.
   _afterMerge() {
-    this._occBoxes = null; this._surfMeshes = null;
+    this._occBoxes = null; this._surfMeshes = null; this._ground.clear();
     this._applyFloorVisibility(); // floor-only mode covers the merged meshes too
     this._bounds = this._sceneBounds();
     this._fitShadow();
@@ -758,7 +762,7 @@ export class FloorplanView {
       const n = best.face
         ? best.face.normal.clone().applyNormalMatrix(nm.getNormalMatrix(best.object.matrixWorld)).normalize()
         : dir.clone().negate();
-      out.push({ point: best.point.toArray(), normal: n.toArray(), distance: best.distance, dir: dir.toArray() });
+      out.push({ point: best.point.toArray(), normal: n.toArray(), distance: best.distance, dir: dir.toArray(), object: best.object });
     }
     return out;
   }
@@ -888,7 +892,7 @@ export class FloorplanView {
     this._clearGroup(this.modelGroup);
     this.model = null;
     this.mergeStats = null;
-    this._occBoxes = null; this._surfMeshes = null;
+    this._occBoxes = null; this._surfMeshes = null; this._ground.clear();
     this._cancelOcclusion();
     this._clearOcclusion();
     this._applyLook();
@@ -1133,10 +1137,25 @@ export class FloorplanView {
     return !!this.model && this.model.tagged;
   }
 
-  // World height of the model surface seen from above at plan (x, y): one ray down from over the
-  // model against the surface meshes (helpers, objects and glass ignored), or null without a hit.
+  // World height of the model surface seen from above at plan (x, y) (cached per 0.5 m cell, one ray down
+  // from over the model against the surface meshes: helpers, objects and glass ignored), or null.
   groundAt(x, y) {
+    const g = this._groundHit(x, y);
+    return g ? g.y : null;
+  }
+
+  // The ground height, else the floor's elevation (no model, or nothing under the point).
+  groundHeight(x, y, floorId) {
+    const g = this.groundAt(x, y);
+    return g ?? this.floorElevation(floorId);
+  }
+
+  _groundHit(x, y) {
     if (!this.model) return null;
+    return this._ground.get(x, y, this.model.id, (cx, cy) => this._groundRay(cx, cy));
+  }
+
+  _groundRay(x, y) {
     const meshes = this._surfaceMeshes();
     if (!meshes.length) return null;
     let top = -Infinity, bottom = Infinity;
@@ -1146,7 +1165,22 @@ export class FloorplanView {
     }
     const from = top + 1;
     const hit = this.surfaceRays([x, from, -y], [[0, -1, 0]], from - bottom + 1)[0];
-    return hit ? hit.point[1] : null;
+    if (!hit) return null;
+    let level = null;
+    const levels = this.model.manifest.levels || [];
+    for (let o = hit.object; o && !level; o = o.parent) level = levels.find((l) => l.node === o) || null;
+    return { y: hit.point[1], level: level ? level.id : null };
+  }
+
+  // Map, marker and trail of the mower: with a model, shown wherever the outdoors (an exterior level, or
+  // the level holding the lawn) shows, whatever the mower's HA floor; else the floor rule.
+  _mowerShows(floorId) {
+    if (this.model) {
+      const mv = this._modelVisibility;
+      const o = outdoorShown(this.model.manifest.levels, mv && mv.index, mv && mv.flags, this._groundLevel);
+      if (o !== null) return o;
+    }
+    return this._shows(floorId);
   }
 
   // Mower map image laid on the lawn. o: {url, x, y, rotation, width, opacity, floorId, heightOffset,
@@ -1178,7 +1212,9 @@ export class FloorplanView {
     }
     const plane = this.mapPlane;
     // per-push calls with the same overlay draw nothing
-    const ground = this.groundAt(o.x || 0, o.y || 0);
+    const hit = this._groundHit(o.x || 0, o.y || 0); // cached: no ray per update
+    const ground = hit ? hit.y : null;
+    this._groundLevel = hit ? hit.level : null;
     const off = Number(o.heightOffset) || 0;
     const sig = [o.url, o.x, o.y, o.rotation, o.width, o.opacity, o.floorId, this.floorElevation(o.floorId), this._shows(o.floorId), ground, off, !!o.hidden].join('|');
     if (sig === plane.userData.sig) return;
@@ -1214,7 +1250,7 @@ export class FloorplanView {
   }
 
   _mapShown(plane) {
-    return !plane.userData.hidden && this._shows(plane.userData.floorId);
+    return !plane.userData.hidden && this._mowerShows(plane.userData.floorId);
   }
 
   // Mower trail: plan points [[x, y], ...] on one floor, or null.
@@ -1226,14 +1262,14 @@ export class FloorplanView {
       this.trail = null;
     }
     if (points && points.length > 1) {
-      const geo = new THREE.BufferGeometry().setFromPoints(points.map(([x, y]) => new THREE.Vector3(x, 0, -y)));
+      // each point on the ground under it (the lawn, whatever the HA floor's elevation), 4 cm up
+      const geo = new THREE.BufferGeometry().setFromPoints(points.map(([x, y]) => new THREE.Vector3(x, this.groundHeight(x, y, floorId) + 0.04, -y)));
       const color = this.theme.primary || 0x03a9f4;
       this.trail = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8, depthTest: false }));
-      this.trail.position.y = this.floorElevation(floorId) + 0.04;
       this.trail.renderOrder = 3;
       this.trail.userData.floorId = floorId;
       this.trail.userData.helper = true;
-      this.trail.visible = this._shows(floorId);
+      this.trail.visible = this._mowerShows(floorId);
       this.mowerGroup.add(this.trail);
     }
     this.dirty = true;
@@ -1698,7 +1734,7 @@ export class FloorplanView {
       st.line.visible = shown && st.line.userData.height > 0.01;
     }
     for (const o of this.overlayGroup.children) if (!o.isCSS2DObject) o.visible = this._shows(o.userData.floorId);
-    if (this.trail) this.trail.visible = this._shows(this.trail.userData.floorId);
+    if (this.trail) this.trail.visible = this._mowerShows(this.trail.userData.floorId);
     if (this.model) {
       const assign = this.modelLevels || {};
       if (!this._modelVisibility) {
@@ -1741,7 +1777,8 @@ export class FloorplanView {
   // css object (marker, label, handle) visibility: marker state, else its floor; section cut
   _markerVisible(c) {
     const st = c.kind === 'marker' && this._markerStates && c.id !== undefined ? this._markerStates.get(c.id) : null;
-    return (st ? !!st.shown : this._shows(c.floorId)) && !(c.kind !== 'handle' && this._cutAway(c.obj.position));
+    const floorRule = c.kind === 'marker' && c.id === this.mowerMarkerId ? this._mowerShows(c.floorId) : this._shows(c.floorId);
+    return (st ? !!st.shown : floorRule) && !(c.kind !== 'handle' && this._cutAway(c.obj.position));
   }
 
   _glowVisible(id, g) {

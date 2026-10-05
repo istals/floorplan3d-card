@@ -829,13 +829,13 @@ class Floorplan3dCard extends HTMLElement {
     this._refreshAttached(); // markers attached to the mower ride along
     const id = this._mowerMarkerId;
     if (p && id) {
-      const pos = { x: p[0], y: p[1], z: MOWER_Z, floorId, auto: false, live: true };
+      const pos = { x: p[0], y: p[1], z: this._mowerZ(p[0], p[1], floorId), floorId, auto: false, live: true };
       const prev = this._positions.get(id);
       this._positions.set(id, pos);
       if (!this._view.markerObjects.has(id)) {
         this._buildMarkers();
         this._refreshStates();
-      } else if (!prev || prev.x !== pos.x || prev.y !== pos.y || prev.floorId !== floorId) {
+      } else if (!prev || prev.x !== pos.x || prev.y !== pos.y || prev.z !== pos.z || prev.floorId !== floorId) {
         this._view.moveMarker(id, pos.x, pos.y, pos.z, floorId); // only when it actually moved
       }
     }
@@ -953,7 +953,14 @@ class Floorplan3dCard extends HTMLElement {
       this._mowerHeading = Math.atan2(p[1] - from[1], p[0] - from[0]);
       this._mowerHeadFrom = [p[0], p[1]];
     }
-    layer.setMowerPose({ x: p[0], y: p[1], floorId, heading: this._mowerHeading });
+    layer.setMowerPose({ x: p[0], y: p[1], floorId, heading: this._mowerHeading, ground: this._view.groundAt(p[0], p[1]) });
+  }
+
+  // Mower marker height above its HA floor: MOWER_Z over the ground under it (the lawn of the model,
+  // cached per 0.5 m cell), so a garden floor at an odd elevation does not lift it off the lawn.
+  _mowerZ(x, y, floorId) {
+    const g = this._view.groundAt(x, y);
+    return g === null ? MOWER_Z : g - this._view.floorElevation(floorId) + MOWER_Z;
   }
 
   _headingStep() {
@@ -1666,6 +1673,7 @@ class Floorplan3dCard extends HTMLElement {
     // the mower's device marker follows the live position instead of being auto placed
     const cfg = this._layout.mower;
     this._mowerMarkerId = null;
+    this._view.mowerMarkerId = null;
     const mowerObject = !!(this._objects && this._objects.mowerBound());
     if (cfg && cfg.entity) {
       const reg = h.entities && h.entities[cfg.entity];
@@ -1683,8 +1691,9 @@ class Floorplan3dCard extends HTMLElement {
       }
       if (mm) {
         this._mowerMarkerId = mm.id;
+        this._view.mowerMarkerId = mm.id;
         const live = this._mowerLive;
-        if (live && live.floorId) this._positions.set(mm.id, { x: live.x, y: live.y, z: MOWER_Z, floorId: live.floorId, auto: false, live: true });
+        if (live && live.floorId) this._positions.set(mm.id, { x: live.x, y: live.y, z: this._mowerZ(live.x, live.y, live.floorId), floorId: live.floorId, auto: false, live: true });
         else this._positions.delete(mm.id);
       }
     }

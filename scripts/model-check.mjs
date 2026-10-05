@@ -1983,72 +1983,99 @@ try {
   await s.close();
 }
 
-// 2i. mower map on the lawn: height from the model (any HA floor elevation), align by points, edit-only
+// 2i. mower on the lawn: map, marker, trail and model at the model's ground (any HA floor elevation),
+// shown with the outdoors, align by points (Cancel restores, Done keeps), edit-only
 s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 700 });
 try {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._view.mapPlane && !!${card}._view.mapPlane.material.map`, { timeout: 15000 });
-  await sleep(300);
-  const planeY = () => page.evaluate(`${card}._view.mapPlane.position.y`);
-  const lawn = await page.evaluate(`${card}._view.groundAt(16.5, 1.5)`);
+  // wait for a state; a timeout is reported (and fails the check that asserts it)
+  const until = (expr, label, timeout = 8000) => page.waitForFunction(expr, { timeout }).then(() => true, () => { console.log(`     (timed out waiting for ${label})`); return false; });
+  const ev = (expr) => page.evaluate(expr);
+  const panelBtn = (t) => ev(`(() => { const b = [...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === ${JSON.stringify(t)}); if (b) b.click(); return !!b; })()`);
+  const commitMower = (patch, ov = null) => ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, ...${JSON.stringify(patch)}${ov ? `, overlay: { ...l.mower.overlay, ...${JSON.stringify(ov)} }` : ''} } }); })()`);
+  const ovSig = `${card}._view.mapPlane && ${card}._view.mapPlane.userData.sig`;
+  check('map overlay loaded', await until(`!!${card}._view.model && !!${card}._view.mapPlane && !!${card}._view.mapPlane.material.map`, 'the map overlay', 15000));
+  const planeY = () => ev(`${card}._view.mapPlane.position.y`);
+  const lawn = await ev(`${card}._view.groundAt(16.5, 1.5)`);
   let y = await planeY();
   check('map overlay lies on the demo lawn', lawn !== null && Math.abs(lawn) < 0.02 && y - lawn >= 0 && y - lawn <= 0.05, `lawn ${lawn}, plane ${y}`);
+
   // the user's case: the garden's HA floor at 7 m
-  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, floors: [...(l.floors || []), { id: 'garden_f', name: 'Garden', elevation: 7, height: 2.7 }],
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, floors: [...(l.floors || []), { id: 'garden_f', name: 'Garden', elevation: 7, height: 2.7 }],
     mower: { ...l.mower, floor_id: 'garden_f' } }); })()`);
-  await page.waitForFunction(`${card}._mowerFloor() === 'garden_f'`, { timeout: 5000 }).catch(() => {});
-  await sleep(300);
+  check('mower floor at 7 m', await until(`${card}._mowerFloor() === 'garden_f' && ${card}._view.mapPlane.userData.floorId === 'garden_f'`, 'the 7 m floor'));
   y = await planeY();
-  const elev = await page.evaluate(`${card}._view.floorElevation('garden_f')`);
+  const elev = await ev(`${card}._view.floorElevation('garden_f')`);
   check('map overlay stays on the lawn with the floor at 7 m', elev === 7 && y - lawn >= 0 && y - lawn <= 0.05, `elevation ${elev}, plane ${y}`);
-  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, overlay: { ...l.mower.overlay, height_offset: 0.3 } } }); })()`);
-  await sleep(200);
-  check('height offset raises the map', Math.abs((await planeY()) - y - 0.3) < 1e-6, String(await planeY()));
+  check('map shown in the ground view (exterior visible), whatever the HA floor', await ev(`${card}._view.mapPlane.visible`));
+  // the demo model's mower object stands on the lawn, its trail lies on it
+  const mowerY = `(() => { const o = ${card}._objects.objectAt('mower'); return o && o.obj.node ? o.obj.node.getWorldPosition(o.obj.node.position.clone()).y : null; })()`;
+  check('mower model on the lawn with the floor at 7 m', await until(`(() => { const y = ${mowerY}; return y !== null && y < 1; })()`, 'the mower model on the lawn'), String(await ev(mowerY)));
+  check('trail drawn on the lawn', await until(`(() => { const t = ${card}._view.trail; if (!t) return false; const a = t.geometry.attributes.position;
+    for (let i = 0; i < a.count; i++) if (Math.abs(a.getY(i) + t.position.y - 0.04) > 0.03) return false; return a.count > 1; })()`, 'the trail', 15000));
+  // without the model's mower object: the live marker, on the lawn too
+  await ev(`(() => { const c = ${card}; c._commit({ ...c._layout, objects: { ...(c._layout.objects || {}), mower: { hidden: true } } }); })()`);
+  const markerY = `(() => { const c = ${card}, o = c._mowerMarkerId && c._view.markerObjects.get(c._mowerMarkerId); return o ? o.obj.position.y : null; })()`;
+  check('mower marker on the lawn with the floor at 7 m', await until(`(() => { const y = ${markerY}; return y !== null && y < 1.5; })()`, 'the mower marker'), String(await ev(markerY)));
+  check('mower marker shown with the exterior', await ev(`(() => { const c = ${card}; const o = c._view.cssObjects.find((x) => x.kind === 'marker' && x.id === c._mowerMarkerId); return !!o && o.obj.visible; })()`));
+  // a view without the exterior hides map, marker and trail
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, views: { ...(l.views || {}), indoor: { added: true, label: 'Indoor', rules: [{ hide: 'all' }, { show: 'level:level0' }] } } }); })()`);
+  await until(`!!${card}._views && ${card}._views.some((v) => v.id === 'indoor')`, 'the indoor view');
+  await ev(`${card}._setView('indoor', { instant: true })`);
+  check('indoor view hides map, marker and trail', await until(`(() => { const c = ${card}, v = c._view; const m = v.cssObjects.find((x) => x.kind === 'marker' && x.id === c._mowerMarkerId);
+    return !v.mapPlane.visible && (!v.trail || !v.trail.visible) && (!m || !m.obj.visible); })()`, 'the indoor view to hide the mower'));
+  await ev(`${card}._setView('ground', { instant: true })`);
+  check('ground view shows them again', await until(`${card}._view.mapPlane.visible`, 'the map in the ground view'));
+  await commitMower({}, { height_offset: 0.3 });
+  check('height offset raises the map', await until(`Math.abs(${card}._view.mapPlane.position.y - ${y} - 0.3) < 1e-6`, 'the offset'), String(await planeY()));
 
   // align by points: start from a wrong overlay, click 2 image spots and where they really are on the lawn
   const truth = { x: 16.5, y: 1.5, rotation: 0, width: 9 };
-  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, overlay: { ...l.mower.overlay, x: 15.2, y: 2.6, rotation: 17, width: 11.5, height_offset: 0 } } }); })()`);
-  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
-  await sleep(300);
-  await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Mower').click()`);
-  await sleep(200);
-  await page.evaluate(`${card}._view.setCamera({ position: [16.5, 16, 4.5], target: [16.5, 0, -1.5] }, { instant: true })`);
+  const wrong = { x: 15.2, y: 2.6, rotation: 17, width: 11.5, height_offset: 0 };
+  await commitMower({}, wrong);
+  await until(`${card}._layout.mower.overlay.x === 15.2 && (${ovSig} || '').includes('|15.2|')`, 'the wrong overlay');
+  await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await until(`${card}._editing && !!${card}.shadowRoot.querySelector('.panel button')`, 'edit mode');
+  await ev(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Mower').click()`);
+  await until(`${card}._edit.tab === 'mower'`, 'the Mower tab');
+  await ev(`${card}._view.setCamera({ position: [16.5, 16, 4.5], target: [16.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
-  const panelBtn = (t) => page.evaluate(`(() => { const b = [...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === ${JSON.stringify(t)}); if (b) b.click(); return !!b; })()`);
-  check('Align by points armed', (await panelBtn('Align by points')) && !!(await page.evaluate(`${card}._edit.aligning`)));
   const W = 450, H = 850;
-  for (const [px, py] of [[75, 125], [375, 725]]) {
-    const ov = await page.evaluate(`${card}._layout.mower.overlay`);
-    const img = pixelToPlan(px, py, W, H, ov);
-    const ph = await page.evaluate(`${card}._view.mapPlane.position.y`);
-    const a = await page.evaluate(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${img.x}, ${ph}, ${-img.y})); })()`);
-    await page.mouse.click(a[0], a[1]);
-    await sleep(150);
-    const real = pixelToPlan(px, py, W, H, truth);
-    const b = await page.evaluate(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${real.x}, 0, ${-real.y})); })()`);
-    await page.mouse.click(b[0], b[1]);
-    await sleep(250);
-  }
-  const fit = await page.evaluate(`${card}._layout.mower.overlay`);
+  const alignTwo = async () => {
+    for (const [px, py] of [[75, 125], [375, 725]]) {
+      const n = await ev(`${card}._edit.aligning.pairs.length`);
+      const ov = await ev(`${card}._layout.mower.overlay`);
+      const img = pixelToPlan(px, py, W, H, ov);
+      const a = await ev(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${img.x}, v.mapPlane.position.y, ${-img.y})); })()`);
+      await page.mouse.click(a[0], a[1]);
+      await until(`!!${card}._edit.aligning && !!${card}._edit.aligning.pending`, 'the image point');
+      const real = pixelToPlan(px, py, W, H, truth);
+      const b = await ev(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${real.x}, 0, ${-real.y})); })()`);
+      await page.mouse.click(b[0], b[1]);
+      await until(`!!${card}._edit.aligning && ${card}._edit.aligning.pairs.length === ${n + 1}`, 'the model point');
+    }
+  };
+  check('Align by points armed', (await panelBtn('Align by points')) && !!(await ev(`${card}._edit.aligning`)));
+  await alignTwo();
+  const fit0 = await ev(`${card}._layout.mower.overlay`);
+  check('aligning moves the overlay', Math.abs(fit0.x - truth.x) <= 0.05, JSON.stringify(fit0));
+  check('Cancel restores the starting overlay', (await panelBtn('Cancel')) && await until(`(() => { const o = ${card}._layout.mower.overlay; return !${card}._edit.aligning && o.x === 15.2 && o.y === 2.6 && o.rotation === 17 && o.width === 11.5; })()`, 'the restored overlay'),
+    JSON.stringify(await ev(`${card}._layout.mower.overlay`)));
+  check('Align by points again', (await panelBtn('Align by points')) && !!(await ev(`${card}._edit.aligning`)));
+  await alignTwo();
+  const fit = await ev(`${card}._layout.mower.overlay`);
   check('align by 2 points reproduces the overlay', Math.abs(fit.x - truth.x) <= 0.05 && Math.abs(fit.y - truth.y) <= 0.05 && Math.abs(fit.rotation - truth.rotation) <= 0.5
     && Math.abs(fit.width - truth.width) <= 0.1, JSON.stringify(fit));
-  await panelBtn('Done');
-  await sleep(150);
-  check('aligning ends', !(await page.evaluate(`${card}._edit.aligning`)));
+  check('Done keeps the fit', (await panelBtn('Done')) && await until(`!${card}._edit.aligning`, 'Done') && (await ev(`${card}._layout.mower.overlay.x`)) === fit.x);
 
   // edit-only: hidden in view mode (still loaded for detection), shown again in edit mode
-  await page.evaluate(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=ov-edit-only]'); el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await sleep(150);
-  check('edit-only stored, map shown while editing', (await page.evaluate(`${card}._layout.mower.overlay.edit_only`)) === true && (await page.evaluate(`${card}._view.mapPlane.visible`)));
-  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
-  await sleep(300);
-  check('edit-only: map hidden in view mode, image still loaded', await page.evaluate(`(() => { const p = ${card}._view.mapPlane; return !!p && !p.visible && !!p.material.map && !!p.userData.loaded; })()`));
-  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
-  await sleep(300);
-  await page.evaluate(`${card}._setFloor(${card}._mowerFloor())`); // edit mode opens on a floor; the map is on the mower's
-  await sleep(200);
-  check('edit-only: map back in edit mode', await page.evaluate(`${card}._view.mapPlane.visible`));
-  await page.evaluate(`${card}._view.setCamera({ position: [16.5, 9, 8], target: [16.5, 0, -1.5] }, { instant: true })`);
+  await ev(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=ov-edit-only]'); el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  check('edit-only stored, map shown while editing', await until(`${card}._layout.mower.overlay.edit_only === true && ${card}._view.mapPlane.visible`, 'edit-only while editing'));
+  await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  check('edit-only: map hidden in view mode, image still loaded', await until(`(() => { const p = ${card}._view.mapPlane; return !${card}._editing && !!p && !p.visible && !!p.material.map && !!p.userData.loaded; })()`, 'the hidden map'));
+  await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  check('edit-only: map back in edit mode', await until(`${card}._editing && ${card}._view.mapPlane.visible`, 'the map in edit mode'));
+  await ev(`${card}._view.setCamera({ position: [16.5, 9, 8], target: [16.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-aligned.png') });
   allErrors.push(...s.errors);

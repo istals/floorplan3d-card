@@ -486,7 +486,7 @@ export class EditMode {
       e.preventDefault();
     } else if (e.key === 'Escape') {
       if (this.colorPick) this.colorPick = false;
-      else if (this.aligning) this.aligning = null;
+      else if (this.aligning) this._cancelAlign();
       else if (this.doorMode) this.doorMode = false;
       else if (this.selectedRoom) this.selectedRoom = null;
       else if (this.selectedMarker) this.selectMarker(null);
@@ -569,6 +569,13 @@ export class EditMode {
     if (r && r.missing) return 'Mower icon not found' + (live && live.floorId ? ` (last seen at ${fmt(live.x)}, ${fmt(live.y)})` : '') + '.';
     if (r && live && live.floorId) return `Found at ${fmt(live.x)}, ${fmt(live.y)} (${r.count} px)`;
     return 'Looking for the mower icon…';
+  }
+
+  // Stop aligning and put the overlay back where it was when "Align by points" started.
+  _cancelAlign() {
+    const a = this.aligning;
+    this.aligning = null;
+    if (a && a.start && a.pairs.length >= 2 && this.mower().overlay) this.setOverlay({ ...a.start }, false);
   }
 
   // "Align by points": odd clicks pick a spot on the map image (pixel through the current overlay),
@@ -1319,7 +1326,7 @@ export class EditMode {
         const n = a.pairs.length + 1;
         out += `<section class="box align-box"><p>${a.pending ? `Point ${n}: now click the same spot on the model.` : `Point ${n}: click a spot on the map image.`}
           ${a.pairs.length >= 2 ? ` Aligned to ${a.pairs.length} points.` : ' Two points align it, more refine it.'} Esc cancels.</p>
-          <div class="row"><button data-act="ov-align-done" class="primary">Done</button></div></section>`;
+          <div class="row"><button data-act="ov-align-done" class="primary">Done</button><button data-act="ov-align-cancel">Cancel</button></div></section>`;
       }
       out += `<div class="row"><button data-act="ov-align" ${a ? 'disabled' : ''}>Align by points</button>
         <button data-act="ov-move" class="${this.overlayMove ? 'primary' : ''}">${this.overlayMove ? 'Drag the map on the plan…' : 'Move with mouse'}</button>
@@ -2136,14 +2143,18 @@ export class EditMode {
       case 'trail-clear': this.card.clearTrail(); break;
       case 'ov-move': this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
       case 'ov-remove': this.overlayMove = false; this.aligning = null; this.setMower({ overlay: null }); return;
-      case 'ov-align':
-        this.aligning = { pairs: [], pending: null };
+      case 'ov-align': {
+        const o = this.mower().overlay || {};
+        // the starting alignment: Cancel / Esc put it back, Done keeps the fit
+        this.aligning = { pairs: [], pending: null, start: { x: o.x ?? 0, y: o.y ?? 0, rotation: o.rotation ?? 0, width: o.width ?? 20 } };
         this.overlayMove = false;
         this.calibrating = null;
         this.colorPick = false;
         if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
         break;
+      }
       case 'ov-align-done': this.aligning = null; break;
+      case 'ov-align-cancel': this._cancelAlign(); break;
       case 'model-fit': this.view.fit({ model: true }); return;
       case 'model-delete':
         if (!this.confirmModelDelete) { this.confirmModelDelete = true; break; }

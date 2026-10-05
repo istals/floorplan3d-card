@@ -232,7 +232,8 @@ function disposeStatus(part) {
 const FRONT_YAW = { '+x': 0, '-x': Math.PI, '+z': Math.PI / 2, '-z': -Math.PI / 2 };
 const frontOf = (obj) => (obj.hints && Object.prototype.hasOwnProperty.call(FRONT_YAW, obj.hints.front) ? obj.hints.front : '+x');
 
-// Mower node: world position from the plan point (x, floorElevation + own y offset, -y), turned to its heading.
+// Mower node: world position from the plan point (x, base + own y offset, -y), turned to its heading. base: the
+// ground under it (pose.ground, world y of the lawn) when known, else the HA floor's elevation.
 // The node's own transform is remembered and restored on dispose / pose null.
 function placeMower(part, pose) {
   const node = part.obj.node;
@@ -246,8 +247,8 @@ function placeMower(part, pose) {
   if (!pose) { restoreMower(part); return; }
   const parent = node.parent;
   parent.updateWorldMatrix(true, false);
-  const elev = part.view ? part.view.floorElevation(pose.floorId) : 0;
-  const world = new THREE.Vector3(pose.x, elev + part.origin.localY, -pose.y);
+  const base = Number.isFinite(pose.ground) ? pose.ground : part.view ? part.view.floorElevation(pose.floorId) : 0;
+  const world = new THREE.Vector3(pose.x, base + part.origin.localY, -pose.y);
   node.position.copy(parent.worldToLocal(world));
   if (Number.isFinite(pose.heading)) {
     // heading is an absolute plan angle: the node's own forward (+x of the model) turns to it, whatever the model alignment

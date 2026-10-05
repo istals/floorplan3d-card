@@ -616,6 +616,17 @@ export function exteriorShown(index, effective, levels) {
   return index.nodes.some((n, i) => effective[i] && ext.has(n.levelId));
 }
 
+// Whether the mower's surroundings show (its map, marker and trail): any exterior-role level, or the
+// level holding the lawn under the map, with a shown node (per-node flags when a view applies them, else
+// the level nodes). null without such levels: the HA floor rule applies.
+export function outdoorShown(levels, index = null, flags = null, groundLevel = null) {
+  const ids = new Set((levels || []).filter((l) => l.role === 'exterior').map((l) => l.id));
+  if (groundLevel) ids.add(groundLevel);
+  if (!ids.size) return null;
+  if (index && flags) return index.nodes.some((n, i) => !!flags[i] && ids.has(n.levelId));
+  return (levels || []).some((l) => ids.has(l.id) && !!l.node && l.node.visible !== false);
+}
+
 // ---------- model cameras ----------
 // Model world point [x, height, -north] -> card world under the alignment (same as transformPoint on the plan).
 export function alignModelPoint([x, y, z], { position = [0, 0, 0], rotation = 0, scale = 1 } = {}) {
