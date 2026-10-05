@@ -117,7 +117,16 @@ its height above the floor; **Return to auto placement** removes the pin; **Hide
 from the plan. With a model the dragged marker sticks to the surface under the pointer (5 cm off
 it, on the floor of that level); dropped on a model object (lamp, mower, …) it attaches and
 follows that object's position (not its rotation, e.g. the mower's heading). **Detach** keeps it
-where it is as a normal pin. Hold **Alt** while dragging for a free drag at the current height. Devices whose area has no room yet, and hidden devices, are listed here.
+where it is as a normal pin. Hold **Alt** while dragging for a free drag at the current height. While
+dragging over the model a ring marks the target spot and the surface is tinted; over a model
+object a label reads "Attach: <object>". Devices whose area has no room yet, and hidden devices, are listed here.
+
+With a model, auto-placed (not pinned) devices sit on the model's real surfaces: wall, corner and
+door devices on the nearest wall of their room (within 2.5 m), ceiling devices (lights, fans,
+smoke) 5 cm below the ceiling, floor devices (vacuum, mower) on the floor. Where no surface is
+found the computed spot stays. **Stick all to surfaces** (Devices tab) moves pinned markers that
+float more than 15 cm from any surface onto the nearest suitable one; it shows how many will
+move, with Apply / Cancel.
 
 **Objects.** (Only with a model that has objects.) The model's objects grouped by level and room,
 each with its entity: *auto* means bound from the model's `suggest.entity`; type another entity

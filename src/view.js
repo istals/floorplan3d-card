@@ -164,6 +164,15 @@ export function mergeStaticMeshes(root, manifest, selectors = [], { unitScale = 
   return { groups: groups.length - failed, merged, failed };
 }
 
+const vecArr = (v) => (Array.isArray(v) ? v : [v.x, v.y, v.z]);
+
+// World corners of the face a raycast hit ([[x, y, z] x 3]) or null.
+function faceTriangle(hit) {
+  const pos = hit.face && hit.object.geometry && hit.object.geometry.attributes.position;
+  if (!pos) return null;
+  return [hit.face.a, hit.face.b, hit.face.c].map((i) => new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(hit.object.matrixWorld).toArray());
+}
+
 export function planToWorld(x, y, z, elevation = 0) {
   return new THREE.Vector3(x, elevation + z, -y);
 }
@@ -296,6 +305,9 @@ export class FloorplanView {
     this._occlusion = true; // dim markers behind model walls
     this._occTimer = null;
     this._occBoxes = null; // [{ mesh, box }] world boxes of occluding model meshes (cached per placement)
+    this._surfMeshes = null; // [{ mesh, box }] model meshes devices stick to (cached per placement)
+    this._surfRay = new THREE.Raycaster();
+    this._preview = null; // drag preview (ring, tinted face, label), created on first use
     this._bounds = null; // { house: Box3, centre: Vector3, radius } for the depth range
     this._occGen = 0; // occlusion pass generation (a new schedule cancels running slices)
     this._occFull = false; // a full pass is pending or running
@@ -505,7 +517,7 @@ export class FloorplanView {
           }
         });
         this.model.opacity = opacity;
-        this._occBoxes = null; // placement changed
+        this._occBoxes = null; this._surfMeshes = null; // placement changed
         this._bounds = this._sceneBounds();
       }
       if (this.model) this._fitShadow();
@@ -644,7 +656,7 @@ export class FloorplanView {
 
   // Caches that hold model meshes, after a merge on a placed model.
   _afterMerge() {
-    this._occBoxes = null;
+    this._occBoxes = null; this._surfMeshes = null;
     this._applyFloorVisibility(); // floor-only mode covers the merged meshes too
     this._bounds = this._sceneBounds();
     this._fitShadow();
@@ -716,7 +728,116 @@ export class FloorplanView {
       ? hit.face.normal.clone().applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize()
       : new THREE.Vector3(0, 1, 0);
     if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate(); // double-sided / flipped faces: the side we look at
-    return { point: hit.point.clone(), normal, object: hit.object, owner: this.model.manifest.ownerOf(hit.object) };
+    return { point: hit.point.clone(), normal, object: hit.object, owner: this.model.manifest.ownerOf(hit.object), tri: faceTriangle(hit) };
+  }
+
+  // Rays from a card-world point [x, y, z] in each direction (unit [x, y, z]) up to maxDist against the
+  // model's surfaces: every mesh regardless of the current view (placement must not jump when the view
+  // changes) except helpers, model objects (lamps, the mower) and glass. Returns the first hit per
+  // direction: [{ point, normal (unit, raw face side), distance, dir }] (arrays, card world).
+  surfaceRays(worldPoint, dirs, maxDist) {
+    if (!this.model) return [];
+    const meshes = this._surfaceMeshes();
+    const ray = this._surfRay, out = [];
+    const o = new THREE.Vector3(...worldPoint), end = new THREE.Vector3(), seg = new THREE.Box3();
+    const nm = new THREE.Matrix3();
+    for (const d of dirs) {
+      const dir = new THREE.Vector3(...d).normalize();
+      ray.set(o, dir);
+      ray.near = 0;
+      ray.far = maxDist;
+      end.copy(dir).multiplyScalar(maxDist).add(o);
+      seg.makeEmpty().expandByPoint(o).expandByPoint(end);
+      let best = null;
+      for (const { mesh, box } of meshes) {
+        if (!box.intersectsBox(seg)) continue;
+        const hit = ray.intersectObject(mesh, false)[0];
+        if (hit && (!best || hit.distance < best.distance)) best = hit;
+      }
+      if (!best) continue;
+      const n = best.face
+        ? best.face.normal.clone().applyNormalMatrix(nm.getNormalMatrix(best.object.matrixWorld)).normalize()
+        : dir.clone().negate();
+      out.push({ point: best.point.toArray(), normal: n.toArray(), distance: best.distance, dir: dir.toArray() });
+    }
+    return out;
+  }
+
+  _surfaceMeshes() {
+    if (this._surfMeshes) return this._surfMeshes;
+    const list = [];
+    this.modelGroup.updateMatrixWorld(true);
+    const manifest = this.model.manifest;
+    this.model.root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (let p = o; p && p !== this.model.root; p = p.parent) if (p.userData && p.userData.helper) return;
+      const m = (Array.isArray(o.material) ? o.material[0] : o.material) || { userData: {} };
+      const ud = m.userData || {};
+      if (!pickable({ isMesh: true, helper: false, transparent: ud.wasTransparent ?? !!m.transparent, opacity: ud.baseOpacity ?? m.opacity ?? 1 })) return;
+      if (o.userData.seeThrough) return;
+      const owner = manifest.ownerOf(o);
+      if (owner && owner.kind === 'object') return;
+      const box = new THREE.Box3().setFromObject(o);
+      if (!box.isEmpty()) list.push({ mesh: o, box });
+    });
+    this._surfMeshes = list;
+    return list;
+  }
+
+  // Drag preview on the model surface: p = { point, normal, tri: [[x,y,z] x3] | null, label } (card world)
+  // or null to hide. One ring, one tinted face and one label, created once and reused.
+  setSurfacePreview(p) {
+    if (!p) {
+      if (this._preview && this._preview.visible) { this._preview.visible = false; this._previewLabel.element.hidden = true; this.dirty = true; }
+      return;
+    }
+    if (!this._preview) this._buildPreview();
+    const g = this._preview, color = this.theme.primary || 0x03a9f4;
+    const pt = new THREE.Vector3(...vecArr(p.point)), n = new THREE.Vector3(...vecArr(p.normal)).normalize();
+    this._previewRing.position.copy(pt).addScaledVector(n, 0.01);
+    this._previewRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    this._previewRing.material.color.set(color);
+    const face = this._previewFace;
+    if (p.tri) {
+      const pos = face.geometry.attributes.position;
+      p.tri.forEach((v, i) => pos.setXYZ(i, ...vecArr(v)));
+      pos.needsUpdate = true;
+      face.geometry.computeBoundingSphere();
+      face.material.color.set(color);
+      face.visible = true;
+    } else face.visible = false;
+    const label = this._previewLabel;
+    label.element.textContent = p.label || '';
+    label.element.hidden = !p.label;
+    label.visible = !!p.label;
+    label.position.copy(pt).addScaledVector(n, 0.05);
+    g.visible = true;
+    this.dirty = true;
+  }
+
+  _buildPreview() {
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.09, 0.12, 40),
+      new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95, toneMapped: false }));
+    ring.renderOrder = 12;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
+    const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.25, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, toneMapped: false }));
+    face.renderOrder = 11;
+    const el = document.createElement('div');
+    el.className = 'fp-attach-label';
+    el.hidden = true;
+    const label = new CSS2DObject(el);
+    for (const o of [ring, face, label]) { o.userData.helper = true; o.raycast = () => {}; o.frustumCulled = false; }
+    g.add(ring, face, label);
+    g.userData.helper = true;
+    g.visible = false;
+    this._preview = g;
+    this._previewRing = ring;
+    this._previewFace = face;
+    this._previewLabel = label;
+    this.scene.add(g);
   }
 
   // First visible model intersection under a screen point (raycaster left set to that ray).
@@ -767,7 +888,7 @@ export class FloorplanView {
     this._clearGroup(this.modelGroup);
     this.model = null;
     this.mergeStats = null;
-    this._occBoxes = null;
+    this._occBoxes = null; this._surfMeshes = null;
     this._cancelOcclusion();
     this._clearOcclusion();
     this._applyLook();
@@ -2053,6 +2174,7 @@ export class FloorplanView {
     this._disposeStems();
     this.setPivotMarker(false);
     this._disposeModel();
+    if (this._preview) { this._clearGroup(this._preview); this.scene.remove(this._preview); this._preview = null; }
     if (this.objectLayer) this.objectLayer.dispose();
     this.onObjectsInvalidate = null;
     this.setMapOverlay(null);

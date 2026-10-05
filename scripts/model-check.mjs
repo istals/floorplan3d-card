@@ -767,7 +767,9 @@ try {
 
   // markers: YAML keyed by entity id (a marker away from model objects: objects win a tap under the finger)
   const mk = await page.evaluate(`(() => { const c = ${card}; const m = c._markers.find((x) => { const el = c._markerEls.get(x.id); if (!el) return false;
-    const r = el.querySelector('.fp-dot').getBoundingClientRect(); return r.width > 0 && el.offsetParent && !c._objectHit(r.x + r.width / 2, r.y + r.height / 2, 30); });
+    const r = el.querySelector('.fp-dot').getBoundingClientRect(), px = r.x + r.width / 2, py = r.y + r.height / 2;
+    // reachable under the pointer (markers behind model walls take no taps)
+    return r.width > 0 && el.offsetParent && el.contains(c.shadowRoot.elementFromPoint(px, py)) && !el.classList.contains('fp-occluded') && !c._objectHit(px, py, 30); });
     if (!m) return null; const r = c._markerEls.get(m.id).querySelector('.fp-dot').getBoundingClientRect(); return { e: m.entityId, x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   if (mk) {
     await setActions({ [mk.e]: { tap_action: { action: 'navigate', navigation_path: '/fp-test/marker' } } });
@@ -1865,6 +1867,116 @@ try {
       JSON.stringify({ pd, before }));
     await page.screenshot({ path: path.join(root, 'screenshots', 'magnetic-drag.png') });
   }
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
+// 2h. devices on model surfaces: auto-placed wall sensor on the wall, pins untouched, drag preview
+// ring over a wall, "Stick all to surfaces" moves a floating pin (demo/house.glb from the YAML)
+s = await openDemo({ model: '1', view: '3d', height: '560px' }, { width: 1500, height: 680 });
+try {
+  const { page } = s;
+  const sr = `${card}.shadowRoot`;
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`(() => { const c = ${card}; return !!c._surf && !c._surfJob && c._positions.get('device:living_climate').base; })()`, { timeout: 5000 }).catch(() => {});
+  // the wall sensor: moved off its computed point, 5 cm (< 0.1 m) off a wall, its 3D marker there too
+  const wallInfo = await page.evaluate(`(() => { const c = ${card}, v = c._view, p = c._positions.get('device:living_climate');
+    const e = v.floorElevation(p.floorId), w = [p.x, e + p.z, -p.y];
+    const dirs = []; for (let i = 0; i < 8; i++) dirs.push([Math.cos(i * Math.PI / 4), 0, Math.sin(i * Math.PI / 4)]);
+    const hits = v.surfaceRays(w, dirs, 2.5).filter((h) => Math.abs(h.normal[1]) < 0.3);
+    const o = v.markerObjects.get('device:living_climate');
+    return { p, d: Math.min(...hits.map((h) => h.distance)), obj: o && o.obj.position.toArray(), w }; })()`);
+  check('surface: auto-placed wall sensor sits within 0.1 m of the model wall (moved from its computed point)',
+    !!wallInfo.p.base && wallInfo.d <= 0.1 && Math.hypot(wallInfo.p.x - wallInfo.p.base.x, wallInfo.p.y - wallInfo.p.base.y) > 0.01
+      && wallInfo.obj && wallInfo.obj.every((v, i) => Math.abs(v - wallInfo.w[i]) < 1e-6), JSON.stringify(wallInfo));
+  const ceil = await page.evaluate(`(() => { const p = ${card}._positions.get('device:living_ceiling'); return { p, ok: !!p.base && p.z < p.base.z + 0.001 }; })()`);
+  check('surface: ceiling light 5 cm below the model ceiling', ceil.ok, JSON.stringify(ceil.p));
+  const lamp = await page.evaluate(`JSON.stringify(${card}._positions.get('device:floor_lamp'))`).then(JSON.parse);
+  check('surface: a pinned marker is never auto moved', lamp.auto === false && !lamp.base && lamp.x === 0.6 && lamp.y === 4.3 && lamp.z === 1.5, JSON.stringify(lamp));
+  // no work on a plain state update: cache hit, same positions
+  const again = await page.evaluate(`(() => { const c = ${card}, before = c._positions.get('device:living_climate'), n = c._surf.map.size;
+    c._buildMarkers(); const after = c._positions.get('device:living_climate');
+    return { same: before.x === after.x && before.y === after.y && before.z === after.z, n, n2: c._surf.map.size, job: !!c._surfJob }; })()`);
+  check('surface: a marker rebuild reuses the cached spots (no new rays, no job)', again.same && again.n === again.n2 && !again.job, JSON.stringify(again));
+
+  // drag preview: edit mode, Devices tab, drag a marker over a wall
+  await page.evaluate(`${sr}.querySelector('button.edit').click()`);
+  await sleep(300);
+  await page.evaluate(`${sr}.querySelector('.chip[data-view=ground]').click()`);
+  await settle(page, card);
+  const clickText = async (t) => {
+    const ok = await page.evaluate((t) => {
+      const b = [...document.querySelector('floorplan3d-card').shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === t);
+      if (b) b.click();
+      return !!b;
+    }, t);
+    await sleep(200);
+    return ok;
+  };
+  await clickText('Devices');
+  await page.evaluate(`${card}._view.setCamera({ position: [8, 8.5, 8], target: [3, 1, -2.5] }, { instant: true })`);
+  await settle(page, card);
+  const wall = await page.evaluate(`(() => { const c = ${card}, v = c._view, r = v.renderer.domElement.getBoundingClientRect();
+    let best = null; const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    for (let y = r.top + 20; y < r.bottom - 20; y += 12) for (let x = r.left + 20; x < r.right - 20; x += 12) {
+      const h = v.surfaceAt(x, y);
+      if (!h || h.owner && h.owner.kind === 'object' || c.shadowRoot.elementFromPoint(x, y)?.closest?.('.fp-marker')) continue;
+      const d = Math.hypot(x - cx, y - cy);
+      if (Math.abs(h.normal.y) < 0.1 && h.point.y > 0.7 && h.point.y < 2.3 && (!best || d < best.d)) best = { x, y, d };
+    }
+    return best; })()`);
+  const mk = await page.evaluate(`(() => { const c = ${card};
+    for (const [id, el] of c._markerEls) {
+      const o = c._view.markerObjects.get(id);
+      if (!o || !o.obj.visible || id === c._mowerMarkerId) continue;
+      const b = el.querySelector('.fp-dot').getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+      const hit = c.shadowRoot.elementFromPoint(x, y);
+      if (hit && el.contains(hit)) return { id, x, y };
+    }
+    return null; })()`);
+  check('surface: found a wall and a draggable marker on screen', !!wall && !!mk, JSON.stringify({ wall, mk }));
+  if (wall && mk) {
+    await page.mouse.move(mk.x, mk.y);
+    await page.mouse.down();
+    await page.mouse.move((mk.x + wall.x) / 2, (mk.y + wall.y) / 2, { steps: 4 });
+    await page.mouse.move(wall.x, wall.y, { steps: 6 });
+    await sleep(120);
+    const pv = await page.evaluate(`(() => { const v = ${card}._view, g = v._preview;
+      return { shown: !!g && g.visible && v._previewRing.visible, face: !!g && v._previewFace.visible, helper: !!g && g.userData.helper && v._previewRing.userData.helper,
+        ringN: g && new v._previewRing.position.constructor(0, 0, 1).applyQuaternion(v._previewRing.quaternion).toArray() }; })()`);
+    check('surface: drag over a wall shows the preview ring (helper) and the tinted face, ring facing out of the wall',
+      pv.shown && pv.face && pv.helper && Math.abs(pv.ringN[1]) < 0.3, JSON.stringify(pv));
+    await page.screenshot({ path: path.join(root, 'screenshots', 'surface-preview.png') });
+    await page.mouse.up();
+    await sleep(250);
+    check('surface: preview hidden after the drop', await page.evaluate(`!${card}._view._preview.visible`));
+  }
+
+  // Stick all: a pin floating in the middle of the living room moves onto a surface; on-surface pins stay
+  await page.evaluate(`${card}._edit.selectMarker(null)`);
+  await page.evaluate(`(() => { const c = ${card}; const pins = { ...(c._layout.pins || {}) };
+    pins['device:living_climate'] = { x: 2.5, y: 3.6, z: 1.5, floor_id: 'ground' };
+    c._edit.commit({ ...c._layout, pins }); })()`);
+  await sleep(300);
+  const pinsBefore = await page.evaluate(`JSON.stringify(${card}._layout.pins)`).then(JSON.parse);
+  await clickText('Stick all to surfaces');
+  const txt = await page.evaluate(`${sr}.querySelector('.panel .stick')?.textContent || ''`);
+  const nMoves = await page.evaluate(`${card}._edit.stick && ${card}._edit.stick.moves.length`);
+  check('surface: Stick all previews the count with Apply / Cancel', /\d+ markers? will move/.test(txt) && nMoves >= 1
+    && await page.evaluate(`!!${sr}.querySelector('.panel [data-act=stick-apply]') && !!${sr}.querySelector('.panel [data-act=stick-cancel]')`), txt.trim());
+  check('surface: nothing saved before Apply', await page.evaluate(`JSON.stringify(${card}._layout.pins)`) === JSON.stringify(pinsBefore));
+  await clickText('Apply');
+  await sleep(300);
+  const after = await page.evaluate(`(() => { const c = ${card}, v = c._view, pin = c._layout.pins['device:living_climate'];
+    const w = [pin.x, v.floorElevation('ground') + pin.z, -pin.y];
+    const dirs = [[0, 1, 0], [0, -1, 0]]; for (let i = 0; i < 8; i++) dirs.push([Math.cos(i * Math.PI / 4), 0, Math.sin(i * Math.PI / 4)]);
+    return { pin, d: Math.min(...v.surfaceRays(w, dirs, 4).map((h) => h.distance)), panel: !!c.shadowRoot.querySelector('.panel .stick') }; })()`);
+  check('surface: Apply moved the floating pin onto a surface (≤ 0.1 m, on_model) and closed the preview',
+    after.d <= 0.1 && after.pin.on_model === true && (after.pin.x !== 2.5 || after.pin.y !== 3.6 || after.pin.z !== 1.5) && !after.panel, JSON.stringify(after));
+  await clickText('Stick all to surfaces');
+  const txt2 = await page.evaluate(`${sr}.querySelector('.panel .stick')?.textContent || ''`);
+  check('surface: Stick all again -> nothing left to move', /already sits on a surface/.test(txt2), txt2.trim());
   allErrors.push(...s.errors);
 } finally {
   await s.close();

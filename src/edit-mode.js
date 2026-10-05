@@ -16,6 +16,7 @@ import { snapPin, attachOffset, floorAtHeight } from './objects/logic.js';
 import { actionTarget } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, validateAction } from './actions.js';
+import { surfaceKind, rayGroups, stickSurface, nearestDistance, needsStick, worldOf, planOf } from './surface.js';
 
 const DENSE_TRIS = 150000;
 
@@ -668,6 +669,7 @@ export class EditMode {
     const d = this.drag;
     if (d && d.raf) { cancelAnimationFrame(d.raf); d.raf = 0; }
     if (d && d.kind === 'marker' && d.attach !== undefined && this.view) this.view.highlightModelNode(null);
+    if (d && d.kind === 'marker' && this.view) this.view.setSurfacePreview(null);
     window.removeEventListener('pointermove', this._onWinMove);
     window.removeEventListener('pointerup', this._onWinUp);
     window.removeEventListener('pointercancel', this._onWinUp);
@@ -724,6 +726,7 @@ export class EditMode {
       }
       if (d.raf) { cancelAnimationFrame(d.raf); d.raf = 0; }
       this._setDragTarget(d, null);
+      this.view.setSurfacePreview(null); // Alt: free drag, no preview
       this._freeMarker(d, e);
       return;
     }
@@ -765,6 +768,7 @@ export class EditMode {
     const hit = this.view.surfaceAt(d.last.clientX, d.last.clientY);
     if (!hit) { // empty sky: keep the last snapped spot (a far plane hit would fling the marker away)
       this._setDragTarget(d, null);
+      this.view.setSurfacePreview(null);
       return;
     }
     const owner = hit.owner;
@@ -780,6 +784,10 @@ export class EditMode {
     const layer = this.card._objects;
     const obj = owner && owner.kind === 'object' && layer && layer.objectAt(owner.id) ? owner : null;
     this._setDragTarget(d, obj);
+    // preview: a ring on the surface, its face tinted, "Attach: <object>" over a model object
+    const target = obj && layer.objectAt(obj.id);
+    const label = obj ? 'Attach: ' + ((target && target.obj && target.obj.label) || obj.id) : null;
+    this.view.setSurfacePreview({ point: hit.point, normal: hit.normal, tri: hit.tri, label });
     this.view.moveMarker(d.id, pin.x, pin.y, pin.z, floorId);
   }
 
@@ -992,6 +1000,16 @@ export class EditMode {
         </div></section>`;
     }
     out += `<p class="hint">Drag any marker on the plan to pin it there${this.view.model ? ' (it sticks to the model surface; drop on a model object to attach it, hold Alt for a free drag)' : ''}. Click a marker to select it.</p>`;
+    if (this.view.model) {
+      const st = this.stick;
+      if (st) {
+        const n = st.moves.length;
+        out += `<section class="box stick"><p>${n ? `${n} marker${n === 1 ? '' : 's'} will move onto the nearest surface.` : 'Every pinned marker already sits on a surface.'}</p>
+          <div class="row">${n ? '<button data-act="stick-apply" class="primary">Apply</button>' : ''}<button data-act="stick-cancel">${n ? 'Cancel' : 'OK'}</button></div></section>`;
+      } else {
+        out += '<div class="row"><button data-act="stick-all" title="Pinned markers floating more than 15 cm from the model move onto the nearest wall, ceiling or floor">Stick all to surfaces</button></div>';
+      }
+    }
 
     const unplaced = all.filter((x) => !hidden.includes(x.id) && !hidden.includes(x.entityId) && !(this.card._positions || new Map()).has(x.id));
     out += `<div class="sub">Devices without a room (${unplaced.length})</div>`;
@@ -1699,6 +1717,27 @@ export class EditMode {
     this.setModelProps({ known: { levels: man.manifest.levels.map((l) => l.id), rooms: man.manifest.rooms.map((r) => r.id) } });
   }
 
+  // "Stick all to surfaces": free pins more than 15 cm from every model surface (8 horizontal rays,
+  // up and down) move onto the surface their device type sticks to, else the nearest one (stickSurface).
+  _stickMoves() {
+    const vw = this.view, out = [];
+    if (!vw.model) return out;
+    const byId = new Map((this.card._markers || []).map((m) => [m.id, m]));
+    for (const [id, pin] of Object.entries(this.layout.pins || {})) {
+      if (!pin || pin.attach || id === this.card._mowerMarkerId) continue;
+      const floorId = this.floors.some((f) => f.id === pin.floor_id) ? pin.floor_id : this.floors[0].id;
+      const elev = vw.floorElevation(floorId);
+      const world = worldOf({ x: pin.x, y: pin.y, z: pin.z ?? 1.2 }, elev);
+      const hits = rayGroups('all').flatMap((g) => vw.surfaceRays(world, g.dirs, g.max));
+      if (!needsStick(pin, nearestDistance(hits))) continue;
+      const m = byId.get(id);
+      const kind = m ? surfaceKind(m.domain, m.deviceClass) : null;
+      const s = stickSurface(kind, hits);
+      if (s) out.push({ id, pin: { ...planOf(s.point, elev), floor_id: floorId, on_model: true } });
+    }
+    return out;
+  }
+
   // A pin placed while a model is loaded sits on the model and follows its alignment.
   _onModel(id) {
     const pin = (this.layout.pins || {})[id];
@@ -1920,6 +1959,7 @@ export class EditMode {
           this.view.highlightModelNode(null);
         }
         if (id !== 'objects') this.objSel = null;
+        if (id !== 'devices') this.stick = null;
         this.tab = id;
         this._syncStageClasses();
         break;
@@ -1985,6 +2025,17 @@ export class EditMode {
       }
       case 'del-floor': this.commit(E.deleteFloor(this.layout, id)); return;
       case 'unpin': this.commit(E.clearPin(this.layout, this.selectedMarker)); return;
+      case 'stick-all': this.stick = { moves: this._stickMoves() }; break;
+      case 'stick-cancel': this.stick = null; break;
+      case 'stick-apply': { // again now: the pins may have changed since the preview
+        const moves = this._stickMoves();
+        this.stick = null;
+        if (!moves.length) break;
+        let layout = this.layout;
+        for (const mv of moves) layout = E.setPin(layout, mv.id, mv.pin, { grid: false });
+        this.commit(layout);
+        return;
+      }
       case 'detach': { // keep where it is now, as a normal pin on the model
         const pos = this.card._positions && this.card._positions.get(this.selectedMarker);
         const pin = (this.layout.pins || {})[this.selectedMarker];

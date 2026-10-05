@@ -24,6 +24,7 @@ import { moonPosition } from './sky.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, actionCall, TapSequencer } from './actions.js';
+import { surfaceKind, surfaceKey, rayGroups, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
 
 const VERSION = '0.4.1';
 const NONE = Object.freeze({}); // stable stand-in for a missing layout.objects / groups (binding cache key)
@@ -77,6 +78,8 @@ const STYLE = `
   .fp-room-label { font-size: 11px; letter-spacing: .02em; color: var(--secondary-text-color, #727272);
     white-space: nowrap; pointer-events: none; opacity: .9; }
   .fp-room-label.outdoor { font-style: italic; }
+  .fp-attach-label { font-size: 12px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; pointer-events: none;
+    transform: translateY(-22px); background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
   /* the marker box is just the dot (CSS2D centres the box on the 3D point); the value hangs below it */
   .fp-marker { position: relative; display: flex; flex-direction: column; align-items: center; pointer-events: auto;
     cursor: pointer; transform-origin: center; }
@@ -433,6 +436,7 @@ class Floorplan3dCard extends HTMLElement {
       }
       this._updateObjects();
       this._refreshAttached(); // the model (re)placed: attached markers follow their objects
+      this._scheduleSurfaces(); // auto-placed markers onto (or off) the model's surfaces
       this._notice.textContent = err || '';
       this._notice.hidden = !err;
       // a new model resets the views; the first view applied frames it (see _resolveViewList)
@@ -458,6 +462,7 @@ class Floorplan3dCard extends HTMLElement {
       this._applyMarkerStates();
     }
     if (this._editing) this._edit.render();
+    this._scheduleSurfaces();
     this._schedule();
   }
 
@@ -558,6 +563,7 @@ class Floorplan3dCard extends HTMLElement {
     this._ro = new ResizeObserver(() => this._resize());
     this._ro.observe(this._stage);
     this._schedule();
+    this._scheduleSurfaces();
   }
 
   disconnectedCallback() {
@@ -572,6 +578,8 @@ class Floorplan3dCard extends HTMLElement {
     this._skyTimer = null;
     this._setCameraTimer(0);
     this._setImageTimer(0);
+    clearTimeout(this._surfJob);
+    this._surfJob = null;
   }
 
   async _load() {
@@ -1650,6 +1658,7 @@ class Floorplan3dCard extends HTMLElement {
     const bound = this._boundEntities;
     this._markers = buildMarkers(h, this._layout, { group_by: this._config.group_by }).filter((m) => !bound.has(m.entityId));
     this._positions = markerPositions(this._markers, { ...this._layout, rooms: this._allRooms() }, h, this._floors, (pin, fid) => this._attachAt(pin, fid));
+    if (this._surfacePass(false)) this._scheduleSurfaces(); // cached surface spots now, new ones after this update
 
     // the mower's device marker follows the live position instead of being auto placed
     const cfg = this._layout.mower;
@@ -1688,6 +1697,74 @@ class Floorplan3dCard extends HTMLElement {
     }
     this._view.setMarkers(list);
     this._applyMarkerStates();
+  }
+
+  // ---------- auto-placed markers on the model's surfaces ----------
+  // Placement inputs of the model surfaces: id, merge state, alignment, floor elevations ('' = no model).
+  _surfaceModelKey() {
+    const v = this._view, m = v && v.model;
+    if (!m || !this._floors) return '';
+    const g = v.modelGroup, r = (x) => Math.round(x * 1000) / 1000;
+    return [m.id, v.mergeStats ? v.mergeStats.merged : '-', g.position.toArray().map(r).join(), r(g.rotation.y), r(g.scale.x),
+      this._floors.map((f) => f.id + ':' + r(v.floorElevation(f.id))).join()].join('|');
+  }
+
+  // Auto-placed markers (never pins) move onto the nearest model surface of their type: walls for
+  // wall / corner / door devices, the ceiling for the ceiling grid, the floor for floor-standing ones.
+  // Results are cached per model placement and computed point; compute = false only applies cached
+  // ones (the rebuild path), compute = true works through the rest in a ~10 ms slice and moves the
+  // markers. Returns true when points are still waiting.
+  _surfacePass(compute) {
+    const pos = this._positions, vw = this._view;
+    if (!pos || !this._markers || !vw) return false;
+    const key = this._surfaceModelKey();
+    if (key && (!this._surf || this._surf.key !== key)) this._surf = { key, map: new Map() };
+    const t0 = performance.now();
+    let rooms = null, pending = false, moved = false;
+    for (const m of this._markers) {
+      const p = pos.get(m.id);
+      if (!p || !p.auto) continue;
+      const base = p.base || p;
+      const kind = key ? surfaceKind(m.domain, m.deviceClass) : null;
+      let target = base;
+      if (kind) {
+        const k = surfaceKey(kind, p.floorId, base);
+        let s = this._surf.map.get(k);
+        if (s === undefined) {
+          if (!compute || performance.now() - t0 > 10) { pending = true; continue; }
+          if (!rooms) rooms = this._allRooms();
+          const room = rooms.find((r) => r.area_id === m.areaId);
+          const elev = vw.floorElevation(p.floorId);
+          const world = worldOf(base, elev);
+          const hits = rayGroups(kind).flatMap((g) => vw.surfaceRays(world, g.dirs, g.max));
+          // stay with the room: an open plan must not send a device to a wall across the house
+          const accept = kind === 'wall' && room ? (w) => nearPolygon([w[0], -w[2]], room.polygon, 0.5) : null;
+          const c = chooseSurface(kind, hits, { accept });
+          s = c ? planOf(c.point, elev) : null;
+          this._surf.map.set(k, s);
+        }
+        if (s) target = s;
+      }
+      if (target.x === p.x && target.y === p.y && target.z === p.z) continue;
+      const next = { ...p, x: target.x, y: target.y, z: target.z };
+      if (target === base) delete next.base;
+      else next.base = { x: base.x, y: base.y, z: base.z };
+      pos.set(m.id, next);
+      if (compute) vw.moveMarker(m.id, next.x, next.y, next.z, next.floorId);
+      moved = true;
+    }
+    if (compute && moved) this._refreshStates(); // light glows follow
+    return pending;
+  }
+
+  // Compute surface spots after the current update (model loaded, merged, realigned, markers rebuilt).
+  _scheduleSurfaces() {
+    if (this._surfJob) return;
+    this._surfJob = setTimeout(() => {
+      this._surfJob = null;
+      if (!this.isConnected || !this._view) return;
+      if (this._surfacePass(true)) this._scheduleSurfaces();
+    }, 0);
   }
 
   // Plan position of a marker attached to a model object (its anchor + offset), null when the object is not there.
