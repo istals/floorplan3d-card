@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findBlob, pickBlob, stepTrack, headingMinStep, TRACK_MAX_MISSES, pixelToPlan, planToPixel, medianColor, imageScale } from '../src/mower-image.js';
+import { findBlob, pickBlob, stepTrack, headingMinStep, TRACK_MAX_MISSES, pixelToPlan, planToPixel, medianColor, imageScale, fitOverlay } from '../src/mower-image.js';
 
 // synthetic RGBA image filled with one colour
 function image(w, h, bg = [30, 80, 30]) {
@@ -195,5 +195,55 @@ describe('imageScale', () => {
   it('samples images wider than 1600 px on a smaller canvas', () => {
     expect(imageScale(800)).toBe(1);
     expect(imageScale(3200)).toBe(0.5);
+  });
+});
+
+describe('fitOverlay', () => {
+  const W = 800, H = 600;
+  const truth = { x: 4.5, y: -7.25, rotation: 23, width: 31 };
+  const pair = (px, py, o = truth) => { const p = pixelToPlan(px, py, W, H, o); return { px, py, plan: [p.x, p.y] }; };
+
+  it('2 points reproduce the overlay exactly', () => {
+    const r = fitOverlay([pair(100, 80), pair(650, 520)], W, H);
+    expect(r.x).toBeCloseTo(truth.x, 6);
+    expect(r.y).toBeCloseTo(truth.y, 6);
+    expect(r.rotation).toBeCloseTo(truth.rotation, 6);
+    expect(r.width).toBeCloseTo(truth.width, 6);
+  });
+
+  it('maps each pixel onto its plan point', () => {
+    const pairs = [pair(10, 590), pair(790, 30)];
+    const r = fitOverlay(pairs, W, H);
+    for (const p of pairs) {
+      const q = pixelToPlan(p.px, p.py, W, H, r);
+      expect(q.x).toBeCloseTo(p.plan[0], 6);
+      expect(q.y).toBeCloseTo(p.plan[1], 6);
+    }
+  });
+
+  it('negative and wrapped rotations come back in -180..180', () => {
+    const o = { x: 0, y: 0, rotation: -170, width: 12 };
+    const r = fitOverlay([pair(0, 0, o), pair(W, H, o)], W, H);
+    expect(r.rotation).toBeCloseTo(-170, 6);
+  });
+
+  it('3+ points: least-squares similarity', () => {
+    const pts = [pair(50, 50), pair(700, 80), pair(400, 550), pair(120, 400)];
+    // noise that cancels out in the mean
+    const noisy = pts.map((p, i) => ({ ...p, plan: [p.plan[0] + (i % 2 ? 0.05 : -0.05), p.plan[1] + (i < 2 ? 0.05 : -0.05)] }));
+    const r = fitOverlay(noisy, W, H);
+    expect(Math.abs(r.x - truth.x)).toBeLessThan(0.05);
+    expect(Math.abs(r.y - truth.y)).toBeLessThan(0.05);
+    expect(Math.abs(r.rotation - truth.rotation)).toBeLessThan(0.5);
+    expect(Math.abs(r.width - truth.width)).toBeLessThan(0.2);
+    const exact = fitOverlay(pts, W, H);
+    expect(exact.width).toBeCloseTo(truth.width, 6);
+  });
+
+  it('null for fewer than 2 points or coincident pixels', () => {
+    expect(fitOverlay([pair(1, 1)], W, H)).toBeNull();
+    expect(fitOverlay([pair(5, 5), { px: 5, py: 5, plan: [9, 9] }], W, H)).toBeNull();
+    expect(fitOverlay(null, W, H)).toBeNull();
+    expect(fitOverlay([pair(1, 1), pair(2, 2)], 0, H)).toBeNull();
   });
 });

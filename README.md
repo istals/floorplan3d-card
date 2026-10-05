@@ -178,8 +178,14 @@ In the **Mower** tab:
    the charging station), click **Add point**, then click that spot on the plan. One point aligns
    a GPS track north-up, two points also fix rotation and scale, three or more also correct skew.
    Spread the points far apart. The fit error is shown for 3+ points.
-3. Overlay: pick the image or camera entity, then line it up with the sliders or
+3. Overlay: pick the image or camera entity, then line it up: **Align by points** (click a spot
+   on the map image, then the same spot on the model; two points fix position, rotation and size,
+   more refine it by least squares; **Done** or Esc ends), then fine-tune with the sliders or
    **Move with mouse**. Cameras refresh every N seconds; images when they change.
+   The map lies on the model's surface under its centre (2 cm above the lawn, whatever the HA
+   floor's elevation; without a model: on the mower's floor). **Height offset** (−0.5…+0.5 m)
+   lifts or lowers it. Model objects (the mower, furniture) draw over it.
+   **Show the map only in edit mode** hides it in view mode; the live-map detection keeps working.
 
 The mower's own marker follows the live position and draws a trail for the current session.
 
@@ -189,7 +195,8 @@ Models without latitude / longitude still render a map with the mower on it. In 
 1. Pick the mower entity (e.g. its `lawn_mower.*` entity; its marker follows the detection) and
    source **Live map image (mower icon colour)**.
 2. Add the *Live map* camera (or *Map* image) as overlay and line it up with the plan
-   (sliders or **Move with mouse**). This alignment is the calibration: no calibration points.
+   (**Align by points**, sliders or **Move with mouse**). This alignment is the calibration: no
+   calibration points.
 3. Click **Pick mower colour**, then click the mower icon on the overlay (Esc cancels). The colour
    (median of the 5×5 pixels around the click) is shown as a swatch; widen **Colour tolerance** if
    the icon is shaded, narrow it if the lawn picks up matches.

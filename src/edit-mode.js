@@ -7,7 +7,7 @@ import { roomFloorId, LEVEL_SPACING } from './layout.js';
 import { pointInPolygon, signedArea } from './placement.js';
 import { buildMarkers, areaName } from './registry.js';
 import { readSource, calibrationError, overlayUrl } from './mower.js';
-import { readImagePixels, planToPixel, medianColor } from './mower-image.js';
+import { readImagePixels, planToPixel, medianColor, fitOverlay } from './mower-image.js';
 import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
 import { levelsFromFloorMap } from './bindings.js';
@@ -56,6 +56,7 @@ export class EditMode {
     this.calibrating = null; // { src } waiting for a click on the plan
     this.colorPick = false; // waiting for a click on the mower icon in the map overlay
     this.overlayMove = false;
+    this.aligning = null; // { pairs: [{ px, py, plan }], pending: { px, py } | null } "Align by points"
     this.drag = null;
     this.confirmDelete = false;
     this.saveState = '';
@@ -147,6 +148,7 @@ export class EditMode {
     this.calibrating = null;
     this.colorPick = false;
     this.overlayMove = false;
+    this.aligning = null;
     this.selectedRoom = null;
     this.selectedMarker = null;
     this.modelPick = null;
@@ -201,6 +203,13 @@ export class EditMode {
     this._click(e);
   }
 
+  // Plan point under the pointer at the map overlay's height (it lies on the lawn, not on the HA floor).
+  _mapPoint(e) {
+    const pl = this.view.mapPlane;
+    const h = pl ? pl.position.y : this.view.floorElevation(this.card._mowerFloor());
+    return this.view.planPoint(e.clientX, e.clientY, h);
+  }
+
   _planPoint(e, floorId, z = 0) {
     return this.view.planPoint(e.clientX, e.clientY, this.view.floorElevation(floorId) + z);
   }
@@ -210,8 +219,12 @@ export class EditMode {
       this._setPivot(e);
       return;
     }
+    if (this.aligning) {
+      this._alignClick(e);
+      return;
+    }
     if (this.colorPick) {
-      const p = this._planPoint(e, this.card._mowerFloor());
+      const p = this._mapPoint(e);
       if (!p) return;
       this.colorPick = false;
       this._syncStageClasses();
@@ -473,6 +486,7 @@ export class EditMode {
       e.preventDefault();
     } else if (e.key === 'Escape') {
       if (this.colorPick) this.colorPick = false;
+      else if (this.aligning) this.aligning = null;
       else if (this.doorMode) this.doorMode = false;
       else if (this.selectedRoom) this.selectedRoom = null;
       else if (this.selectedMarker) this.selectMarker(null);
@@ -483,7 +497,7 @@ export class EditMode {
   }
 
   _syncStageClasses() {
-    this.card._stage.classList.toggle('drawing', !!this.drawing || !!this.picking || this.doorMode || !!this.calibrating || this.colorPick || !!this.pivoting);
+    this.card._stage.classList.toggle('drawing', !!this.drawing || !!this.picking || this.doorMode || !!this.calibrating || this.colorPick || !!this.aligning || !!this.pivoting);
     this.view.setPivotMarker(!!this.card._editing && this.tab === 'views');
     this.card._stage.classList.toggle('moving', this.overlayMove);
     const picking = !!this.card._editing && (this.tab === 'model' || this.tab === 'views') && !!this.view.model;
@@ -497,7 +511,7 @@ export class EditMode {
     if (!this.overlayMove || !o || e.button !== 0) return;
     e.stopPropagation();
     const fid = this.card._mowerFloor();
-    const start = this._planPoint(e, fid);
+    const start = this._mapPoint(e);
     if (!start) return;
     this._startWindowDrag({ kind: 'overlay', start: [e.clientX, e.clientY], plan: start, origin: [o.x || 0, o.y || 0], floorId: fid, moved: false });
   }
@@ -555,6 +569,37 @@ export class EditMode {
     if (r && r.missing) return 'Mower icon not found' + (live && live.floorId ? ` (last seen at ${fmt(live.x)}, ${fmt(live.y)})` : '') + '.';
     if (r && live && live.floorId) return `Found at ${fmt(live.x)}, ${fmt(live.y)} (${r.count} px)`;
     return 'Looking for the mower icon…';
+  }
+
+  // "Align by points": odd clicks pick a spot on the map image (pixel through the current overlay),
+  // even clicks the same spot on the model (surface under the pointer, else the map's height).
+  // From 2 pairs on, the overlay is fitted to all pairs (similarity, least squares for 3+).
+  _alignClick(e) {
+    const a = this.aligning;
+    const o = this.mower().overlay;
+    const img = this.view.mapPlane && this.view.mapPlane.userData.loaded && this.view.mapPlane.userData.loaded.image;
+    if (!o || !img) { this.aligning = null; this.message = { text: 'Wait for the map image to load.', error: true }; this._syncStageClasses(); this.render(); return; }
+    const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+    if (!a.pending) {
+      const p = this._mapPoint(e);
+      if (!p) return;
+      const q = planToPixel(p[0], p[1], W, H, o);
+      if (q.px < 0 || q.py < 0 || q.px > W || q.py > H) { this.message = { text: 'That point is outside the map image.', error: true }; this.render(); return; }
+      this.message = null;
+      a.pending = { px: q.px, py: q.py };
+      this.render();
+      return;
+    }
+    const hit = this.view.model ? this.view.surfaceAt(e.clientX, e.clientY) : null;
+    const plan = hit ? [hit.point.x, -hit.point.z] : this._mapPoint(e);
+    if (!plan) return;
+    a.pairs = [...a.pairs, { ...a.pending, plan }];
+    a.pending = null;
+    const fit = a.pairs.length >= 2 ? fitOverlay(a.pairs, W, H) : null;
+    if (fit) {
+      const r = (v, k) => Math.round(v * k) / k;
+      this.setOverlay({ x: r(fit.x, 1000), y: r(fit.y, 1000), rotation: r(fit.rotation, 100), width: r(fit.width, 1000) });
+    } else this.render();
   }
 
   // Colour under a plan point in the map image: median of the 5x5 pixels around it.
@@ -694,7 +739,7 @@ export class EditMode {
   markerDown(m, e) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    if (this.drawing || this.doorMode || this.calibrating || this.colorPick) return;
+    if (this.drawing || this.doorMode || this.calibrating || this.colorPick || this.aligning) return;
     if (m.id === this.card._mowerMarkerId) {
       this.selectMarker(m.id); // positioned live, nothing to drag
       return;
@@ -711,7 +756,7 @@ export class EditMode {
     if (!d.moved && Math.hypot(e.clientX - d.start[0], e.clientY - d.start[1]) < CLICK_SLOP_PX) return;
     d.moved = true;
     if (d.kind === 'overlay') {
-      const p = this._planPoint(e, d.floorId);
+      const p = this._mapPoint(e);
       if (!p) return;
       const r = (v) => Math.round(v * 100) / 100;
       this.setOverlay({ x: r(d.origin[0] + p[0] - d.plan[0]), y: r(d.origin[1] + p[1] - d.plan[1]) }, false);
@@ -1266,9 +1311,20 @@ export class EditMode {
         + slider('rotation', 'Rotation (°)', -180, 180, 0.5, o.rotation ?? 0)
         + slider('width', 'Width (m)', 1, 200, 0.1, o.width ?? 20)
         + slider('opacity', 'Opacity', 0, 1, 0.05, o.opacity ?? 0.6)
+        + slider('height_offset', 'Height offset (m)', -0.5, 0.5, 0.01, o.height_offset ?? 0)
         + (o.entity.startsWith('camera.') ? slider('refresh', 'Refresh every (s)', 1, 120, 1, o.refresh ?? 10) : '');
-      out += `<div class="row"><button data-act="ov-move" class="${this.overlayMove ? 'primary' : ''}">${this.overlayMove ? 'Drag the map on the plan…' : 'Move with mouse'}</button>
-        <button data-act="ov-remove">Remove overlay</button></div>`;
+      out += `<label class="check"><input type="checkbox" data-field="ov-edit-only" ${o.edit_only ? 'checked' : ''}> Show the map only in edit mode</label>`;
+      const a = this.aligning;
+      if (a) {
+        const n = a.pairs.length + 1;
+        out += `<section class="box align-box"><p>${a.pending ? `Point ${n}: now click the same spot on the model.` : `Point ${n}: click a spot on the map image.`}
+          ${a.pairs.length >= 2 ? ` Aligned to ${a.pairs.length} points.` : ' Two points align it, more refine it.'} Esc cancels.</p>
+          <div class="row"><button data-act="ov-align-done" class="primary">Done</button></div></section>`;
+      }
+      out += `<div class="row"><button data-act="ov-align" ${a ? 'disabled' : ''}>Align by points</button>
+        <button data-act="ov-move" class="${this.overlayMove ? 'primary' : ''}">${this.overlayMove ? 'Drag the map on the plan…' : 'Move with mouse'}</button>
+        <button data-act="ov-remove">Remove overlay</button></div>
+        <p class="hint">The map lies on the model's surface under its centre; adjust with the height offset.</p>`;
     }
     return out;
   }
@@ -2078,14 +2134,22 @@ export class EditMode {
       case 'img-pick-cancel': this.colorPick = false; break;
       case 'cal-del': this.setMower({ calibration: (this.mower().calibration || []).filter((_, i) => i !== Number(btn.dataset.i)) }); return;
       case 'trail-clear': this.card.clearTrail(); break;
-      case 'ov-move': this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; break;
-      case 'ov-remove': this.overlayMove = false; this.setMower({ overlay: null }); return;
+      case 'ov-move': this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
+      case 'ov-remove': this.overlayMove = false; this.aligning = null; this.setMower({ overlay: null }); return;
+      case 'ov-align':
+        this.aligning = { pairs: [], pending: null };
+        this.overlayMove = false;
+        this.calibrating = null;
+        this.colorPick = false;
+        if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
+        break;
+      case 'ov-align-done': this.aligning = null; break;
       case 'model-fit': this.view.fit({ model: true }); return;
       case 'model-delete':
         if (!this.confirmModelDelete) { this.confirmModelDelete = true; break; }
         this._removeModel();
         return;
-      case 'mower-remove': this.calibrating = null; this.colorPick = false; this.overlayMove = false; this.commit({ ...this.layout, mower: null }); this.render(); return;
+      case 'mower-remove': this.calibrating = null; this.colorPick = false; this.overlayMove = false; this.aligning = null; this.commit({ ...this.layout, mower: null }); this.render(); return;
       default: return;
     }
     this._syncStageClasses();
@@ -2159,6 +2223,8 @@ export class EditMode {
       this.setMower({ floor_id: el.value });
     } else if (f === 'mower-trail') {
       this.setMower({ trail: el.checked });
+    } else if (f === 'ov-edit-only') {
+      this.setOverlay({ edit_only: el.checked });
     } else if (f === 'ov-entity') {
       const v = el.value.trim();
       if (!v) this.setMower({ overlay: null });

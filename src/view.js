@@ -1133,8 +1133,26 @@ export class FloorplanView {
     return !!this.model && this.model.tagged;
   }
 
-  // Mower map image laid on the floor. o: {url, x, y, rotation, width, opacity, floorId} or null.
-  // x, y = image centre in plan metres, rotation in degrees counter-clockwise, top of image = north.
+  // World height of the model surface seen from above at plan (x, y): one ray down from over the
+  // model against the surface meshes (helpers, objects and glass ignored), or null without a hit.
+  groundAt(x, y) {
+    if (!this.model) return null;
+    const meshes = this._surfaceMeshes();
+    if (!meshes.length) return null;
+    let top = -Infinity, bottom = Infinity;
+    for (const { box } of meshes) {
+      if (box.max.y > top) top = box.max.y;
+      if (box.min.y < bottom) bottom = box.min.y;
+    }
+    const from = top + 1;
+    const hit = this.surfaceRays([x, from, -y], [[0, -1, 0]], from - bottom + 1)[0];
+    return hit ? hit.point[1] : null;
+  }
+
+  // Mower map image laid on the lawn. o: {url, x, y, rotation, width, opacity, floorId, heightOffset,
+  // hidden} or null. x, y = image centre in plan metres, rotation in degrees counter-clockwise, top of
+  // image = north. Height: the model surface under the centre + 2 cm (independent of the HA floor's
+  // elevation), else the floor + 1.5 cm; plus heightOffset. hidden: loaded (detection reads it) but not drawn.
   setMapOverlay(o) {
     if (!o || !o.url) {
       if (this.mapPlane) {
@@ -1148,19 +1166,27 @@ export class FloorplanView {
       return;
     }
     if (!this.mapPlane) {
-      const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+      // under objects: depth tested, pulled toward the camera against the lawn, drawn before other transparents
+      const mat = new THREE.MeshBasicMaterial({
+        transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
       this.mapPlane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), mat);
-      this.mapPlane.renderOrder = 1;
+      this.mapPlane.renderOrder = -1;
       this.mapPlane.visible = false; // until the first image arrives
       this.mowerGroup.add(this.mapPlane);
     }
     const plane = this.mapPlane;
     // per-push calls with the same overlay draw nothing
-    const sig = [o.url, o.x, o.y, o.rotation, o.width, o.opacity, o.floorId, this.floorElevation(o.floorId), this._shows(o.floorId)].join('|');
+    const ground = this.groundAt(o.x || 0, o.y || 0);
+    const off = Number(o.heightOffset) || 0;
+    const sig = [o.url, o.x, o.y, o.rotation, o.width, o.opacity, o.floorId, this.floorElevation(o.floorId), this._shows(o.floorId), ground, off, !!o.hidden].join('|');
     if (sig === plane.userData.sig) return;
     plane.userData.sig = sig;
     plane.userData.floorId = o.floorId;
-    plane.position.copy(planToWorld(o.x || 0, o.y || 0, 0.015, this.floorElevation(o.floorId)));
+    plane.userData.hidden = !!o.hidden;
+    plane.position.copy(planToWorld(o.x || 0, o.y || 0, 0, 0));
+    plane.position.y = (ground != null ? ground + 0.02 : this.floorElevation(o.floorId) + 0.015) + off;
     plane.rotation.y = ((o.rotation || 0) * Math.PI) / 180;
     plane.material.opacity = o.opacity ?? 0.6;
     const aspect = plane.userData.aspect || 1;
@@ -1179,12 +1205,16 @@ export class FloorplanView {
         plane.userData.aspect = tex.image.height / tex.image.width;
         plane.userData.loaded = { url: o.url, image: tex.image, at: Date.now() };
         plane.scale.set(w, 1, w * plane.userData.aspect);
-        plane.visible = this._shows(o.floorId);
+        plane.visible = this._mapShown(plane);
         this.dirty = true;
       }, undefined, () => console.warn('floorplan3d: could not load mower map', o.url));
     }
-    if (plane.material.map) plane.visible = this._shows(o.floorId);
+    if (plane.material.map) plane.visible = this._mapShown(plane);
     this.dirty = true;
+  }
+
+  _mapShown(plane) {
+    return !plane.userData.hidden && this._shows(plane.userData.floorId);
   }
 
   // Mower trail: plan points [[x, y], ...] on one floor, or null.
@@ -1693,7 +1723,7 @@ export class FloorplanView {
       const st = stateOf(c.id);
       c.obj.element.classList.toggle('fp-faded', st ? !!st.faded : !!this.model && this.visibleFloor === 'all' && c.floorId !== top);
     }
-    if (this.mapPlane && this.mapPlane.material.map) this.mapPlane.visible = this._shows(this.mapPlane.userData.floorId);
+    if (this.mapPlane && this.mapPlane.material.map) this.mapPlane.visible = this._mapShown(this.mapPlane);
     // shadow map and occlusion only when their inputs changed (not on every state update)
     const model = this._modelSig();
     if (model !== this._shadowSig) {

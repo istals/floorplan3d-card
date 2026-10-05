@@ -445,6 +445,7 @@ class Floorplan3dCard extends HTMLElement {
       else { this._daylight = true; this._view.setDaylight(true); } // no model: the toggle is hidden, so always day
       this._syncToolbar();
       this._schedule(); // the manifest arrived: rebuild
+      if (this._layout && this._layout.mower && this._hass) this._refreshMapOverlay(); // the map lies on the model's lawn
       if (this._editing) this._edit.onModelLoaded(this._view.model !== prevModel);
     });
   }
@@ -692,6 +693,7 @@ class Floorplan3dCard extends HTMLElement {
       }
     }
     this._built.rooms = undefined; // model look: outlines and labels only while editing
+    if (this._layout && this._layout.mower && this._hass) this._refreshMapOverlay(); // "map only in edit mode"
     this._schedule();
     this._syncToolbar();
     // the panel changes the canvas size: resize once the layout has settled; the camera stays
@@ -980,7 +982,8 @@ class Floorplan3dCard extends HTMLElement {
     this._view.setMapOverlay({
       url: overlayUrl(this._hass, o.entity, bust),
       x: o.x, y: o.y, rotation: o.rotation, width: o.width, opacity: o.opacity,
-      floorId: this._mowerFloor(),
+      floorId: this._mowerFloor(), heightOffset: o.height_offset || 0,
+      hidden: !!o.edit_only && !this._editing, // detection keeps reading the loaded image
     });
   }
 

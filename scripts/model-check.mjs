@@ -7,6 +7,7 @@ import path from 'node:path';
 import { openDemo, newPage, root } from './lib/demo-browser.mjs';
 import { inverseTransformPoint, transformPoint } from '../src/bindings.js';
 import { alignModelPoint } from '../src/views.js';
+import { pixelToPlan } from '../src/mower-image.js';
 
 const failures = [];
 const check = (name, ok, detail = '') => {
@@ -1977,6 +1978,79 @@ try {
   await clickText('Stick all to surfaces');
   const txt2 = await page.evaluate(`${sr}.querySelector('.panel .stick')?.textContent || ''`);
   check('surface: Stick all again -> nothing left to move', /already sits on a surface/.test(txt2), txt2.trim());
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
+// 2i. mower map on the lawn: height from the model (any HA floor elevation), align by points, edit-only
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 700 });
+try {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._view.mapPlane && !!${card}._view.mapPlane.material.map`, { timeout: 15000 });
+  await sleep(300);
+  const planeY = () => page.evaluate(`${card}._view.mapPlane.position.y`);
+  const lawn = await page.evaluate(`${card}._view.groundAt(16.5, 1.5)`);
+  let y = await planeY();
+  check('map overlay lies on the demo lawn', lawn !== null && Math.abs(lawn) < 0.02 && y - lawn >= 0 && y - lawn <= 0.05, `lawn ${lawn}, plane ${y}`);
+  // the user's case: the garden's HA floor at 7 m
+  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, floors: [...(l.floors || []), { id: 'garden_f', name: 'Garden', elevation: 7, height: 2.7 }],
+    mower: { ...l.mower, floor_id: 'garden_f' } }); })()`);
+  await page.waitForFunction(`${card}._mowerFloor() === 'garden_f'`, { timeout: 5000 }).catch(() => {});
+  await sleep(300);
+  y = await planeY();
+  const elev = await page.evaluate(`${card}._view.floorElevation('garden_f')`);
+  check('map overlay stays on the lawn with the floor at 7 m', elev === 7 && y - lawn >= 0 && y - lawn <= 0.05, `elevation ${elev}, plane ${y}`);
+  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, overlay: { ...l.mower.overlay, height_offset: 0.3 } } }); })()`);
+  await sleep(200);
+  check('height offset raises the map', Math.abs((await planeY()) - y - 0.3) < 1e-6, String(await planeY()));
+
+  // align by points: start from a wrong overlay, click 2 image spots and where they really are on the lawn
+  const truth = { x: 16.5, y: 1.5, rotation: 0, width: 9 };
+  await page.evaluate(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, overlay: { ...l.mower.overlay, x: 15.2, y: 2.6, rotation: 17, width: 11.5, height_offset: 0 } } }); })()`);
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await sleep(300);
+  await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Mower').click()`);
+  await sleep(200);
+  await page.evaluate(`${card}._view.setCamera({ position: [16.5, 16, 4.5], target: [16.5, 0, -1.5] }, { instant: true })`);
+  await settle(page, card);
+  const panelBtn = (t) => page.evaluate(`(() => { const b = [...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === ${JSON.stringify(t)}); if (b) b.click(); return !!b; })()`);
+  check('Align by points armed', (await panelBtn('Align by points')) && !!(await page.evaluate(`${card}._edit.aligning`)));
+  const W = 450, H = 850;
+  for (const [px, py] of [[75, 125], [375, 725]]) {
+    const ov = await page.evaluate(`${card}._layout.mower.overlay`);
+    const img = pixelToPlan(px, py, W, H, ov);
+    const ph = await page.evaluate(`${card}._view.mapPlane.position.y`);
+    const a = await page.evaluate(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${img.x}, ${ph}, ${-img.y})); })()`);
+    await page.mouse.click(a[0], a[1]);
+    await sleep(150);
+    const real = pixelToPlan(px, py, W, H, truth);
+    const b = await page.evaluate(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${real.x}, 0, ${-real.y})); })()`);
+    await page.mouse.click(b[0], b[1]);
+    await sleep(250);
+  }
+  const fit = await page.evaluate(`${card}._layout.mower.overlay`);
+  check('align by 2 points reproduces the overlay', Math.abs(fit.x - truth.x) <= 0.05 && Math.abs(fit.y - truth.y) <= 0.05 && Math.abs(fit.rotation - truth.rotation) <= 0.5
+    && Math.abs(fit.width - truth.width) <= 0.1, JSON.stringify(fit));
+  await panelBtn('Done');
+  await sleep(150);
+  check('aligning ends', !(await page.evaluate(`${card}._edit.aligning`)));
+
+  // edit-only: hidden in view mode (still loaded for detection), shown again in edit mode
+  await page.evaluate(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=ov-edit-only]'); el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(150);
+  check('edit-only stored, map shown while editing', (await page.evaluate(`${card}._layout.mower.overlay.edit_only`)) === true && (await page.evaluate(`${card}._view.mapPlane.visible`)));
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await sleep(300);
+  check('edit-only: map hidden in view mode, image still loaded', await page.evaluate(`(() => { const p = ${card}._view.mapPlane; return !!p && !p.visible && !!p.material.map && !!p.userData.loaded; })()`));
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await sleep(300);
+  await page.evaluate(`${card}._setFloor(${card}._mowerFloor())`); // edit mode opens on a floor; the map is on the mower's
+  await sleep(200);
+  check('edit-only: map back in edit mode', await page.evaluate(`${card}._view.mapPlane.visible`));
+  await page.evaluate(`${card}._view.setCamera({ position: [16.5, 9, 8], target: [16.5, 0, -1.5] }, { instant: true })`);
+  await settle(page, card);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-aligned.png') });
   allErrors.push(...s.errors);
 } finally {
   await s.close();

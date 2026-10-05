@@ -30,6 +30,35 @@ export function planToPixel(x, y, imgW, imgH, overlay) {
   return { px: (lx / f.w + 0.5) * imgW, py: (0.5 - ly / f.h) * imgH };
 }
 
+// Overlay from point pairs: [{ px, py, plan: [x, y] }] (image pixels -> where they lie on the plan).
+// In the overlay frame plan = centre + (width / imgW) * e^(i*rotation) * u with
+// u = (px - imgW/2) + i*(imgH/2 - py), a similarity: 2 points fit exactly, 3+ by least squares.
+// -> { x, y, rotation (degrees, -180..180), width } or null (fewer than 2 distinct pixels).
+export function fitOverlay(pairs, imgW, imgH) {
+  if (!Array.isArray(pairs) || pairs.length < 2 || !(imgW > 0) || !(imgH > 0)) return null;
+  const n = pairs.length;
+  const us = pairs.map((p) => [p.px - imgW / 2, imgH / 2 - p.py]);
+  let ur = 0, ui = 0, zr = 0, zi = 0;
+  for (let k = 0; k < n; k++) { ur += us[k][0]; ui += us[k][1]; zr += pairs[k].plan[0]; zi += pairs[k].plan[1]; }
+  ur /= n; ui /= n; zr /= n; zi /= n;
+  // a = sum((z - zm) * conj(u - um)) / sum(|u - um|^2)
+  let nr = 0, ni = 0, den = 0;
+  for (let k = 0; k < n; k++) {
+    const dur = us[k][0] - ur, dui = us[k][1] - ui;
+    const dzr = pairs[k].plan[0] - zr, dzi = pairs[k].plan[1] - zi;
+    nr += dzr * dur + dzi * dui;
+    ni += dzi * dur - dzr * dui;
+    den += dur * dur + dui * dui;
+  }
+  if (den < 1e-9) return null;
+  const ar = nr / den, ai = ni / den;
+  const scale = Math.hypot(ar, ai);
+  if (!(scale > 0)) return null;
+  // centre = zm - a * um
+  const x = zr - (ar * ur - ai * ui), y = zi - (ar * ui + ai * ur);
+  return { x, y, rotation: (Math.atan2(ai, ar) * 180) / Math.PI, width: scale * imgW };
+}
+
 // Mask and flood-fill stack reused between detections (grown as needed): a 1600 px map would
 // otherwise allocate about 9 MB per run.
 let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0);
