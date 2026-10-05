@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { processMap, zoneMask, zonePixels, stripeAngle, stripeBearing, mowedShare, mapWorkSize, planToPixel } from '../src/mower-image.js';
+import { processMap, zoneMask, zonePixels, stripeAngle, stripeBearing, mowedShare, mapWorkSize, planToPixel, insidePoint, mapKernel } from '../src/mower-image.js';
+import { sunVector } from '../src/objects/logic.js';
+import { pointInPolygon } from '../src/placement.js';
 
 const BG = [30, 70, 35], MOWED = [120, 190, 110], NOMOW = [140, 140, 140], RED = [255, 40, 30];
 function image(w, h, c = BG) {
@@ -178,6 +180,17 @@ describe('stripe angle', () => {
     expect(stripeAngle(m, 200, 200)).toBeNull();
   });
 
+  it('bearing against true north: model north and alignment rotation, as the sky uses them', () => {
+    for (const [north, rot] of [[0, 0], [30, 0], [0, 25], [-40, 110]]) {
+      for (const az of [0, 20, 75, 130]) {
+        const v = sunVector(az, 0, north, rot); // compass azimuth -> card world
+        const plan = (Math.atan2(-v[2], v[0]) * 180) / Math.PI; // ccw from plan east
+        expect(axisDiff(stripeBearing(plan, 0, north, rot).bearing, az)).toBeLessThanOrEqual(0.5);
+        expect(axisDiff(stripeBearing(plan - 15, 15, north, rot).bearing, az)).toBeLessThanOrEqual(0.5);
+      }
+    }
+  });
+
   it('bearing on the plan: overlay rotation, compass axis', () => {
     expect(stripeBearing(90, 0)).toEqual({ bearing: 0, label: 'N–S' });
     expect(stripeBearing(0, 0)).toEqual({ bearing: 90, label: 'E–W' });
@@ -196,12 +209,61 @@ describe('mowed share', () => {
     expect(mowedShare({ mowed: 5, zone: 0, background: 0, zoned: true })).toBeNull();
   });
 
+  it('leaves no-mow and icon pixels out of the zone', () => {
+    expect(mowedShare({ mowed: 25, zone: 100, background: 10, nomow: 30, icon: 20, zoned: true })).toBeCloseTo(0.5);
+  });
+
+  it('counts no-mow and icon pixels inside the zone, icon pixels in no class', () => {
+    const w = 20, h = 20, src = image(w, h, MOWED);
+    rect(src, w, 0, 0, 20, 5, NOMOW);
+    rect(src, w, 9, 12, 3, 3, RED);
+    const r = processMap(src, w, h, { mowed: { color: MOWED, tolerance: 10 }, nomow: { color: NOMOW, tolerance: 10 },
+      iconBlob: { px: 10.5, py: 13.5, count: 9, color: RED, tolerance: 30 }, dilate: 1, zoneMask: new Uint8Array(w * h).fill(1) });
+    expect(r.nomow).toBe(100);
+    expect(r.icon).toBe(25); // 3x3 dilated by 1
+    expect(r.mowed).toBe(400 - 100 - 25);
+    expect(mowedShare({ ...r, zoned: true })).toBeCloseTo(1);
+  });
+
   it('end to end: synthetic stripes in a zone', () => {
     const w = 200, h = 200, src = image(w, h);
     rect(src, w, 0, 0, 200, 50, MOWED); // a quarter of the image mowed
     const zone = zoneMask([[0, 0], [200, 0], [200, 100], [0, 100]], w, h);
     const r = processMap(src, w, h, { bg: { color: BG, tolerance: 20 }, mowed: { color: MOWED, tolerance: 20 }, zoneMask: zone.mask });
     expect(mowedShare({ ...r, zoned: true })).toBeCloseTo(0.5);
+  });
+});
+
+describe('stripe angle buffers', () => {
+  it('gives the same result on repeated calls (reused grid)', () => {
+    const w = 300, h = 240, m = maskOf(stripes(w, h, 40), w, h, MOWED);
+    const a = stripeAngle(m, w, h), b = stripeAngle(m, w, h);
+    expect(b.angle).toBe(a.angle);
+    expect(stripeAngle(maskOf(stripes(100, 100, 120, 8), 100, 100, MOWED), 100, 100).angle).toBeCloseTo(120, -0.5);
+  });
+
+  it('the kernel is self-contained (runs from its source, as in a worker)', () => {
+    const k = new Function(`return (${mapKernel.toString()})();`)();
+    const w = 300, h = 240, a = stripes(w, h, 30);
+    const r = k.processMap(a, w, h, { bg: { color: BG, tolerance: 20 }, mowed: { color: MOWED, tolerance: 20 } }, {});
+    expect(r.mowed).toBeGreaterThan(1000);
+    expect(axisDiff(k.stripeAngle(r.mowedMask, w, h).angle, 30)).toBeLessThan(3);
+  });
+});
+
+describe('inside point', () => {
+  it('is the centroid for convex outlines', () => {
+    const p = insidePoint([[0, 0], [4, 0], [4, 2], [0, 2]]);
+    expect(p[0]).toBeCloseTo(2, 1);
+    expect(p[1]).toBeCloseTo(1, 1);
+  });
+
+  it('lies inside, away from the edges, for an L / U shape', () => {
+    const u = [[0, 0], [10, 0], [10, 10], [8, 10], [8, 2], [2, 2], [2, 10], [0, 10]];
+    const p = insidePoint(u);
+    expect(pointInPolygon(p, u)).toBe(true);
+    const edge = Math.min(p[0], 10 - p[0], p[1], Math.abs(p[0] - 2), Math.abs(p[0] - 8));
+    expect(edge).toBeGreaterThan(0.6);
   });
 });
 

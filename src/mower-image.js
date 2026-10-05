@@ -174,158 +174,217 @@ export function mapWorkSize(width, height) {
   return { width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) };
 }
 
-// Look of the processed map (before the overlay opacity): mowed stripes = their own colour lightened
-// halfway to white at ~60 % alpha; no-mow = dark, hatched (diagonal lines every 8 px).
-const MOWED_ALPHA = 150, NOMOW_RGB = 24, NOMOW_LINE_ALPHA = 200, NOMOW_GAP_ALPHA = 90;
+// The pixel kernel: processMap, zoneMask, stripeAngle and their helpers in one self-contained
+// function (no references outside it), so a worker runs the very same code from its source text.
+// Each kernel instance reuses its own stripe grid.
+export function mapKernel() {
+  // Look of the processed map (before the overlay opacity): mowed stripes = their own colour
+  // lightened halfway to white at ~25 % alpha; no-mow = dark, hatched (diagonal lines every 8 px).
+  const MOWED_ALPHA = 64, NOMOW_RGB = 24, NOMOW_LINE_ALPHA = 200, NOMOW_GAP_ALPHA = 90;
+  let grid = new Float32Array(0);
 
-function grow(bufs, key, Type, n) {
-  if (!bufs[key] || bufs[key].length < n) bufs[key] = new Type(n);
-  return bufs[key];
-}
-
-// Colour distance (max channel difference) when within tol, else -1.
-function within(rgba, k, c, tol) {
-  const d = Math.max(Math.abs(rgba[k] - c[0]), Math.abs(rgba[k + 1] - c[1]), Math.abs(rgba[k + 2] - c[2]));
-  return d <= tol ? d : -1;
-}
-
-// Pixels of the mower icon: pixels of its colour near the blob centroid, their 4-connected
-// neighbours of the same colour, then dilated by `dilate` px (the icon's outline / anti-aliasing).
-function iconMask(rgba, w, h, blob, dilate, bufs) {
-  const n = w * h;
-  const mask = grow(bufs, 'icon', Uint8Array, n).subarray(0, n);
-  const stack = grow(bufs, 'stack', Int32Array, n);
-  mask.fill(0);
-  const tol = blob.tolerance ?? 40;
-  const ok = (i) => rgba[i * 4 + 3] >= 128 && within(rgba, i * 4, blob.color, tol) >= 0;
-  const r = Number(blob.count) > 0 ? Math.sqrt(blob.count / Math.PI) * 1.5 + 2 : 8;
-  const cx = blob.px, cy = blob.py;
-  let top = 0, found = 0;
-  let x0 = w, y0 = h, x1 = -1, y1 = -1;
-  for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(h - 1, Math.ceil(cy + r)); y++) {
-    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(w - 1, Math.ceil(cx + r)); x++) {
-      const i = y * w + x;
-      if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r && ok(i)) { mask[i] = 1; stack[top++] = i; }
-    }
+  function grow(bufs, key, Type, n) {
+    if (!bufs[key] || bufs[key].length < n) bufs[key] = new Type(n);
+    return bufs[key];
   }
-  while (top) {
-    const i = stack[--top];
-    const x = i % w, y = (i - x) / w;
-    found++;
-    if (x < x0) x0 = x;
-    if (x > x1) x1 = x;
-    if (y < y0) y0 = y;
-    if (y > y1) y1 = y;
-    if (x > 0 && !mask[i - 1] && ok(i - 1)) { mask[i - 1] = 1; stack[top++] = i - 1; }
-    if (x < w - 1 && !mask[i + 1] && ok(i + 1)) { mask[i + 1] = 1; stack[top++] = i + 1; }
-    if (y > 0 && !mask[i - w] && ok(i - w)) { mask[i - w] = 1; stack[top++] = i - w; }
-    if (y < h - 1 && !mask[i + w] && ok(i + w)) { mask[i + w] = 1; stack[top++] = i + w; }
+
+  // Colour distance (max channel difference) when within tol, else -1.
+  function within(rgba, k, c, tol) {
+    const d = Math.max(Math.abs(rgba[k] - c[0]), Math.abs(rgba[k + 1] - c[1]), Math.abs(rgba[k + 2] - c[2]));
+    return d <= tol ? d : -1;
   }
-  if (!found) return null;
-  const d = Math.max(0, Math.round(dilate || 0));
-  if (d) {
-    // square dilation, separable: rows into tmp, then columns back into the mask (bounding box only)
-    const tmp = grow(bufs, 'tmp', Uint8Array, n);
-    const bx0 = Math.max(0, x0 - d), bx1 = Math.min(w - 1, x1 + d), by0 = Math.max(0, y0 - d), by1 = Math.min(h - 1, y1 + d);
-    for (let y = by0; y <= by1; y++) {
-      for (let x = bx0; x <= bx1; x++) {
-        let v = 0;
-        for (let t = Math.max(0, x - d); t <= Math.min(w - 1, x + d) && !v; t++) v = mask[y * w + t];
-        tmp[y * w + x] = v;
+
+  // Pixels of the mower icon: pixels of its colour near the blob centroid, their 4-connected
+  // neighbours of the same colour, then dilated by `dilate` px (the icon's outline / anti-aliasing).
+  function iconMask(rgba, w, h, blob, dilate, bufs) {
+    const n = w * h;
+    const mask = grow(bufs, 'icon', Uint8Array, n).subarray(0, n);
+    const stack = grow(bufs, 'stack', Int32Array, n);
+    mask.fill(0);
+    const tol = blob.tolerance ?? 40;
+    const ok = (i) => rgba[i * 4 + 3] >= 128 && within(rgba, i * 4, blob.color, tol) >= 0;
+    const r = Number(blob.count) > 0 ? Math.sqrt(blob.count / Math.PI) * 1.5 + 2 : 8;
+    const cx = blob.px, cy = blob.py;
+    let top = 0, found = 0;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(h - 1, Math.ceil(cy + r)); y++) {
+      for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(w - 1, Math.ceil(cx + r)); x++) {
+        const i = y * w + x;
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r && ok(i)) { mask[i] = 1; stack[top++] = i; }
       }
     }
-    for (let y = by0; y <= by1; y++) {
-      for (let x = bx0; x <= bx1; x++) {
-        let v = 0;
-        for (let t = Math.max(by0, y - d); t <= Math.min(by1, y + d) && !v; t++) v = tmp[t * w + x];
-        mask[y * w + x] = v;
+    while (top) {
+      const i = stack[--top];
+      const x = i % w, y = (i - x) / w;
+      found++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !mask[i - 1] && ok(i - 1)) { mask[i - 1] = 1; stack[top++] = i - 1; }
+      if (x < w - 1 && !mask[i + 1] && ok(i + 1)) { mask[i + 1] = 1; stack[top++] = i + 1; }
+      if (y > 0 && !mask[i - w] && ok(i - w)) { mask[i - w] = 1; stack[top++] = i - w; }
+      if (y < h - 1 && !mask[i + w] && ok(i + w)) { mask[i + w] = 1; stack[top++] = i + w; }
+    }
+    if (!found) return null;
+    const d = Math.max(0, Math.round(dilate || 0));
+    if (d) {
+      // square dilation, separable: rows into tmp, then columns back into the mask (bounding box only)
+      const tmp = grow(bufs, 'tmp', Uint8Array, n);
+      const bx0 = Math.max(0, x0 - d), bx1 = Math.min(w - 1, x1 + d), by0 = Math.max(0, y0 - d), by1 = Math.min(h - 1, y1 + d);
+      for (let y = by0; y <= by1; y++) {
+        for (let x = bx0; x <= bx1; x++) {
+          let v = 0;
+          for (let t = Math.max(0, x - d); t <= Math.min(w - 1, x + d) && !v; t++) v = mask[y * w + t];
+          tmp[y * w + x] = v;
+        }
+      }
+      for (let y = by0; y <= by1; y++) {
+        for (let x = bx0; x <= bx1; x++) {
+          let v = 0;
+          for (let t = Math.max(by0, y - d); t <= Math.min(by1, y + d) && !v; t++) v = tmp[t * w + x];
+          mask[y * w + x] = v;
+        }
       }
     }
+    return mask;
   }
-  return mask;
-}
 
-// The map picture as it is drawn on the lawn. rgba: w x h pixels; opts:
-//   bg / mowed / nomow: { color: [r, g, b], tolerance } (each optional; a pixel matching several
-//     goes to the nearest), iconBlob: { px, py, count, color, tolerance } (working pixels) to hide,
-//   dilate: px around the icon, zoneMask: Uint8Array (1 = inside) or null.
-// Background -> transparent, mowed -> light translucent, no-mow -> dark hatched, icon and outside the
-// zone -> transparent, the rest unchanged. No options: a plain copy (no keying).
-// bufs: an object whose typed arrays are reused between calls (grown as needed).
-// -> { data (w*h*4), mowedMask (w*h, 1 = mowed), mowed, background, zone (pixel counts) }
-export function processMap(rgba, w, h, opts = {}, bufs = {}) {
-  const n = w * h;
-  const out = grow(bufs, 'out', Uint8ClampedArray, n * 4).subarray(0, n * 4);
-  const mowedMask = grow(bufs, 'mowed', Uint8Array, n).subarray(0, n);
-  mowedMask.fill(0);
-  const cls = [];
-  for (const [kind, c] of [['bg', opts.bg], ['mowed', opts.mowed], ['nomow', opts.nomow]]) {
-    if (c && Array.isArray(c.color)) cls.push({ kind, color: c.color, tol: c.tolerance ?? 30 });
-  }
-  const icon = opts.iconBlob && Array.isArray(opts.iconBlob.color) ? iconMask(rgba, w, h, opts.iconBlob, opts.dilate ?? 3, bufs) : null;
-  const zone = opts.zoneMask || null;
-  let mowed = 0, background = 0, zoneCount = 0;
-  for (let i = 0, k = 0, y = 0, x = 0; i < n; i++, k += 4) {
-    if (zone && !zone[i]) {
-      out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
-    } else {
-      if (zone) zoneCount++;
-      let kind = null, best = 256;
-      for (const c of cls) {
-        const d = within(rgba, k, c.color, c.tol);
-        if (d >= 0 && d < best) { best = d; kind = c.kind; }
-      }
-      if (rgba[k + 3] < 128) kind = null;
-      if (kind === 'mowed') { mowed++; mowedMask[i] = 1; }
-      else if (kind === 'bg') background++;
-      if (icon && icon[i]) {
+  // The map picture as it is drawn on the lawn. rgba: w x h pixels; opts:
+  //   bg / mowed / nomow: { color: [r, g, b], tolerance } (each optional; a pixel matching several
+  //     goes to the nearest), iconBlob: { px, py, count, color, tolerance } (working pixels) to hide,
+  //   dilate: px around the icon, zoneMask: Uint8Array (1 = inside) or null.
+  // Background -> transparent, mowed -> light translucent, no-mow -> dark hatched, icon and outside the
+  // zone -> transparent, the rest unchanged. No options: a plain copy (no keying).
+  // bufs: typed arrays reused between calls (grown as needed); bufs.out may be the output ImageData's
+  // data (written in place).
+  // -> { data (w*h*4), mowedMask (w*h, 1 = mowed), mowed, background, nomow, icon, zone (pixel counts;
+  //    icon pixels belong to no colour class) }
+  function processMap(rgba, w, h, opts = {}, bufs = {}) {
+    const n = w * h;
+    const out = grow(bufs, 'out', Uint8ClampedArray, n * 4).subarray(0, n * 4);
+    const mowedMask = grow(bufs, 'mowed', Uint8Array, n).subarray(0, n);
+    mowedMask.fill(0);
+    const cls = [];
+    for (const [kind, c] of [['bg', opts.bg], ['mowed', opts.mowed], ['nomow', opts.nomow]]) {
+      if (c && Array.isArray(c.color)) cls.push({ kind, color: c.color, tol: c.tolerance ?? 30 });
+    }
+    const icon = opts.iconBlob && Array.isArray(opts.iconBlob.color) ? iconMask(rgba, w, h, opts.iconBlob, opts.dilate ?? 3, bufs) : null;
+    const zone = opts.zoneMask || null;
+    let mowed = 0, background = 0, nomow = 0, iconCount = 0, zoneCount = 0;
+    for (let i = 0, k = 0, y = 0, x = 0; i < n; i++, k += 4) {
+      if (zone && !zone[i]) {
         out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
-      } else if (kind === 'bg') {
+      } else if (icon && icon[i]) {
+        if (zone) zoneCount++;
+        iconCount++;
         out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
-      } else if (kind === 'mowed') {
-        out[k] = (rgba[k] + 255) >> 1;
-        out[k + 1] = (rgba[k + 1] + 255) >> 1;
-        out[k + 2] = (rgba[k + 2] + 255) >> 1;
-        out[k + 3] = Math.min(rgba[k + 3], MOWED_ALPHA);
-      } else if (kind === 'nomow') {
-        out[k] = out[k + 1] = out[k + 2] = NOMOW_RGB;
-        out[k + 3] = (x + y) % 8 < 3 ? NOMOW_LINE_ALPHA : NOMOW_GAP_ALPHA;
       } else {
-        out[k] = rgba[k];
-        out[k + 1] = rgba[k + 1];
-        out[k + 2] = rgba[k + 2];
-        out[k + 3] = rgba[k + 3];
+        if (zone) zoneCount++;
+        let kind = null, best = 256;
+        if (rgba[k + 3] >= 128) {
+          for (const c of cls) {
+            const d = within(rgba, k, c.color, c.tol);
+            if (d >= 0 && d < best) { best = d; kind = c.kind; }
+          }
+        }
+        if (kind === 'bg') {
+          background++;
+          out[k] = out[k + 1] = out[k + 2] = out[k + 3] = 0;
+        } else if (kind === 'mowed') {
+          mowed++;
+          mowedMask[i] = 1;
+          out[k] = (rgba[k] + 255) >> 1;
+          out[k + 1] = (rgba[k + 1] + 255) >> 1;
+          out[k + 2] = (rgba[k + 2] + 255) >> 1;
+          out[k + 3] = Math.min(rgba[k + 3], MOWED_ALPHA);
+        } else if (kind === 'nomow') {
+          nomow++;
+          out[k] = out[k + 1] = out[k + 2] = NOMOW_RGB;
+          out[k + 3] = (x + y) % 8 < 3 ? NOMOW_LINE_ALPHA : NOMOW_GAP_ALPHA;
+        } else {
+          out[k] = rgba[k];
+          out[k + 1] = rgba[k + 1];
+          out[k + 2] = rgba[k + 2];
+          out[k + 3] = rgba[k + 3];
+        }
+      }
+      if (++x === w) { x = 0; y++; }
+    }
+    return { data: out, mowedMask, mowed, background, nomow, icon: iconCount, zone: zoneCount };
+  }
+
+  // Polygon [[px, py], ...] (pixel coordinates, continuous) -> mask of the pixels whose centres lie
+  // inside (even-odd). out: optional reused Uint8Array. -> { mask, count }
+  function zoneMask(points, w, h, out = null) {
+    const n = w * h;
+    const mask = out && out.length >= n ? out.subarray(0, n) : new Uint8Array(n);
+    mask.fill(0);
+    let count = 0;
+    const xs = [];
+    const m = points.length;
+    for (let y = 0; y < h; y++) {
+      const yc = y + 0.5;
+      xs.length = 0;
+      for (let a = 0, b = m - 1; a < m; b = a++) {
+        const [xa, ya] = points[a], [xb, yb] = points[b];
+        if ((ya <= yc) !== (yb <= yc)) xs.push(xa + ((yc - ya) / (yb - ya)) * (xb - xa));
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const from = Math.max(0, Math.ceil(xs[k] - 0.5)), to = Math.min(w, Math.ceil(xs[k + 1] - 0.5));
+        for (let x = from; x < to; x++) { mask[y * w + x] = 1; count++; }
       }
     }
-    if (++x === w) { x = 0; y++; }
+    return { mask, count };
   }
-  return { data: out, mowedMask, mowed, background, zone: zoneCount };
+
+  // Dominant direction of the mowed stripes: structure tensor of Sobel gradients on the mask
+  // downscaled to <= 256 px (block sums, a reused grid). Gradients run across the stripes, so the
+  // stripes lie 90° from the dominant gradient. -> { angle (degrees 0..180, counter-clockwise from
+  // image right, image up), coherence (0..1) } or null (no mowed pixels, or no clear direction).
+  function stripeAngle(mask, w, h, minCoherence = 0.3) {
+    const f = Math.max(1, Math.ceil(Math.max(w, h) / 256));
+    const gw = Math.floor(w / f), gh = Math.floor(h / f);
+    if (gw < 3 || gh < 3) return null;
+    if (grid.length < gw * gh) grid = new Float32Array(gw * gh);
+    const g = grid;
+    g.fill(0, 0, gw * gh);
+    for (let y = 0; y < gh * f; y++) {
+      const row = y * w, gy = ((y / f) | 0) * gw;
+      for (let x = 0; x < gw * f; x++) if (mask[row + x]) g[gy + ((x / f) | 0)] += 1;
+    }
+    let sxx = 0, syy = 0, sxy = 0;
+    for (let y = 1; y < gh - 1; y++) {
+      for (let x = 1; x < gw - 1; x++) {
+        const i = y * gw + x;
+        const tl = g[i - gw - 1], tc = g[i - gw], tr = g[i - gw + 1];
+        const ml = g[i - 1], mr = g[i + 1];
+        const bl = g[i + gw - 1], bc = g[i + gw], br = g[i + gw + 1];
+        const gx = tr + 2 * mr + br - tl - 2 * ml - bl;
+        const gy = bl + 2 * bc + br - tl - 2 * tc - tr;
+        sxx += gx * gx;
+        syy += gy * gy;
+        sxy += gx * gy;
+      }
+    }
+    const energy = sxx + syy;
+    if (!(energy > 0)) return null;
+    const coherence = Math.hypot(sxx - syy, 2 * sxy) / energy;
+    if (coherence < minCoherence) return null;
+    const phi = 0.5 * Math.atan2(2 * sxy, sxx - syy); // gradient direction, image y down
+    const deg = (-(phi + Math.PI / 2) * 180) / Math.PI; // stripes, image y up
+    return { angle: ((deg % 180) + 180) % 180, coherence };
+  }
+
+  return { processMap, zoneMask, stripeAngle };
 }
 
-// Polygon [[px, py], ...] (pixel coordinates, continuous) -> mask of the pixels whose centres lie
-// inside (even-odd). out: optional reused Uint8Array. -> { mask, count }
-export function zoneMask(points, w, h, out = null) {
-  const n = w * h;
-  const mask = out && out.length >= n ? out.subarray(0, n) : new Uint8Array(n);
-  mask.fill(0);
-  let count = 0;
-  const xs = [];
-  const m = points.length;
-  for (let y = 0; y < h; y++) {
-    const yc = y + 0.5;
-    xs.length = 0;
-    for (let a = 0, b = m - 1; a < m; b = a++) {
-      const [xa, ya] = points[a], [xb, yb] = points[b];
-      if ((ya <= yc) !== (yb <= yc)) xs.push(xa + ((yc - ya) / (yb - ya)) * (xb - xa));
-    }
-    xs.sort((p, q) => p - q);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      const from = Math.max(0, Math.ceil(xs[k] - 0.5)), to = Math.min(w, Math.ceil(xs[k + 1] - 0.5));
-      for (let x = from; x < to; x++) { mask[y * w + x] = 1; count++; }
-    }
-  }
-  return { mask, count };
-}
+const KERNEL = mapKernel();
+/** See mapKernel. */
+export const processMap = KERNEL.processMap;
+export const zoneMask = KERNEL.zoneMask;
+export const stripeAngle = KERNEL.stripeAngle;
 
 // Plan polygon -> working pixel polygon of an imgW x imgH map drawn at w x h through the overlay.
 export function zonePixels(polygon, overlay, imgW, imgH, w, h) {
@@ -336,57 +395,71 @@ export function zonePixels(polygon, overlay, imgW, imgH, w, h) {
   });
 }
 
-// Dominant direction of the mowed stripes: structure tensor of Sobel gradients on the mask
-// downscaled to <= 256 px (block means). Gradients run across the stripes, so the stripes lie 90°
-// from the dominant gradient. -> { angle (degrees 0..180, counter-clockwise from image right, image
-// up), coherence (0..1) } or null (no mowed pixels, or no clear direction).
-export function stripeAngle(mask, w, h, minCoherence = 0.3) {
-  const f = Math.max(1, Math.ceil(Math.max(w, h) / 256));
-  const gw = Math.floor(w / f), gh = Math.floor(h / f);
-  if (gw < 3 || gh < 3) return null;
-  const g = new Float32Array(gw * gh);
-  for (let y = 0; y < gh * f; y++) {
-    const row = y * w, gy = ((y / f) | 0) * gw;
-    for (let x = 0; x < gw * f; x++) if (mask[row + x]) g[gy + ((x / f) | 0)] += 1;
-  }
-  let sxx = 0, syy = 0, sxy = 0;
-  for (let y = 1; y < gh - 1; y++) {
-    for (let x = 1; x < gw - 1; x++) {
-      const i = y * gw + x;
-      const tl = g[i - gw - 1], tc = g[i - gw], tr = g[i - gw + 1];
-      const ml = g[i - 1], mr = g[i + 1];
-      const bl = g[i + gw - 1], bc = g[i + gw], br = g[i + gw + 1];
-      const gx = tr + 2 * mr + br - tl - 2 * ml - bl;
-      const gy = bl + 2 * bc + br - tl - 2 * tc - tr;
-      sxx += gx * gx;
-      syy += gy * gy;
-      sxy += gx * gy;
-    }
-  }
-  const energy = sxx + syy;
-  if (!(energy > 0)) return null;
-  const coherence = Math.hypot(sxx - syy, 2 * sxy) / energy;
-  if (coherence < minCoherence) return null;
-  const phi = 0.5 * Math.atan2(2 * sxy, sxx - syy); // gradient direction, image y down
-  const deg = (-(phi + Math.PI / 2) * 180) / Math.PI; // stripes, image y up
-  return { angle: ((deg % 180) + 180) % 180, coherence };
-}
-
 const AXES = ['N–S', 'NE–SW', 'E–W', 'SE–NW'];
 
-// Stripe angle on the image (stripeAngle) -> compass axis on the plan through the overlay rotation
-// (degrees counter-clockwise). -> { bearing: 0..179 (clockwise from north), label }
-export function stripeBearing(angle, rotation = 0) {
+// Stripe angle on the image (stripeAngle) -> compass axis against true north: through the overlay
+// rotation onto the plan (degrees counter-clockwise), then the model's north and alignment rotation
+// exactly as the sky uses them (sunVector). -> { bearing: 0..179 (clockwise from north), label }
+export function stripeBearing(angle, rotation = 0, north = 0, alignRotation = 0) {
   const plan = angle + (Number(rotation) || 0);
-  const b = ((Math.round(90 - plan) % 180) + 180) % 180;
+  const b = ((Math.round(90 - plan - (Number(north) || 0) + (Number(alignRotation) || 0)) % 180) + 180) % 180;
   return { bearing: b, label: AXES[Math.round(b / 45) % 4] };
 }
 
-// Share of the lawn mowed: mowed / zone pixels when clipped to a zone, else mowed / (mowed +
-// background). -> 0..1 or null (nothing to compare with)
-export function mowedShare({ mowed, background, zone, zoned }) {
-  const total = zoned ? zone : mowed + background;
+// Share of the lawn mowed: mowed / (zone pixels - no-mow - icon) when clipped to a zone, else
+// mowed / (mowed + background). -> 0..1 or null (nothing to compare with)
+export function mowedShare({ mowed, background, zone, zoned, nomow = 0, icon = 0 }) {
+  const total = zoned ? zone - (nomow || 0) - (icon || 0) : mowed + background;
   return total > 0 ? Math.min(1, mowed / total) : null;
+}
+
+function segDist(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+  const t = l ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+
+function inside([x, y], poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+
+const edgeDist = (p, poly) => {
+  let d = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) d = Math.min(d, segDist(p, poly[j], poly[i]));
+  return d;
+};
+
+// A point well inside a polygon (for a label or an arrow): the centroid when it lies inside and
+// nearly as far from the edges as the best point, else the grid point (24 x 24) farthest from the
+// edges (a pole-of-inaccessibility estimate). -> [x, y]
+export function insidePoint(poly) {
+  let a = 0, cx = 0, cy = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const f = poly[j][0] * poly[i][1] - poly[i][0] * poly[j][1];
+    a += f;
+    cx += (poly[j][0] + poly[i][0]) * f;
+    cy += (poly[j][1] + poly[i][1]) * f;
+    x0 = Math.min(x0, poly[i][0]); x1 = Math.max(x1, poly[i][0]);
+    y0 = Math.min(y0, poly[i][1]); y1 = Math.max(y1, poly[i][1]);
+  }
+  const c = Math.abs(a) > 1e-9 ? [cx / (3 * a), cy / (3 * a)] : [(x0 + x1) / 2, (y0 + y1) / 2];
+  let best = null, bd = -1;
+  const N = 24;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const p = [x0 + ((i + 0.5) * (x1 - x0)) / N, y0 + ((j + 0.5) * (y1 - y0)) / N];
+      if (!inside(p, poly)) continue;
+      const d = edgeDist(p, poly);
+      if (d > bd) { bd = d; best = p; }
+    }
+  }
+  if (inside(c, poly) && edgeDist(c, poly) >= 0.8 * bd) return c;
+  return best || c;
 }
 
 // ---------- browser: load an image URL into pixels (one reused canvas) ----------
@@ -450,56 +523,187 @@ export async function readImagePixels(url) {
   }
 }
 
-// ---------- browser: the processed map (reused canvases, buffers and zone mask) ----------
+// ---------- browser: the processed map (one readback, reused canvases and buffers) ----------
 function makeCanvas(w, h) {
   if (typeof document !== 'undefined') return Object.assign(document.createElement('canvas'), { width: w, height: h });
   return new OffscreenCanvas(w, h);
 }
 
+// Let the page breathe between the readback and the pixel loop (main-thread path only).
+const yieldOnce = () => new Promise((r) => {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => r(), { timeout: 50 });
+  else setTimeout(r, 0);
+});
+
+// Worker running the kernel: one message per picture, the pixel and output buffers transferred both ways.
+function workerSource() {
+  return `const K = (${mapKernel.toString()})();
+const bufs = {};
+let zone = { key: null, mask: null };
+self.onmessage = (e) => {
+  const m = e.data;
+  try {
+    bufs.out = new Uint8ClampedArray(m.out);
+    let zm = null;
+    if (m.zonePts) {
+      if (m.zoneKey !== zone.key) zone = { key: m.zoneKey, mask: K.zoneMask(m.zonePts, m.w, m.h, zone.mask).mask };
+      zm = zone.mask;
+    }
+    const r = K.processMap(new Uint8ClampedArray(m.rgba), m.w, m.h, Object.assign({}, m.opts, { zoneMask: zm }), bufs);
+    const s = m.stripes ? K.stripeAngle(r.mowedMask, m.w, m.h) : null;
+    self.postMessage({ id: m.id, out: m.out, mowed: r.mowed, background: r.background, nomow: r.nomow, icon: r.icon, zone: r.zone, angle: s ? s.angle : null }, [m.out]);
+  } catch (err) {
+    self.postMessage({ id: m.id, out: m.out, error: String(err) }, [m.out]);
+  }
+};`;
+}
+
+const WORKER_TIMEOUT_MS = 5000;
+
 export class MapProcessor {
-  constructor() {
+  // worker: run the pixel loop in a worker when OffscreenCanvas and Worker exist (falls back to the
+  // main thread for good on any worker failure).
+  constructor({ worker = true } = {}) {
     this.bufs = {};
-    this.work = null; // the decoded image at working size (read back)
+    this.work = null; // the decoded picture at working size (read back once per refresh)
     this.canvas = null; // the processed picture (texture source)
-    this._out = null; // ImageData of this.canvas
-    this._zone = { key: null, mask: null, count: 0 };
+    this._out = null; // ImageData of this.canvas, written in place (its buffer travels to the worker and back)
+    this._zone = { key: null, mask: null }; // main-thread zone mask cache
+    this._wantWorker = worker;
+    this._worker = null;
+    this._workerDead = false;
+    this._seq = 0;
+    this._waiting = new Map();
+    this._queue = Promise.resolve();
   }
 
-  // src: decoded image (imgW x imgH). opts: { bg, mowed, nomow ({ color, tolerance }), iconBlob
-  // ({ px, py, count } in image pixels + color, tolerance), dilate, zone (plan polygon) and overlay
-  // (alignment, for the zone) }. -> { canvas, width, height, mowed, background, zone, zoned, angle }
-  run(src, imgW, imgH, opts = {}) {
+  // The one readback per refresh: the picture at working size. -> { data, width, height, imgW, imgH }
+  read(src, imgW, imgH) {
     const { width: w, height: h } = mapWorkSize(imgW, imgH);
     if (!this.work) this.work = makeCanvas(w, h);
     if (this.work.width !== w) this.work.width = w;
     if (this.work.height !== h) this.work.height = h;
-    const wctx = this.work.getContext('2d', { willReadFrequently: true });
-    wctx.clearRect(0, 0, w, h);
-    wctx.drawImage(src, 0, 0, w, h);
-    const rgba = wctx.getImageData(0, 0, w, h).data;
-    let zoneMaskArr = null;
+    const ctx = this.work.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(src, 0, 0, w, h);
+    return { data: ctx.getImageData(0, 0, w, h).data, width: w, height: h, imgW, imgH };
+  }
+
+  // Process pixels from read() (consumed: their buffer may move to the worker). opts: { bg, mowed,
+  // nomow ({ color, tolerance }), iconBlob ({ px, py, count } in image pixels + color, tolerance),
+  // dilate, zone (plan polygon), overlay (alignment, for the zone) }. One picture at a time.
+  // -> { canvas, width, height, mowed, background, nomow, icon, zone, zoned, angle }
+  process(px, opts = {}) {
+    const run = this._queue.then(() => this._process(px, opts));
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _process(px, opts) {
+    const { width: w, height: h, imgW, imgH } = px;
+    let zonePts = null, zoneKey = null;
     if (opts.zone && opts.overlay) {
       const o = opts.overlay;
-      const key = [JSON.stringify(opts.zone), o.x, o.y, o.rotation, o.width, w, h, imgW, imgH].join('|');
-      if (key !== this._zone.key) {
-        const z = zoneMask(zonePixels(opts.zone, o, imgW, imgH, w, h), w, h, this._zone.mask);
-        this._zone = { key, mask: z.mask, count: z.count };
+      zoneKey = [JSON.stringify(opts.zone), o.x, o.y, o.rotation, o.width, w, h, imgW, imgH].join('|');
+      zonePts = zonePixels(opts.zone, o, imgW, imgH, w, h);
+    }
+    const sx = w / imgW, b = opts.iconBlob;
+    const kopts = {
+      bg: opts.bg || null, mowed: opts.mowed || null, nomow: opts.nomow || null, dilate: opts.dilate ?? 3,
+      iconBlob: b ? { px: b.px * sx, py: b.py * sx, count: b.count == null ? null : b.count * sx * sx, color: b.color, tolerance: b.tolerance } : null,
+    };
+    this._ensureOut(w, h);
+    let r = null;
+    const wk = this._getWorker();
+    if (wk) {
+      try {
+        r = await this._viaWorker(wk, px.data, w, h, kopts, zonePts, zoneKey, !!opts.mowed);
+      } catch (e) {
+        console.warn('floorplan3d: map worker failed, processing on the main thread', e);
+        this._killWorker();
+        this._ensureOut(w, h);
+        if (!px.data.byteLength) throw e; // the pixels went to the worker: this picture is skipped
+        r = null;
       }
-      zoneMaskArr = this._zone.mask;
     }
-    const sx = w / imgW;
-    const b = opts.iconBlob;
-    const iconBlob = b ? { ...b, px: b.px * sx, py: b.py * sx, count: b.count == null ? null : b.count * sx * sx } : null;
-    const r = processMap(rgba, w, h, { bg: opts.bg, mowed: opts.mowed, nomow: opts.nomow, iconBlob, dilate: opts.dilate ?? 3, zoneMask: zoneMaskArr }, this.bufs);
+    if (!r) {
+      await yieldOnce();
+      let zm = null;
+      if (zonePts) {
+        if (zoneKey !== this._zone.key) this._zone = { key: zoneKey, mask: zoneMask(zonePts, w, h, this._zone.mask).mask };
+        zm = this._zone.mask;
+      }
+      this.bufs.out = this._out.data;
+      const res = processMap(px.data, w, h, { ...kopts, zoneMask: zm }, this.bufs);
+      const s = opts.mowed ? stripeAngle(res.mowedMask, w, h) : null;
+      r = { mowed: res.mowed, background: res.background, nomow: res.nomow, icon: res.icon, zone: res.zone, angle: s ? s.angle : null };
+    }
     if (!this.canvas) this.canvas = makeCanvas(w, h);
-    if (this.canvas.width !== w || this.canvas.height !== h || !this._out || this._out.width !== w || this._out.height !== h) {
-      this.canvas.width = w;
-      this.canvas.height = h;
-      this._out = new ImageData(w, h);
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
+    this.canvas.getContext('2d', { willReadFrequently: true }).putImageData(this._out, 0, 0); // CPU-side: uploaded, not drawn
+    return { canvas: this.canvas, width: w, height: h, zoned: !!zonePts, ...r };
+  }
+
+  _ensureOut(w, h) {
+    const o = this._out;
+    if (!o || o.width !== w || o.height !== h || o.data.byteLength === 0) this._out = new ImageData(w, h);
+  }
+
+  _getWorker() {
+    if (this._worker || this._workerDead || !this._wantWorker) return this._worker;
+    if (typeof Worker !== 'function' || typeof OffscreenCanvas !== 'function' || typeof Blob !== 'function' || typeof URL === 'undefined') {
+      this._workerDead = true;
+      return null;
     }
-    this._out.data.set(r.data);
-    this.canvas.getContext('2d', { willReadFrequently: true }).putImageData(this._out, 0, 0); // CPU-side: it is uploaded, not drawn
-    const s = opts.mowed ? stripeAngle(r.mowedMask, w, h) : null;
-    return { canvas: this.canvas, width: w, height: h, mowed: r.mowed, background: r.background, zone: r.zone, zoned: !!zoneMaskArr, angle: s ? s.angle : null };
+    try {
+      const url = URL.createObjectURL(new Blob([workerSource()], { type: 'text/javascript' }));
+      this._worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      this._worker.onmessage = (e) => {
+        const w = this._waiting.get(e.data.id);
+        if (w) w(e.data);
+      };
+      this._worker.onerror = (e) => {
+        e.preventDefault && e.preventDefault();
+        for (const w of this._waiting.values()) w({ error: 'worker error' });
+      };
+    } catch (e) {
+      console.warn('floorplan3d: no map worker', e);
+      this._workerDead = true;
+      this._worker = null;
+    }
+    return this._worker;
+  }
+
+  _killWorker() {
+    if (this._worker) this._worker.terminate();
+    this._worker = null;
+    this._workerDead = true;
+    this._waiting.clear();
+  }
+
+  _viaWorker(wk, rgba, w, h, opts, zonePts, zoneKey, stripes) {
+    const id = ++this._seq;
+    const out = this._out.data.buffer;
+    // the readback may share its buffer with nothing else: transfer it
+    const pix = rgba.byteOffset === 0 && rgba.byteLength === rgba.buffer.byteLength ? rgba.buffer : rgba.slice().buffer;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this._waiting.delete(id); reject(new Error('timeout')); }, WORKER_TIMEOUT_MS);
+      this._waiting.set(id, (m) => {
+        clearTimeout(timer);
+        this._waiting.delete(id);
+        if (m.out) this._out = new ImageData(new Uint8ClampedArray(m.out), w, h);
+        if (m.error) reject(new Error(m.error));
+        else resolve({ mowed: m.mowed, background: m.background, nomow: m.nomow, icon: m.icon, zone: m.zone, angle: m.angle });
+      });
+      wk.postMessage({ id, rgba: pix, out, w, h, opts, zonePts, zoneKey, stripes }, [pix, out]);
+    });
+  }
+
+  dispose() {
+    if (this._worker) this._worker.terminate();
+    this._worker = null;
+    this._waiting.clear();
   }
 }

@@ -2112,7 +2112,9 @@ try {
     }
     const ki = (Math.floor(by) * w + Math.floor(bx)) * 4;
     return { w, h, W, H, n, iconRaw: [raw[ki], raw[ki + 1], raw[ki + 2]], iconOut: [out[ki], out[ki + 1], out[ki + 2], out[ki + 3]],
-      info: c.mapInfo(), zone: c._mapStats && c._mapStats.zone, aspect: p.userData.aspect, sz: p.scale.z }; })()`);
+      info: c.mapInfo(), zone: c._mapStats && c._mapStats.zone, aspect: p.userData.aspect, sz: p.scale.z,
+      // the demo stripes run at 30° on the image; the bearing is against true north (model north + alignment)
+      want: (() => { const m = c._view.model, b = Math.round(90 - 30 - (m ? m.north || 0 : 0) + (m ? c._modelAlign().rotation || 0 : 0)); return ((b % 180) + 180) % 180; })() }; })()`);
   const mapOk = (m, label) => {
     const all = (k, min) => m.n[k][0] >= min && m.n[k][1] === m.n[k][0];
     check(`${label}: background pixels transparent`, all('bg', 1000), JSON.stringify(m.n.bg));
@@ -2120,10 +2122,17 @@ try {
     check(`${label}: no-mow pixels shaded`, all('nomow', 100), JSON.stringify(m.n.nomow));
     check(`${label}: outside the garden zone transparent`, m.zone === 'garden' && all('outside', 100), JSON.stringify({ zone: m.zone, outside: m.n.outside }));
     check(`${label}: mower icon hidden`, m.iconRaw[0] > 200 && m.iconRaw[1] < 120 && m.iconOut[3] === 0, JSON.stringify([m.iconRaw, m.iconOut]));
-    check(`${label}: stripes and mowed share`, /^(5[7-9]|6[0-3])° \(NE–SW\)$/.test(m.info.stripes || '') && /^\d+ %$/.test(m.info.mowed || ''), JSON.stringify(m.info));
+    const deg = Number((/^(\d+)° \(.+\)$/.exec(m.info.stripes || '') || [])[1]);
+    const off = Math.abs(deg - m.want) % 180;
+    check(`${label}: stripes against true north and mowed share`, Math.min(off, 180 - off) <= 3 && /^\d+ %$/.test(m.info.mowed || ''), JSON.stringify({ ...m.info, want: m.want }));
   };
   const m1 = await mapCheck();
   mapOk(m1, 'live map');
+  check('processing runs in a worker', await ev(`!!${card}._mapProc._worker && !${card}._mapProc._workerDead`));
+  const blob0 = await ev(`JSON.stringify(${card}._imageBlob)`);
+  await ev(`(() => { const v = ${card}._view; v.reprocessMap(); v.reprocessMap(); v.reprocessMap(); })()`);
+  await sleep(400);
+  check('reprocessing the same picture does not step the tracker', (await ev(`JSON.stringify(${card}._imageBlob)`)) === blob0);
   await commitMower({}, { hide_icon: false });
   check('icon shown when "Hide mower icon" is off', await until(`(() => { const c = ${card}, p = c._view.mapPlane, b = c._imageBlob, cv = p.material.map.image;
     const d = cv.getContext('2d').getImageData(Math.floor(b.px * cv.width / b.imgW), Math.floor(b.py * cv.height / b.imgH), 1, 1).data; return d[0] > 200 && d[1] < 120 && d[3] === 255; })()`, 'the icon'));
@@ -2151,7 +2160,7 @@ try {
   await processed(450);
   check('same-size refreshes reuse the canvas texture', (await ev(`${card}._view.mapPlane.material.map.uuid`)) === tex1);
   await commitMower({}, { stripe_arrow: true });
-  check('stripe arrow on the lawn', await until(`!!${card}._view.stripeArrow && ${card}._view.stripeArrow.visible`, 'the stripe arrow'));
+  check('stripe arrow on the lawn, depth tested, inside the zone', await until(`(() => { const a = ${card}._view.stripeArrow; return !!a && a.visible && a.material.depthTest && a.userData.helper; })()`, 'the stripe arrow'));
   await ev(`${card}._view.setCamera({ position: [17.5, 24, 6], target: [17.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-processed.png') });

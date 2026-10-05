@@ -205,8 +205,11 @@ processed once before it is drawn on the lawn (large pictures on a copy at most 
   (room or outdoor outline) under the map's centre, e.g. `garden`; or pick a zone, or *None*.
   The clip applies once a colour is picked or the icon is hidden.
 - With a mowed colour, the mower popup and the Mower tab show **Stripes** (the stripe direction as
-  a compass axis on the plan, e.g. `60° (NE–SW)`) and **Mowed** (mowed pixels / zone pixels; without
-  a zone, mowed / (mowed + background)). **Show the stripe direction on the lawn** adds an arrow.
+  a compass axis against true north, using the model's north and alignment, e.g. `60° (NE–SW)`) and
+  **Mowed** (mowed pixels / zone pixels without no-mow areas and the icon; without a zone,
+  mowed / (mowed + background)). **Show the stripe direction on the lawn** adds an arrow inside the zone.
+- The picture is read once per refresh; the pixel work runs in a background worker where the browser
+  supports it.
 
 ### Sunseeker without GPS (position from the live map image)
 

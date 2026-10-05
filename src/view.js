@@ -1246,9 +1246,12 @@ export class FloorplanView {
         plane.userData.aspect = H / W;
         plane.userData.loaded = { url: o.url, image: tex.image, at: Date.now() };
         plane.scale.set(w, 1, w * plane.userData.aspect);
-        this._applyMapImage(plane);
+        if (old && old !== tex && plane.material.map === old) { // shown raw: switch now, nothing stale
+          plane.material.map = tex;
+          plane.material.needsUpdate = true;
+        }
         if (old && old !== tex) old.dispose();
-        plane.visible = this._mapShown(plane);
+        this._applyMapImage(plane); // shown once the picture (processed or as loaded) is in place
         this.dirty = true;
       }, undefined, () => console.warn('floorplan3d: could not load mower map', o.url));
     }
@@ -1256,19 +1259,32 @@ export class FloorplanView {
     this.dirty = true;
   }
 
-  // The loaded picture through onMapImage (image, width, height) -> { canvas, width, height } | null:
-  // a processed canvas is drawn through one reused CanvasTexture (new only when its size changes),
-  // null draws the picture as loaded.
+  // The loaded picture through onMapImage (image, width, height) -> (a promise of) { canvas, width,
+  // height } | null | undefined: a processed canvas is drawn through one reused CanvasTexture (new only
+  // when its size changes), null draws the picture as loaded, undefined keeps what is shown. Results of
+  // an older run (a newer picture or reprocess started since) are dropped.
   _applyMapImage(plane) {
     const ld = plane.userData.loaded;
     if (!ld) return;
     const img = ld.image;
+    const seq = (this._mapSeq = (this._mapSeq || 0) + 1);
     let res = null;
     try {
       res = this.onMapImage ? this.onMapImage(img, img.naturalWidth || img.width, img.naturalHeight || img.height) : null;
     } catch (e) {
       console.warn('floorplan3d: could not process the mower map', e);
     }
+    const done = (r) => {
+      if (seq !== this._mapSeq || this.mapPlane !== plane) return;
+      this._setMapTexture(plane, r);
+    };
+    if (res && typeof res.then === 'function') {
+      res.then(done, (e) => { console.warn('floorplan3d: could not process the mower map', e); done(null); });
+    } else done(res);
+  }
+
+  _setMapTexture(plane, res) {
+    if (res === undefined && plane.material.map) return;
     const mat = plane.material;
     let next = plane.userData.rawTex;
     if (res && res.canvas) {
@@ -1290,6 +1306,8 @@ export class FloorplanView {
       mat.map = next;
       mat.needsUpdate = true;
     }
+    plane.visible = this._mapShown(plane);
+    if (this.stripeArrow) this.stripeArrow.visible = plane.visible;
     this.dirty = true;
   }
 
@@ -1320,7 +1338,8 @@ export class FloorplanView {
     const pts = [pt(-L, 0), pt(L, 0)];
     for (const e of [1, -1]) pts.push(pt(e * L, 0), pt(e * (L - hd), hd * 0.6), pt(e * L, 0), pt(e * (L - hd), -hd * 0.6));
     const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    this.stripeArrow = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+    // depth tested: the house and objects hide it; a helper (no picking / placement)
+    this.stripeArrow = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: true }));
     this.stripeArrow.renderOrder = 3;
     this.stripeArrow.userData = { sig, helper: true };
     this.stripeArrow.visible = plane.visible;
