@@ -812,6 +812,27 @@ try {
   await sleep(150);
   const w1 = await warn();
   check('mower error shows the red warning', !!w1 && w1.kind === 'error' && w1.visible, JSON.stringify(w1));
+  // an eave over the mower (a copy of the lawn under it, 2.4 m up): mower ground and warning stay on the lawn
+  const eave = await page.evaluate(`(() => { const c = ${card}, v = c._view, L = c._mowerLive, fl = L.floorId;
+    const clear = () => { v._surfMeshes = null; v._ground.clear(); v._mowerGround.clear(); };
+    const cx = (Math.floor(L.x / 0.5) + 0.5) * 0.5, cy = (Math.floor(L.y / 0.5) + 0.5) * 0.5;
+    const before = v.mowerGround(L.x, L.y, fl);
+    const hit = before == null ? null : v.surfaceRays([cx, before + 0.5, -cy], [[0, -1, 0]], 1)[0];
+    if (!hit) return { err: 'no lawn under the mower', before };
+    const lawn = hit.object, e = lawn.clone();
+    lawn.parent.add(e);
+    const w = e.getWorldPosition(e.position.clone()); w.y += 2.4;
+    e.position.copy(lawn.parent.worldToLocal(w));
+    e.updateMatrixWorld(true);
+    clear();
+    const top = v._groundRay(cx, cy), after = v.mowerGround(L.x, L.y, fl);
+    c._updateMowerWarning();
+    const warnY = v.warning && v.warning.sprite.position.y;
+    e.parent.remove(e); clear(); c._updateMowerWarning();
+    return { before, after, top: top && top.y, warnY };
+  })()`);
+  check('an eave over the mower: the bounded ray keeps the lawn height (roof ignored), the warning stays low',
+    !eave.err && eave.top > eave.before + 2 && Math.abs(eave.after - eave.before) < 0.01 && Math.abs(eave.warnY - (eave.before + 0.6)) < 0.01, JSON.stringify(eave));
   const f0 = await page.evaluate(`${card}._view.stats.frames`);
   await sleep(1300);
   check('the warning pulses (frames only while shown)', (await page.evaluate(`${card}._view.stats.frames`)) - f0 >= 2);

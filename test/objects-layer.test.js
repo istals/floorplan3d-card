@@ -124,6 +124,17 @@ describe('ObjectLayer', () => {
     expect(p.slice(4).map((l) => l.position.x)).toEqual([2, 3, 4, 5]);
   });
 
+  it('group lamps take the non-shadow slots 4..7, singles spill into shadow slots instead (I2)', () => {
+    const singles = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, x: 10 + i, hints: { max: 20, castShadow: i === 0 } }));
+    const facade = Array.from({ length: 4 }, (_, i) => ({ id: `f${i + 1}`, x: i, group: 'facade', hints: { max: 5 } }));
+    layer.setModel(model([...singles, ...facade]));
+    layer.setBindings(bind([...singles.map((l) => [l.id, 'light.s']), ...facade.map((l) => [l.id, 'light.f'])]), {});
+    layer.update({ 'light.s': st('on'), 'light.f': st('on') }, ctx);
+    const p = points(layer);
+    expect(p.every((l) => l.intensity > 0)).toBe(true);
+    expect(p.slice(4).map((l) => l.position.x).sort()).toEqual([0, 1, 2, 3]);
+    expect(p.slice(0, 4).map((l) => l.position.x).sort()).toEqual([10, 11, 12, 13]);
+  });
   it('spot fixtures use a spot slot aimed at hints.target (model frame -> card world)', () => {
     const m = model([{ id: 's', x: 1, hints: { beam: 'spot', target: [1, 0, 0], angle: 30, max: 8 } }]);
     m.root.position.set(10, 0, 0);

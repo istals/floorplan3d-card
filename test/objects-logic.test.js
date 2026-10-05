@@ -112,11 +112,49 @@ describe('lightBudget', () => {
     expect([...r.real.values()].every((v) => v.factor === 1)).toBe(true);
     expect(r.shadows.size).toBe(0);
   });
-  it('small groups come after the singles; a short pool gives the group one light (middle, 1.5), never part', () => {
+  it('a short non-shadow pool gives a small group one light (middle, 1.5), never part', () => {
     const fx = [f('s1', { max: 1 }), f('s2', { max: 1 })].concat(['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 50 })));
     const r = lightBudget(fx, { points: 5 });
     expect([...r.real.keys()].sort()).toEqual(['g2', 's1', 's2']);
     expect(r.real.get('g2').factor).toBe(1.5);
+  });
+  it('8 lit point singles + a 4-lamp facade: the facade middle competes and keeps one light (I1)', () => {
+    const fx = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => f('p' + i, { max: 5 })).concat(['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 5 })));
+    const r = lightBudget(fx);
+    const g = [...r.real.keys()].filter((id) => id.startsWith('g'));
+    expect(g).toEqual(['g2']);
+    expect(r.real.get('g2')).toEqual({ kind: 'point', factor: 1.5, grouped: true });
+    expect(r.real.size).toBe(8);
+  });
+  it('a small group is lit per lamp only in non-shadow capacity (points - shadows), never in shadow slots (I2)', () => {
+    // 1 shadowed single + facade(4) + a 3-lamp group: both middles take 2 of the 4 non-shadow slots,
+    // the facade needs 3 more (does not fit) and keeps its middle at 1.5; the trio needs 2 more and is lit per lamp
+    const fx = [f('s', { max: 9 })]
+      .concat(['f1', 'f2', 'f3', 'f4'].map((id) => f(id, { group: 'facade', max: 8 })))
+      .concat(['t1', 't2', 't3'].map((id) => f(id, { group: 'trio', max: 7 })));
+    const r = lightBudget(fx);
+    expect(r.shadows).toEqual(new Set(['s']));
+    const grouped = [...r.real].filter(([, v]) => v.grouped && v.kind === 'point');
+    expect(grouped.length).toBeLessThanOrEqual(4);
+    expect(grouped.map(([id, v]) => [id, v.factor]).sort()).toEqual([['f2', 1.5], ['t1', 1], ['t2', 1], ['t3', 1]]);
+    // without the trio the facade fits: 4 lamps in the 4 non-shadow slots, factor 1
+    const r2 = lightBudget(fx.slice(0, 5));
+    expect(['f1', 'f2', 'f3', 'f4'].map((id) => r2.real.get(id).factor)).toEqual([1, 1, 1, 1]);
+    // two shadowed singles + spare shadow slots do not make room for group lamps
+    const r3 = lightBudget(fx.slice(0, 5), { points: 8, shadows: 5 });
+    expect(r3.real.get('f2').factor).toBe(1.5);
+    expect(r3.real.has('f1')).toBe(false);
+  });
+  it('per-lamp expansion uses spot slots for spot lamps; the middle drops back to factor 1', () => {
+    const fx = ['a1', 'a2', 'a3'].map((id) => f(id, { group: 'spots', beam: 'spot' }));
+    const r = lightBudget(fx, { points: 4, spots: 3, shadows: 4 });
+    expect([...r.real.values()].every((v) => v.kind === 'spot' && v.factor === 1)).toBe(true);
+    expect(r.real.size).toBe(3);
+  });
+  it('a group whose middle lost the main ranking stays dark (glow only), not partial', () => {
+    const fx = [f('a', { max: 9 }), f('b', { max: 9 })].concat(['g1', 'g2', 'g3'].map((id) => f(id, { group: 'x', max: 1 })));
+    const r = lightBudget(fx, { points: 2, shadows: 0 });
+    expect([...r.real.keys()].sort()).toEqual(['a', 'b']);
   });
   it('a group of 19 keeps one light (middle, factor 1.5)', () => {
     const fx = Array.from({ length: 19 }, (_, i) => f('lamp' + (i + 1), { group: 'string', max: 5 }));

@@ -567,6 +567,10 @@ class Floorplan3dCard extends HTMLElement {
     this._skyTimer = setInterval(() => this._applySky(false), MOON_EVERY_MS); // the moon moves without hass updates
     this._ro = new ResizeObserver(() => this._resize());
     this._ro.observe(this._stage);
+    // the map / image timers stopped on disconnect: re-arm them (refresh states and mower on the next update)
+    this._cameraTimerSec = null;
+    this._imageTimerSec = null;
+    if (this._built) this._built.states = undefined;
     this._schedule();
     this._scheduleSurfaces();
   }
@@ -1031,13 +1035,13 @@ class Floorplan3dCard extends HTMLElement {
       this._mowerHeading = Math.atan2(p[1] - from[1], p[0] - from[0]);
       this._mowerHeadFrom = [p[0], p[1]];
     }
-    layer.setMowerPose({ x: p[0], y: p[1], floorId, heading: this._mowerHeading, ground: this._view.groundAt(p[0], p[1]) });
+    layer.setMowerPose({ x: p[0], y: p[1], floorId, heading: this._mowerHeading, ground: this._view.mowerGround(p[0], p[1], floorId) });
   }
 
   // Mower marker height above its HA floor: MOWER_Z over the ground under it (the lawn of the model,
   // cached per 0.5 m cell), so a garden floor at an odd elevation does not lift it off the lawn.
   _mowerZ(x, y, floorId) {
-    const g = this._view.groundAt(x, y);
+    const g = this._view.mowerGround(x, y, floorId);
     return g === null ? MOWER_Z : g - this._view.floorElevation(floorId) + MOWER_Z;
   }
 
@@ -1208,10 +1212,11 @@ class Floorplan3dCard extends HTMLElement {
   }
 
   _setCameraTimer(seconds) {
+    if (!this.isConnected) seconds = 0; // async callers after a disconnect; connectedCallback re-arms
     if (this._cameraTimerSec === seconds) return;
     clearInterval(this._cameraTimer);
     this._cameraTimerSec = seconds;
-    this._cameraTimer = seconds && this.isConnected ? setInterval(() => {
+    this._cameraTimer = seconds ? setInterval(() => {
       this._cameraTick = Date.now();
       this._refreshMapOverlay();
     }, seconds * 1000) : null;

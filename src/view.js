@@ -37,6 +37,8 @@ const OCCLUSION_MAX = 300; // markers per pass
 const SKY_FRAME_MARGIN_M = 1; // top view: margin around a visible sun / moon disc
 const OCCLUSION_SLICE_MS = 8; // a pass yields (setTimeout) after this long
 const PICK_LINE_M = 0.02; // raycast threshold for lines / points (three's default is 1 m)
+const MOWER_RAY_ABOVE_M = 1.5; // mower ground ray: starts this far over the lawn (overlay ground or floor)
+const MOWER_RAY_M = 4.5; // ... and reaches 3 m below it
 
 // fp.north (degrees) on the model root or its two top levels, else null
 function northOf(root) {
@@ -310,7 +312,9 @@ export class FloorplanView {
     this._occTimer = null;
     this._occBoxes = null; // [{ mesh, box }] world boxes of occluding model meshes (cached per placement)
     this._surfMeshes = null; // [{ mesh, box }] model meshes devices stick to (cached per placement)
-    this._ground = new GroundCache(); // ground under the mower, per 0.5 m cell (cleared with _surfMeshes)
+    this._ground = new GroundCache(); // ground seen from above the model, per 0.5 m cell (cleared with _surfMeshes)
+    this._mowerGround = new GroundCache(); // ground under the mower: a bounded ray (eaves, canopies ignored)
+    this._mapGround = null; // model ground under the map overlay centre
     this._groundLevel = null; // level id of the lawn under the map overlay
     this.mowerMarkerId = null; // the live mower's marker (shown with the outdoors)
     this._surfRay = new THREE.Raycaster();
@@ -524,7 +528,7 @@ export class FloorplanView {
           }
         });
         this.model.opacity = opacity;
-        this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); // placement changed
+        this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); this._mowerGround.clear(); // placement changed
         this._bounds = this._sceneBounds();
       }
       if (this.model) this._fitShadow();
@@ -680,7 +684,12 @@ export class FloorplanView {
     for (const id of coplanarWinners(items)) {
       const o = byId.get(id);
       let m = o.material;
-      if (users.get(m) > 1) { m = m.clone(); o.material = m; }
+      if (users.get(m) > 1) {
+        const planes = m.clippingPlanes; // Material.copy clones them: keep the live (cut-away) planes
+        m = m.clone();
+        if (planes) m.clippingPlanes = planes;
+        o.material = m;
+      }
       Object.assign(m, { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
       m.userData.baseDepthWrite = m.depthWrite;
       o.renderOrder = (o.renderOrder || 0) + 1;
@@ -691,7 +700,7 @@ export class FloorplanView {
   // Caches that hold model meshes, after a merge on a placed model.
   _afterMerge() {
     if (this.model) this._liftTextured(this.model.root);
-    this._occBoxes = null; this._surfMeshes = null; this._ground.clear();
+    this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); this._mowerGround.clear();
     this._applyFloorVisibility(); // floor-only mode covers the merged meshes too
     this._bounds = this._sceneBounds();
     this._fitShadow();
@@ -923,7 +932,7 @@ export class FloorplanView {
     this._clearGroup(this.modelGroup);
     this.model = null;
     this.mergeStats = null;
-    this._occBoxes = null; this._surfMeshes = null; this._ground.clear();
+    this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); this._mowerGround.clear();
     this._cancelOcclusion();
     this._clearOcclusion();
     this._applyLook();
@@ -1186,6 +1195,26 @@ export class FloorplanView {
     return this._ground.get(x, y, this.model.id, (cx, cy) => this._groundRay(cx, cy));
   }
 
+  // Ground under the mower (marker, model node, warning, trail): a ray down from 1.5 m over the map overlay's
+  // ground (else the floor's elevation), at most MOWER_RAY_M long, so roofs, eaves, carports and tree canopies
+  // over the mower are ignored. Falls back to the ray from above the model when that finds nothing.
+  mowerGround(x, y, floorId) {
+    if (!this.model) return null;
+    const base = this._mapGround ?? this.floorElevation(floorId);
+    const key = `${this.model.id}|${base}`;
+    const g = this._mowerGround.get(x, y, key, (cx, cy) => {
+      const from = base + MOWER_RAY_ABOVE_M;
+      const hit = this.surfaceRays([cx, from, -cy], [[0, -1, 0]], MOWER_RAY_M)[0];
+      return hit ? hit.point[1] : this._groundHit(cx, cy)?.y ?? null;
+    });
+    return g;
+  }
+
+  // mowerGround, else the floor's elevation
+  mowerHeight(x, y, floorId) {
+    return this.mowerGround(x, y, floorId) ?? this.floorElevation(floorId);
+  }
+
   _groundRay(x, y) {
     const meshes = this._surfaceMeshes();
     if (!meshes.length) return null;
@@ -1230,6 +1259,7 @@ export class FloorplanView {
         this.mapPlane = null;
         this.dirty = true;
       }
+      this._mapGround = null;
       this.setStripeArrow(null);
       return;
     }
@@ -1249,6 +1279,7 @@ export class FloorplanView {
     const hit = this._groundHit(o.x || 0, o.y || 0); // cached: no ray per update
     const ground = hit ? hit.y : null;
     this._groundLevel = hit ? hit.level : null;
+    this._mapGround = ground;
     const off = Number(o.heightOffset) || 0;
     const sig = [o.url, o.x, o.y, o.rotation, o.width, o.opacity, o.floorId, this.floorElevation(o.floorId), this._shows(o.floorId), ground, off, !!o.hidden].join('|');
     if (sig === plane.userData.sig) return;
@@ -1390,7 +1421,7 @@ export class FloorplanView {
     }
     if (points && points.length > 1) {
       // each point on the ground under it (the lawn, whatever the HA floor's elevation), 4 cm up
-      const geo = new THREE.BufferGeometry().setFromPoints(points.map(([x, y]) => new THREE.Vector3(x, this.groundHeight(x, y, floorId) + 0.04, -y)));
+      const geo = new THREE.BufferGeometry().setFromPoints(points.map(([x, y]) => new THREE.Vector3(x, this.mowerHeight(x, y, floorId) + 0.04, -y)));
       const color = this.theme.primary || 0x03a9f4;
       this.trail = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8, depthTest: false }));
       this.trail.renderOrder = 3;
@@ -1418,7 +1449,7 @@ export class FloorplanView {
       }
       return;
     }
-    const y = this.groundHeight(w.x, w.y, w.floorId) + 0.6;
+    const y = this.mowerHeight(w.x, w.y, w.floorId) + 0.6;
     if (cur && cur.kind === w.kind) {
       const at = cur.sprite.position;
       if (at.x !== w.x || at.y !== y || at.z !== -w.y || cur.floorId !== w.floorId) {

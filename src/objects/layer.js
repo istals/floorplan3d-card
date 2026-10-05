@@ -245,13 +245,15 @@ export class ObjectLayer {
       const i = shadowSlots.indexOf(prev.get(id));
       return i >= 0 ? shadowSlots.splice(i, 1)[0] : null;
     };
-    // shadow picks first (slots 0..3; own slot, then any), then the rest into 4..7, then any shadow slot left
+    // shadow picks first (slots 0..3; own slot, then any), then group lights and the rest into 4..7, then any shadow slot left
     const picks = order.filter((x) => shadows.has(x));
     const kept = new Map(picks.map((id) => [id, take(id)]));
     for (const id of picks) this._slots.set(id, { light: kept.get(id) || shadowSlots.shift(), shadow: true, factor: real.get(id).factor });
     let spot = 0;
-    for (const id of order) {
-      if (shadows.has(id)) continue;
+    // group lights first, so they get the non-shadow slots 4..7 (group lights never cast shadows)
+    const rest = order.filter((id) => !shadows.has(id));
+    rest.sort((a, b) => (real.get(b).grouped ? 1 : 0) - (real.get(a).grouped ? 1 : 0));
+    for (const id of rest) {
       const { kind, factor } = real.get(id);
       if (kind === 'spot') { this._slots.set(id, { light: this.pool.spots[spot++], shadow: false, factor }); continue; }
       const light = freeSlots.shift() || take(id) || shadowSlots.shift();

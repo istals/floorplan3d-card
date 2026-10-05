@@ -619,6 +619,7 @@ export class MapProcessor {
       try {
         r = await this._viaWorker(wk, px.data, w, h, kopts, zonePts, zoneKey, !!opts.mowed);
       } catch (e) {
+        if (e && e.disposed) { this._ensureOut(w, h); throw e; } // disposed mid-run: skip, keep the worker usable
         console.warn('floorplan3d: map worker failed, processing on the main thread', e);
         this._killWorker();
         this._ensureOut(w, h);
@@ -694,16 +695,20 @@ export class MapProcessor {
         clearTimeout(timer);
         this._waiting.delete(id);
         if (m.out) this._out = new ImageData(new Uint8ClampedArray(m.out), w, h);
-        if (m.error) reject(new Error(m.error));
+        if (m.disposed) reject(Object.assign(new Error('disposed'), { disposed: true }));
+        else if (m.error) reject(new Error(m.error));
         else resolve({ mowed: m.mowed, background: m.background, nomow: m.nomow, icon: m.icon, zone: m.zone, angle: m.angle });
       });
       wk.postMessage({ id, rgba: pix, out, w, h, opts, zonePts, zoneKey, stripes }, [pix, out]);
     });
   }
 
+  // Terminates the worker and settles pending runs (their timeouts cleared) without marking the worker
+  // dead, so a later run (after a reconnect) starts a fresh one.
   dispose() {
     if (this._worker) this._worker.terminate();
     this._worker = null;
+    for (const w of [...this._waiting.values()]) w({ disposed: true });
     this._waiting.clear();
   }
 }

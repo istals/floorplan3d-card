@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { findBlob, pickBlob, stepTrack, headingMinStep, TRACK_MAX_MISSES, pixelToPlan, planToPixel, medianColor, imageScale, fitOverlay } from '../src/mower-image.js';
 
 // synthetic RGBA image filled with one colour
@@ -245,5 +245,26 @@ describe('fitOverlay', () => {
     expect(fitOverlay([pair(5, 5), { px: 5, py: 5, plan: [9, 9] }], W, H)).toBeNull();
     expect(fitOverlay(null, W, H)).toBeNull();
     expect(fitOverlay([pair(1, 1), pair(2, 2)], 0, H)).toBeNull();
+  });
+});
+
+describe('MapProcessor.dispose', () => {
+  it('settles a pending worker run (timeout cleared) without marking the worker dead', async () => {
+    const { MapProcessor } = await import('../src/mower-image.js');
+    vi.useFakeTimers();
+    try {
+      const mp = new MapProcessor();
+      mp._out = { data: new Uint8ClampedArray(4) };
+      const wk = { postMessage: vi.fn(), terminate: vi.fn() };
+      mp._worker = wk;
+      const run = mp._viaWorker(wk, new Uint8ClampedArray(4), 1, 1, {}, null, null, false);
+      mp.dispose();
+      await expect(run).rejects.toMatchObject({ disposed: true });
+      expect(vi.getTimerCount()).toBe(0);
+      expect(wk.terminate).toHaveBeenCalled();
+      expect(mp._workerDead).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
