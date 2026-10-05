@@ -5,6 +5,7 @@
 // a roof level, model objects (ceiling lamps, a facade lamp group, a spot, a light strip, climate, mower,
 // dock, EV charger) and a window pane on the glass layer. Run: node scripts/make-demo-model.mjs
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { DEMO_LAYOUT } from '../demo/layout.js';
@@ -20,6 +21,27 @@ globalThis.FileReader = class {
     });
   }
 };
+
+// GLTFExporter draws textures on a canvas: a stub that keeps the RGBA data and writes it as a PNG
+globalThis.ImageData = class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } };
+globalThis.OffscreenCanvas = class {
+  constructor(w, h) { this.width = w; this.height = h; }
+  getContext() { return { translate() {}, scale() {}, putImageData: (d) => { this.img = d; } }; }
+  async convertToBlob() { return new Blob([encodePng(this.img)], { type: 'image/png' }); }
+};
+function encodePng({ data, width, height }) {
+  const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (b) => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type, body) => {
+    const t = Buffer.concat([Buffer.from(type), body]), out = Buffer.alloc(t.length + 8);
+    out.writeUInt32BE(body.length, 0); t.copy(out, 4); out.writeUInt32BE(crc(t), t.length + 4);
+    return out;
+  };
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y++) { raw[y * (width * 4 + 1)] = 0; Buffer.from(data.buffer, data.byteOffset + y * width * 4, width * 4).copy(raw, y * (width * 4 + 1) + 1); }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
 
 const floors = { ground: { elevation: 0, height: 2.7 }, first: { elevation: 3, height: 2.6 } };
 const floorOf = (r) => r.floor_id || (['r-kids', 'r-landing', 'r-office', 'r-master', 'r-bath2'].includes(r.id) ? 'first' : 'ground');
@@ -192,6 +214,20 @@ object(ext, { id: 'ev_charger', type: 'ev_charger', label: 'EV charger', hints: 
     ['ev_charger_body', new THREE.BoxGeometry(0.08, 0.35, 0.25), mat(0xe8e8e8)],
     ['led', new THREE.SphereGeometry(0.025, 8, 6), glowMat(), [0.045, 0.1, 0]],
   ]);
+// paving test: a brick-textured sheet with a plain zone floor lying on the same plane (the textured one must win)
+{
+  const px = new Uint8Array(8 * 8 * 4);
+  for (let i = 0; i < 64; i++) { const c = ((i & 7) + (i >> 3)) & 1 ? [178, 96, 74] : [140, 70, 55]; px.set([...c, 255], i * 4); }
+  const tex = new THREE.DataTexture(px, 8, 8, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(6, 6); tex.needsUpdate = true;
+  const sheet = (name, m) => {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(3, 2), m);
+    p.name = name; p.rotation.x = -Math.PI / 2; p.position.set(7, 0.004, 2.5);
+    ext.add(p);
+  };
+  sheet('driveway_floor_1', mat(0xb8b8b0));
+  sheet('exterior_floor_5', new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }));
+}
 house.add(ext);
 const roof = new THREE.Group();
 roof.name = 'roof';

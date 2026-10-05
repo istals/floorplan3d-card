@@ -105,16 +105,28 @@ describe('lightBudget', () => {
     expect([...r.real.keys()].sort()).toEqual(['a', 's']);
     expect(r.real.get('s').kind).toBe('spot');
   });
-  it('one real light per group (middle fixture, factor 1.5), groups never cast shadows', () => {
-    const fx = ['g1', 'g2', 'g3'].map((id) => f(id, { group: 'facade', max: 5 }));
+  it('a small group lights every lamp (factor 1) while the pool has room, never with shadows', () => {
+    const fx = ['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 5 }));
     const r = lightBudget(fx);
-    expect([...r.real.keys()]).toEqual(['g2']);
-    expect(r.real.get('g2').factor).toBe(1.5);
+    expect([...r.real.keys()].sort()).toEqual(['g1', 'g2', 'g3', 'g4']);
+    expect([...r.real.values()].every((v) => v.factor === 1)).toBe(true);
     expect(r.shadows.size).toBe(0);
   });
-  it('group middle fixture with numeric collation (lamp2/lamp10/lamp3 → lamp3)', () => {
-    const fx = ['lamp2', 'lamp10', 'lamp3'].map((id) => f(id, { group: 'facade', max: 5 }));
+  it('small groups come after the singles; a short pool gives the group one light (middle, 1.5), never part', () => {
+    const fx = [f('s1', { max: 1 }), f('s2', { max: 1 })].concat(['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 50 })));
+    const r = lightBudget(fx, { points: 5 });
+    expect([...r.real.keys()].sort()).toEqual(['g2', 's1', 's2']);
+    expect(r.real.get('g2').factor).toBe(1.5);
+  });
+  it('a group of 19 keeps one light (middle, factor 1.5)', () => {
+    const fx = Array.from({ length: 19 }, (_, i) => f('lamp' + (i + 1), { group: 'string', max: 5 }));
     const r = lightBudget(fx);
+    expect(r.real.size).toBe(1);
+    expect(r.real.get('lamp10').factor).toBe(1.5);
+  });
+  it('group middle fixture with numeric collation (lamp2/lamp10/lamp3 → lamp3) when the pool is short', () => {
+    const fx = ['lamp2', 'lamp10', 'lamp3'].map((id) => f(id, { group: 'facade', max: 5 }));
+    const r = lightBudget(fx, { points: 2 });
     expect([...r.real.keys()]).toEqual(['lamp3']);
   });
   it('at most N shadows, only castShadow !== false singles', () => {

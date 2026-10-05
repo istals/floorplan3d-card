@@ -15,7 +15,7 @@ import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
 import {
-  castsShadow, shadowInfo, isCoplanarOverlay, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
+  castsShadow, shadowInfo, isCoplanarOverlay, coplanarWinners, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
 } from './render-rules.js';
 
 const TEX_KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap'];
@@ -609,6 +609,7 @@ export class FloorplanView {
         });
         this._modelVisibility = null;
         this.model = { id, root, manifest, tagged, north: northOf(root), opacity: 1 };
+        this._liftTextured(root);
         this.modelGroup.add(root);
         this._applyLook();
         this.mergeStats = null;
@@ -661,8 +662,35 @@ export class FloorplanView {
     this.mergeStats = { enabled: true, before, after, groups: res ? res.groups : 0, merged: res ? res.merged : 0, keep: sels };
   }
 
+  // A textured flat sheet coplanar with an untextured one (paving under a plain zone floor) wins the
+  // depth test: polygonOffset on its material (cloned when shared with other meshes), drawn after.
+  _liftTextured(root) {
+    root.updateMatrixWorld(true);
+    const items = [], byId = new Map(), users = new Map();
+    root.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) users.set(m, (users.get(m) || 0) + 1);
+      if (Array.isArray(o.material) || o.userData.liftedCoplanar) return;
+      const b = new THREE.Box3().setFromObject(o);
+      if (b.isEmpty()) return;
+      byId.set(o.id, o);
+      items.push({ id: o.id, min: b.min.toArray(), max: b.max.toArray(), textured: !!o.material.map });
+    });
+    for (const id of coplanarWinners(items)) {
+      const o = byId.get(id);
+      let m = o.material;
+      if (users.get(m) > 1) { m = m.clone(); o.material = m; }
+      Object.assign(m, { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+      m.userData.baseDepthWrite = m.depthWrite;
+      o.renderOrder = (o.renderOrder || 0) + 1;
+      o.userData.liftedCoplanar = true;
+    }
+  }
+
   // Caches that hold model meshes, after a merge on a placed model.
   _afterMerge() {
+    if (this.model) this._liftTextured(this.model.root);
     this._occBoxes = null; this._surfMeshes = null; this._ground.clear();
     this._applyFloorVisibility(); // floor-only mode covers the merged meshes too
     this._bounds = this._sceneBounds();

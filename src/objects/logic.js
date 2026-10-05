@@ -73,6 +73,8 @@ export function lightLevel(s) {
   return typeof b === 'number' ? Math.max(0, Math.min(1, b / 255)) : 1;
 }
 
+// Groups up to this size light each lamp (one real light per fixture) while the pool has room.
+export const SMALL_GROUP = 6;
 export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {}) {
   const cand = [];
   const groups = new Map();
@@ -80,19 +82,41 @@ export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {
     if (!f.lit || !f.visible) continue;
     if (f.group) { if (!groups.has(f.group)) groups.set(f.group, []); groups.get(f.group).push(f); } else cand.push({ f, factor: 1 });
   }
-  for (const list of groups.values()) {
+  const small = [];
+  const middle = (list) => {
     const sorted = list.slice().sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-    cand.push({ f: sorted[Math.floor((sorted.length - 1) / 2)], factor: 1.5, grouped: true });
+    return sorted[Math.floor((sorted.length - 1) / 2)];
+  };
+  for (const list of groups.values()) {
+    if (list.length <= SMALL_GROUP) small.push(list);
+    else cand.push({ f: middle(list), factor: 1.5, grouped: true });
   }
-  cand.sort((a, b) => (b.f.max || 0) - (a.f.max || 0) || (a.f.id < b.f.id ? -1 : 1));
+  const byMax = (a, b) => (b.max || 0) - (a.max || 0) || (a.id < b.id ? -1 : 1);
+  cand.sort((a, b) => byMax(a.f, b.f));
   const real = new Map(), shadowSet = new Set();
   let p = 0, s = 0;
+  const kindOf = (f) => (f.beam === 'spot' ? 'spot' : 'point');
+  const room = (kind) => (kind === 'spot' ? s < spots : p < points);
+  const take = (kind) => { if (kind === 'spot') s++; else p++; };
   for (const c of cand) {
-    const kind = c.f.beam === 'spot' ? 'spot' : 'point';
-    if (kind === 'spot' ? s >= spots : p >= points) continue;
-    if (kind === 'spot') s++; else p++;
+    const kind = kindOf(c.f);
+    if (!room(kind)) continue;
+    take(kind);
     real.set(c.f.id, { kind, factor: c.factor });
     if (!c.grouped && kind === 'point' && c.f.castShadow !== false && shadowSet.size < shadows) shadowSet.add(c.f.id);
+  }
+  // small groups after the singles, strongest first: every lamp or (pool short) just the middle one
+  small.sort((a, b) => Math.max(...b.map((f) => f.max || 0)) - Math.max(...a.map((f) => f.max || 0)) || (a.map((f) => f.id).sort()[0] < b.map((f) => f.id).sort()[0] ? -1 : 1));
+  for (const list of small) {
+    const needP = list.filter((f) => kindOf(f) === 'point').length, needS = list.length - needP;
+    if (p + needP <= points && s + needS <= spots) {
+      for (const f of list.slice().sort(byMax)) { const kind = kindOf(f); take(kind); real.set(f.id, { kind, factor: 1 }); }
+      continue;
+    }
+    const f = middle(list), kind = kindOf(f);
+    if (!room(kind)) continue;
+    take(kind);
+    real.set(f.id, { kind, factor: 1.5 });
   }
   return { real, shadows: shadowSet };
 }

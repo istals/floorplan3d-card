@@ -875,8 +875,12 @@ try {
   check('lamp on: glow emissive and a pool light with intensity > 0 at the lamp', L.glow.lamp_living > 0 && L.near.lamp_living.length === 1 && L.near.lamp_living[0] > 0, JSON.stringify({ g: L.glow.lamp_living, n: L.near.lamp_living }));
   check('lamp off: no glow, no pool light', L.glow.lamp_hall === 0 && L.near.lamp_hall.length === 0, JSON.stringify({ g: L.glow.lamp_hall, n: L.near.lamp_hall }));
   check('at most 12 pool lights lit, at most 4 of them casting shadows', L.lit > 0 && L.lit <= 12 && L.shadows <= 4, JSON.stringify({ lit: L.lit, shadows: L.shadows }));
-  check('facade group on: exactly one pool light for the three fixtures, all three glow',
-    L.facadeLit === 1 && L.slots.filter((x) => x.startsWith('facade_')).length === 1 && ['facade_1', 'facade_2', 'facade_3'].every((id) => L.glow[id] > 0), JSON.stringify({ f: L.facadeLit, slots: L.slots }));
+  check('facade group on: a pool light at each of the three fixtures (small group lights each lamp), all three glow',
+    L.facadeLit === 3 && L.slots.filter((x) => x.startsWith('facade_')).length === 3 && ['facade_1', 'facade_2', 'facade_3'].every((id) => L.glow[id] > 0), JSON.stringify({ f: L.facadeLit, slots: L.slots }));
+  const paving = await page.evaluate(`(() => { const r = {}; ${card}._view.model.root.traverse((o) => { if (o.isMesh && /^(exterior_floor_5|driveway_floor_1)$/.test(o.name)) { const m = [].concat(o.material)[0]; r[o.name] = { po: !!m.polygonOffset, f: m.polygonOffsetFactor, ro: o.renderOrder, map: !!m.map }; } }); return r; })()`);
+  check('coplanar paving: the textured sheet gets polygonOffset -2 and renders later, the plain one is untouched',
+    !!paving.exterior_floor_5 && paving.exterior_floor_5.map && paving.exterior_floor_5.po && paving.exterior_floor_5.f === -2 && paving.exterior_floor_5.ro === 1
+    && !!paving.driveway_floor_1 && !paving.driveway_floor_1.po, JSON.stringify(paving));
   check('terrace spot: a lit spot light aimed at its hints.target', L.near.terrace_spot.length === 1 && !!L.spotTarget && Math.hypot(L.spotTarget[0] - 2.5, L.spotTarget[1], L.spotTarget[2] - 1.5) < 0.05, JSON.stringify({ n: L.near.terrace_spot, t: L.spotTarget }));
   check('light strip: glows, no real light (no hints.max)', L.glow.kitchen_strip > 0 && L.near.kitchen_strip.length === 0, JSON.stringify({ g: L.glow.kitchen_strip, n: L.near.kitchen_strip }));
   check('EV charger charging: LED lit, power label', L.glow.ev_charger > 0 && (await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.fp-obj-label')].some((x) => x.textContent.includes('7.4 kW'))`)), JSON.stringify(L.glow.ev_charger));
@@ -918,7 +922,7 @@ try {
   await page.keyboard.press('Escape');
   await page.evaluate(`${card}._hass.callService('switch', 'toggle', { entity_id: 'switch.demo_facade' })`);
   await sleep(200);
-  check('group controller on again: the facade lights up', (await look()).facadeLit === 1);
+  check('group controller on again: the facade lights up', (await look()).facadeLit === 3);
   // ten state updates that touch no object: no budget recompute, no object re-evaluation, no shadow redraw
   await sleep(300);
   const counters = () => page.evaluate(`({ ...${card}._objects.stats, shadow: ${card}._view.stats.shadow, frames: ${card}._view.stats.frames, shadowLights: ${card}._view.stats.shadowLights })`);
@@ -1033,7 +1037,7 @@ try {
   await setGrp('switch.demo_typo');
   g = await grp();
   check('Groups: a controller HA does not know shows "entity not found" and is ignored by the chain',
-    !!g && g.warn && g.eff === 'null' && (await look()).facadeLit === 1, JSON.stringify(g));
+    !!g && g.warn && g.eff === 'null' && (await look()).facadeLit === 3, JSON.stringify(g));
   await setGrp('none');
   g = await grp();
   check('Groups: "none" removes the controller (nothing stored)', !!g && g.saved === 'null' && g.val === '' && !g.warn, JSON.stringify(g));

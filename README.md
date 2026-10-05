@@ -285,7 +285,8 @@ has no marker: the object is the control.
 - **Lamps** (`light`, `light_strip`): the bulb glows in the light's colour and brightness and a real
   light lights the rooms and facade around it. The card uses a fixed pool of 12 real lights
   (8 point, 4 spot) for the lit lamps in view, largest first, and at most 4 of them cast shadows;
-  a fixture group gets one light. Other lit lamps only glow. `lights: off` keeps glow only and
+  a fixture group of up to 6 lamps lights each lamp (never with shadows) while the pool has room, a
+  larger group (or a pool that is too full) gets one light in its middle. Other lit lamps only glow. `lights: off` keeps glow only and
   takes the light pool out of the shaders (the switch recompiles them once). Shadow maps are
   redrawn only for lit lamps that changed and for the sun while it is up.
 - **Day / Night:** the toolbar button cycles Auto, Day, Night. Auto follows `sun.sun`: by night

@@ -152,3 +152,24 @@ describe('pickable', () => {
     expect(pickable({ isMesh: true, helper: false, transparent: true, opacity: 0.8 })).toBe(true);
   });
 });
+
+import { coplanarWinners } from '../src/render-rules.js';
+describe('coplanarWinners', () => {
+  const sheet = (id, textured, o = {}) => ({ id, textured, min: [0, 0, 0], max: [4, 0.002, 3], ...o });
+  it('the textured one of a coplanar pair wins', () => {
+    expect([...coplanarWinners([sheet('plain', false), sheet('brick', true)])]).toEqual(['brick']);
+  });
+  it('tolerates small box and height differences, finds pairs in any order', () => {
+    const w = coplanarWinners([sheet('x', false, { min: [9, 0, 9], max: [10, 0.001, 10] }), sheet('plain', false, { min: [0.01, 0.003, 0], max: [4.01, 0.004, 3] }), sheet('brick', true)]);
+    expect([...w]).toEqual(['brick']);
+  });
+  it('both or neither textured: nothing', () => {
+    expect(coplanarWinners([sheet('a', true), sheet('b', true)]).size).toBe(0);
+    expect(coplanarWinners([sheet('a', false), sheet('b', false)]).size).toBe(0);
+  });
+  it('not flat, different size or too far apart: nothing', () => {
+    expect(coplanarWinners([sheet('a', false), sheet('b', true, { max: [4, 0.2, 3] })]).size).toBe(0);
+    expect(coplanarWinners([sheet('a', false), sheet('b', true, { max: [5, 0.002, 3] })]).size).toBe(0);
+    expect(coplanarWinners([sheet('a', false), sheet('b', true, { min: [0, 0.02, 0], max: [4, 0.022, 3] })]).size).toBe(0);
+  });
+});

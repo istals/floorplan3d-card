@@ -101,3 +101,28 @@ export function ghostMaterial(ud, opacity) {
 
 // Model pick candidate: a mesh, not a helper, not see-through glass.
 export const pickable = (o) => !!o.isMesh && !o.helper && !(o.transparent && o.opacity < 0.6);
+
+// Coplanar duplicates: flat horizontal sheets (thickness < FLAT_THIN) whose boxes match within BOX_TOL in
+// x / z and whose heights are within PLANE_TOL. items: [{ id, min: [x,y,z], max: [x,y,z], textured }].
+// Returns the ids of the textured sheets whose partner is untextured (exactly one of the pair has a map):
+// those get pulled forward in depth, so a plain zone floor does not hide a textured paving under it.
+// Sorted by min x, each sheet is compared only with the ones within BOX_TOL in x.
+export const COPLANAR = { FLAT_THIN: 0.01, BOX_TOL: 0.02, PLANE_TOL: 0.005 };
+export function coplanarWinners(items) {
+  const { FLAT_THIN, BOX_TOL, PLANE_TOL } = COPLANAR;
+  const flat = items.filter((i) => i.max[1] - i.min[1] < FLAT_THIN && i.max[0] - i.min[0] > BOX_TOL && i.max[2] - i.min[2] > BOX_TOL)
+    .sort((a, b) => a.min[0] - b.min[0]);
+  const win = new Set();
+  for (let i = 0; i < flat.length; i++) {
+    const a = flat[i];
+    for (let j = i + 1; j < flat.length && flat[j].min[0] - a.min[0] <= BOX_TOL; j++) {
+      const b = flat[j];
+      if (!!a.textured === !!b.textured) continue;
+      const near = (k) => Math.abs(a.min[k] - b.min[k]) <= BOX_TOL && Math.abs(a.max[k] - b.max[k]) <= BOX_TOL;
+      if (!near(0) || !near(2)) continue;
+      if (Math.abs((a.min[1] + a.max[1]) / 2 - (b.min[1] + b.max[1]) / 2) > PLANE_TOL) continue;
+      win.add((a.textured ? a : b).id);
+    }
+  }
+  return win;
+}
