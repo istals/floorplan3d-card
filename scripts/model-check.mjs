@@ -650,6 +650,126 @@ try {
   await s.close();
 }
 
+// 1b2. HA-style actions from the card YAML: navigate on tap, perform-action on hold, double tap on one
+// object never delays single taps on another, missing target -> message, confirmation, popup links, markers
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 560 });
+try {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 10000 });
+  await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=ground]').click()`);
+  await settle(page, card);
+  await page.evaluate(`(() => {
+    window.__locs = [];
+    window.addEventListener('location-changed', () => window.__locs.push(location.pathname + location.search));
+    window.__upAt = 0;
+    window.addEventListener('pointerup', () => { window.__upAt = performance.now(); }, true);
+  })()`);
+  const origin = await page.evaluate('location.pathname + location.search');
+  const setActions = async (actions) => {
+    await page.evaluate(`(() => { const c = ${card}; c.setConfig({ ...c._config, actions: ${JSON.stringify(actions)} }); })()`);
+    await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 10000 });
+    await settle(page, card);
+  };
+  const at = (id) => page.evaluate(`(() => { const c = ${card}, a = c._objects.anchorOf(${JSON.stringify(id)}); return a && c._view.projectWorld(a); })()`);
+  const calls = () => page.evaluate('(window.__serviceCalls || []).length');
+  const lastCall = () => page.evaluate('JSON.stringify((window.__serviceCalls || []).slice(-1)[0] || null)');
+  const hold = async (p) => { await page.mouse.move(p[0], p[1]); await page.mouse.down(); await sleep(700); await page.mouse.up(); await sleep(150); };
+
+  await setActions({
+    'object:lamp_hall': {
+      tap_action: { action: 'navigate', navigation_path: '/fp-test/nav' },
+      hold_action: { action: 'perform-action', perform_action: 'light.turn_on', data: { brightness: 42 }, target: { entity_id: 'light.demo_hall' } },
+    },
+  });
+  let p = await at('lamp_hall');
+  check('actions: the hall lamp projects on screen', !!p, JSON.stringify(p));
+  let n0 = await calls();
+  await page.mouse.click(p[0], p[1]);
+  await sleep(200);
+  const locs = await page.evaluate('window.__locs.slice()');
+  check('actions: tap with navigate pushes the path and fires location-changed', locs.at(-1) === '/fp-test/nav' && (await calls()) === n0, JSON.stringify(locs));
+  await page.evaluate(`history.replaceState(null, '', ${JSON.stringify(origin)})`);
+  p = await at('lamp_hall');
+  await hold(p);
+  check('actions: hold with perform-action calls the service with data and target',
+    (await lastCall()) === JSON.stringify(['light', 'turn_on', { brightness: 42 }, { entity_id: 'light.demo_hall' }]) && !(await page.evaluate(`!!${card}.shadowRoot.querySelector('.fp-popup')`)), await lastCall());
+
+  // missing target: no call, a visible message
+  await setActions({ 'object:lamp_hall': { hold_action: { action: 'perform-action', perform_action: 'light.turn_on' } } });
+  n0 = await calls();
+  p = await at('lamp_hall');
+  await hold(p);
+  const toast = await page.evaluate(`(() => { const t = ${card}.shadowRoot.querySelector('.fp-toast'); return t && !t.hidden ? t.textContent : null; })()`);
+  check('actions: perform-action without a target -> no call, a message in the card', (await calls()) === n0 && /target/.test(toast || ''), String(toast));
+
+  // double tap on the living lamp; the hall lamp's single taps stay immediate
+  await setActions({ 'object:lamp_living': { double_tap_action: { action: 'perform-action', perform_action: 'light.turn_off', target: { entity_id: 'light.demo_living' } } } });
+  const pl = await at('lamp_living'), ph = await at('lamp_hall');
+  check('actions: both lamps project on screen', !!pl && !!ph);
+  const since = async (k) => page.evaluate(`window.__serviceCalls.slice(${k}).map((c, i) => ({ c, t: window.__serviceCallTimes[${k} + i] }))`);
+  let k = await calls();
+  await page.mouse.click(pl[0], pl[1]); // pending: waits 250 ms for a second tap
+  await page.mouse.click(ph[0], ph[1]); // other object: immediate
+  const tUp = await page.evaluate('window.__upAt');
+  await sleep(50);
+  const early = await since(k);
+  const hallCall = early.find((x) => x.c[2] && x.c[2].entity_id === 'light.demo_hall');
+  check('actions: a single tap on another object is not delayed by a pending double tap',
+    !!hallCall && hallCall.t - tUp < 100 && !early.some((x) => x.c[2] && x.c[2].entity_id === 'light.demo_living'), JSON.stringify(early.map((x) => [x.c[2], Math.round(x.t - tUp)])));
+  await sleep(400);
+  let later = (await since(k)).map((x) => x.c);
+  check('actions: the pending single tap runs after 250 ms (toggle)', later.some((c) => c[1] === 'toggle' && c[2].entity_id === 'light.demo_living'), JSON.stringify(later));
+  k = await calls();
+  await page.mouse.click(pl[0], pl[1]);
+  await sleep(60);
+  await page.mouse.click(pl[0], pl[1]);
+  await sleep(400);
+  later = (await since(k)).map((x) => x.c);
+  check('actions: a double tap runs the double_tap_action only', later.length === 1 && later[0][1] === 'turn_off' && later[0][3].entity_id === 'light.demo_living', JSON.stringify(later));
+
+  // confirmation: an in-card dialog, nothing until OK
+  await setActions({ 'object:lamp_hall': { tap_action: { action: 'toggle', confirmation: { text: 'Toggle the hall?' } } } });
+  n0 = await calls();
+  p = await at('lamp_hall');
+  await page.mouse.click(p[0], p[1]);
+  await sleep(150);
+  const dlg = await page.evaluate(`(() => { const d = ${card}.shadowRoot.querySelector('.fp-confirm'); return d && d.textContent; })()`);
+  check('actions: confirmation shows an in-card dialog, no call yet', /Toggle the hall\?/.test(dlg || '') && (await calls()) === n0, String(dlg));
+  await page.evaluate(`${card}.shadowRoot.querySelector('.fp-confirm [data-c=yes]').click()`);
+  await sleep(100);
+  check('actions: OK runs the action and closes the dialog', (await calls()) === n0 + 1 && !(await page.evaluate(`!!${card}.shadowRoot.querySelector('.fp-confirm')`)), await lastCall());
+
+  // popup links: history from the YAML popup list
+  await setActions({ 'object:lamp_hall': { popup: ['toggle', 'history', { label: 'Lights view', navigate: '/fp-test/lights' }] } });
+  p = await at('lamp_hall');
+  await hold(p);
+  const links = await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.fp-popup .fp-pop-row.link')].map((r) => r.textContent.trim())`);
+  check('actions: popup shows the link rows at the bottom', links.join() === 'History,Lights view', JSON.stringify(links));
+  await page.screenshot({ path: path.join(root, 'screenshots', 'object-popup-links.png') });
+  await page.evaluate(`${card}.shadowRoot.querySelector('.fp-popup .fp-pop-link').click()`);
+  await sleep(100);
+  check('actions: the History link navigates to /history?entity_id=…', (await page.evaluate('window.__locs.at(-1)')) === '/history?entity_id=light.demo_hall', await page.evaluate('window.__locs.at(-1)'));
+  await page.evaluate(`history.replaceState(null, '', ${JSON.stringify(origin)})`);
+  await page.keyboard.press('Escape');
+
+  // markers: YAML keyed by entity id (a marker away from model objects: objects win a tap under the finger)
+  const mk = await page.evaluate(`(() => { const c = ${card}; const m = c._markers.find((x) => { const el = c._markerEls.get(x.id); if (!el) return false;
+    const r = el.querySelector('.fp-dot').getBoundingClientRect(); return r.width > 0 && el.offsetParent && !c._objectHit(r.x + r.width / 2, r.y + r.height / 2, 30); });
+    if (!m) return null; const r = c._markerEls.get(m.id).querySelector('.fp-dot').getBoundingClientRect(); return { e: m.entityId, x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  if (mk) {
+    await setActions({ [mk.e]: { tap_action: { action: 'navigate', navigation_path: '/fp-test/marker' } } });
+    const r = await page.evaluate(`(() => { const c = ${card}; const m = c._markers.find((x) => x.entityId === ${JSON.stringify(mk.e)}); const b = c._markerEls.get(m.id).querySelector('.fp-dot').getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; })()`);
+    await page.mouse.click(r[0], r[1]);
+    await sleep(150);
+    check('actions: a marker tap runs its YAML tap_action (navigate)', (await page.evaluate('window.__locs.at(-1)')) === '/fp-test/marker', `${mk.e}: ${await page.evaluate('window.__locs.at(-1)')}`);
+    await page.evaluate(`history.replaceState(null, '', ${JSON.stringify(origin)})`);
+  } else check('actions: a visible marker exists for the marker check', false);
+  await setActions(undefined);
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
 // 1c. mower object: the model node follows the live position, the mower marker is gone (the demo model's mower)
 s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 560 });
 try {

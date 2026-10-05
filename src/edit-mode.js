@@ -14,6 +14,8 @@ import { levelsFromFloorMap } from './bindings.js';
 import { outlineLoops, pickLoop, rasterGrid, outlineFromGrid } from './outline.js';
 import { snapPin, attachOffset, floorAtHeight } from './objects/logic.js';
 import { actionTarget } from './objects/popup.js';
+import { typeOf } from './objects/types.js';
+import { resolveActions, validateAction } from './actions.js';
 
 const DENSE_TRIS = 150000;
 
@@ -1063,12 +1065,12 @@ export class EditMode {
           ${testable ? `<button data-act="obj-test" data-id="${esc(o.id)}" title="Toggle it like a tap in the view">Test</button>` : ''}
           <label class="check"><input type="checkbox" data-field="obj-hidden" data-id="${esc(o.id)}" ${b.hidden ? 'checked' : ''}> Hide</label></div>
         <input list="fp-obj-${t}" data-field="obj-entity" data-id="${esc(o.id)}" value="${esc(value)}" placeholder="${esc(ph)}" title="Empty: automatic; type none to leave it unbound">
-        ${o.group ? `<div class="dim">Group ${esc(o.group)}</div>` : ''}</li>`;
+        ${o.group ? `<div class="dim">Group ${esc(o.group)}</div>` : ''}${this._objActionsHtml(o, saved.ui)}</li>`;
     };
     const levelOf = new Map(mb.manifest.levels.map((l) => [l.id, l]));
     const roomOf = new Map(mb.manifest.rooms.map((r) => [r.id, r]));
     const order = [...new Set([...mb.manifest.levels.map((l) => l.id), ...objs.map((o) => o.level)])];
-    let out = datalists + '<p class="hint">Bind each model object to a Home Assistant entity. Empty means automatic; "none" leaves it unbound. Click an object in the plan to find its row.</p>';
+    let out = datalists + '<p class="hint">Bind each model object to a Home Assistant entity. Empty means automatic; "none" leaves it unbound. Click an object in the plan to find its row. Tap / Hold / Double tap pick its actions (card YAML <code>actions:</code> overrides these).</p>';
     out += '<ul class="otree">';
     for (const lid of order) {
       const inLevel = objs.filter((o) => o.level === lid);
@@ -1101,6 +1103,50 @@ export class EditMode {
       }).join('');
     }
     return out;
+  }
+
+  // Objects tab: Tap / Hold / Double tap selects (Default = the model / type action) with the fields each needs.
+  _objActionsHtml(o, ui = {}) {
+    const def = resolveActions({ modelUi: o.ui, kind: 'object', id: o.id, typeDefaults: typeOf(o.type).defaults });
+    const KINDS = ['toggle', 'more-info', 'popup', 'navigate', 'url', 'perform-action', 'none'];
+    const FIELDS = {
+      navigate: [['navigation_path', '/lovelace/0']], url: [['url_path', 'https://… or /local/…']],
+      'perform-action': [['perform_action', 'light.turn_on'], ['target', 'target entity_id']],
+    };
+    const id = esc(o.id);
+    let sels = '', fields = '', warn = '';
+    for (const [w, label] of [['tap', 'Tap'], ['hold', 'Hold'], ['double_tap', 'Double tap']]) {
+      const cur = (ui || {})[`${w}_action`] || null;
+      const d = def[w] ? def[w].action : 'none';
+      sels += `<label class="act">${label}<select data-field="obj-act" data-id="${id}" data-which="${w}">
+        <option value="">Default (${esc(d)})</option>${KINDS.map((k) => `<option value="${k}"${cur && cur.action === k ? ' selected' : ''}>${k}</option>`).join('')}</select></label>`;
+      for (const [key, ph] of (cur && FIELDS[cur.action]) || []) {
+        const v = key === 'target' ? (cur.target && cur.target.entity_id) || '' : cur[key] || '';
+        fields += `<input data-field="obj-act-field" data-id="${id}" data-which="${w}" data-key="${key}" value="${esc(v)}" placeholder="${esc(`${label}: ${ph}`)}">`;
+      }
+      const msg = cur && validateAction(cur);
+      if (msg) warn += `<div class="badge warn">${esc(label)}: ${esc(msg)}</div>`;
+    }
+    return `<div class="oacts">${sels}</div>${fields}${warn}`;
+  }
+
+  _setObjAction(el) {
+    const id = el.dataset.id, which = el.dataset.which;
+    const cur = (((this.layout.objects || {})[id] || {}).ui || {})[`${which}_action`] || null;
+    if (el.dataset.field === 'obj-act') {
+      const v = el.value;
+      this.commit(E.setObjectUi(this.layout, id, which, v ? (cur && cur.action === v ? cur : { action: v }) : null));
+      return;
+    }
+    if (!cur) return;
+    const key = el.dataset.key, v = el.value.trim();
+    const next = { ...cur };
+    if (key === 'target') {
+      if (v) next.target = { entity_id: v };
+      else delete next.target;
+    } else if (v) next[key] = v;
+    else delete next[key];
+    this.commit(E.setObjectUi(this.layout, id, which, next));
   }
 
   // A click on an object in 3D (Objects tab): open its room, select and show its row.
@@ -2032,6 +2078,9 @@ export class EditMode {
     } else if (f === 'obj-entity') {
       const v = el.value.trim();
       this.commit(E.setObject(this.layout, el.dataset.id, { entity: v === '' ? undefined : v.toLowerCase() === 'none' ? null : v }));
+      this.render();
+    } else if (f === 'obj-act' || f === 'obj-act-field') {
+      this._setObjAction(el);
       this.render();
     } else if (f === 'obj-hidden') {
       this.commit(E.setObject(this.layout, el.dataset.id, { hidden: el.checked }));

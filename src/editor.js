@@ -299,6 +299,16 @@ export function setObject(layout, id, patch) {
   return { ...layout, objects };
 }
 
+// layout.objects[id].ui[<which>_action] (which: tap | hold | double_tap): set, or null removes it
+// (back to the model / type default). An empty ui is dropped, an empty entry too.
+export function setObjectUi(layout, id, which, action) {
+  const cur = ((layout.objects || {})[id] || {}).ui || {};
+  const ui = { ...cur };
+  if (action) ui[`${which}_action`] = action;
+  else delete ui[`${which}_action`];
+  return setObject(layout, id, { ui: Object.keys(ui).length ? ui : undefined });
+}
+
 // layout.groups[name] = { entity }: the optional controller of a fixture group. No entity (empty or
 // "none"): no entry.
 export function setGroup(layout, name, patch) {

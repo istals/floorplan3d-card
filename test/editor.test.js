@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   snapPoint, floorVertices, nearestEdge, newRoomId, upsertRoom, deleteRoom, moveVertex, insertVertex,
   removeVertex, addDoor, removeDoor, cleanPolygon, setPin, clearPin, hide, unhide, upsertFloor, deleteFloor,
-  newFloorId, parseImport, fitImport, setObject, setGroup, attachPin, realignPins,
+  newFloorId, parseImport, fitImport, setObject, setObjectUi, setGroup, attachPin, realignPins,
 } from '../src/editor.js';
 
 const square = { id: 'r1', polygon: [[0, 0], [4, 0], [4, 3], [0, 3]] };
@@ -222,5 +222,18 @@ describe('attachPin', () => {
     expect(out.pins['device:a']).toEqual({ ...withFree.pins['device:a'], x: 4, y: 4, z: 2 }); // scale 2 about the origin, then +2 east
     expect(out.pins['device:a'].offset).toEqual([0, 0.1, 0]);
     expect(out.pins['device:c'].x).toBe(4);
+  });
+});
+
+describe('setObjectUi', () => {
+  it('sets and removes one action; empty ui and entry are dropped', () => {
+    let l = setObjectUi({}, 'lamp', 'tap', { action: 'navigate', navigation_path: '/x' });
+    expect(l.objects.lamp).toEqual({ ui: { tap_action: { action: 'navigate', navigation_path: '/x' } } });
+    l = setObject(l, 'lamp', { entity: 'light.a' });
+    l = setObjectUi(l, 'lamp', 'hold', { action: 'none' });
+    expect(l.objects.lamp.ui).toEqual({ tap_action: { action: 'navigate', navigation_path: '/x' }, hold_action: { action: 'none' } });
+    l = setObjectUi(setObjectUi(l, 'lamp', 'tap', null), 'lamp', 'hold', null);
+    expect(l.objects.lamp).toEqual({ entity: 'light.a' });
+    expect(setObjectUi(setObjectUi({}, 'a', 'tap', { action: 'none' }), 'a', 'tap', null).objects.a).toBeUndefined();
   });
 });

@@ -279,32 +279,32 @@ const generic = {
   prepare: (obj, ctx) => ({ obj, glow: null, hints: hintDefaults(obj.hints), pool: false, anchor: obj.node ? anchorOf(obj, null, ctx.root, null) : new THREE.Vector3() }),
   update: () => ({ lit: false, level: 0, color: null }),
   dispose: () => {},
-  defaults: { tap: 'more-info', hold: 'popup', popup: ['state'] },
+  defaults: { tap_action: { action: 'more-info' }, hold_action: { action: 'popup' }, popup: ['state'] },
 };
 
 export const TYPES = {
   light: {
     prepare: (obj, ctx) => prepareLight(obj, ctx, true),
     update: updateLight, dispose: disposeLight,
-    defaults: { tap: 'toggle', hold: 'popup', popup: ['toggle', 'brightness', 'color'] },
+    defaults: { tap_action: { action: 'toggle' }, hold_action: { action: 'popup' }, popup: ['toggle', 'brightness', 'color'] },
   },
   light_strip: {
     // real light only when the model asks for one (hints.max)
     prepare: (obj, ctx) => prepareLight(obj, ctx, !!obj.hints && fin(obj.hints.max) && obj.hints.max > 0),
     update: updateLight, dispose: disposeLight,
-    defaults: { tap: 'toggle', hold: 'popup', popup: ['toggle', 'brightness', 'color'] },
+    defaults: { tap_action: { action: 'toggle' }, hold_action: { action: 'popup' }, popup: ['toggle', 'brightness', 'color'] },
   },
   mower: {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, obj.glow || 'glow', false),
     update: (part, chain, ctx) => updateStatus(part, statusColor('mower', stateOf(ctx, ctx.entity))),
     place: placeMower, dispose: disposeMower,
-    defaults: { tap: 'popup', hold: 'more-info', popup: ['state', 'battery', 'start', 'dock'] },
+    defaults: { tap_action: { action: 'popup' }, hold_action: { action: 'more-info' }, popup: ['state', 'battery', 'start', 'dock'] },
   },
   dock: {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, ledName(obj), false),
     update: (part, chain, ctx) => updateStatus(part, statusColor('dock', stateOf(ctx, ctx.mowerEntity))),
     dispose: disposeStatus,
-    defaults: { tap: 'more-info', hold: 'more-info', popup: ['state'] },
+    defaults: { tap_action: { action: 'more-info' }, hold_action: { action: 'more-info' }, popup: ['state'] },
   },
   ev_charger: {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, ledName(obj), true),
@@ -315,7 +315,7 @@ export const TYPES = {
     },
     inputs: chargerInputs, // the layer re-evaluates when the power sensor changes
     relayout, dispose: disposeStatus,
-    defaults: { tap: 'more-info', hold: 'popup', popup: ['state', 'power', 'energy'] },
+    defaults: { tap_action: { action: 'more-info' }, hold_action: { action: 'popup' }, popup: ['state', 'power', 'energy'] },
   },
   climate: {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, obj.glow || 'glow', true),
@@ -325,7 +325,7 @@ export const TYPES = {
       return updateStatus(part, statusColor('climate', s && s.attributes ? s.attributes.hvac_action : null));
     },
     relayout, dispose: disposeStatus,
-    defaults: { tap: 'more-info', hold: 'popup', popup: ['temperature', 'mode'] },
+    defaults: { tap_action: { action: 'more-info' }, hold_action: { action: 'popup' }, popup: ['temperature', 'mode'] },
   },
   generic,
 };

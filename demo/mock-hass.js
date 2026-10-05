@@ -144,9 +144,10 @@ export function createMockHass({ onChange }) {
     language: 'en',
     hassUrl: (p) => p,
     fetchWithAuth,
-    callService: async (domain, service, data) => {
-      (window.__serviceCalls = window.__serviceCalls || []).push([domain, service, data]); // headless checks
-      const s = current.states[data.entity_id];
+    callService: async (domain, service, data = {}, target) => {
+      (window.__serviceCalls = window.__serviceCalls || []).push(target ? [domain, service, data, target] : [domain, service, data]); // headless checks
+      (window.__serviceCallTimes = window.__serviceCallTimes || []).push(performance.now());
+      const s = current.states[data.entity_id || (target && target.entity_id)];
       if (!s || !['toggle', 'turn_on', 'turn_off'].includes(service)) return;
       const on = service === 'toggle' ? s.state !== 'on' : service === 'turn_on';
       const attrs = { ...s.attributes };
@@ -155,7 +156,7 @@ export function createMockHass({ onChange }) {
         else delete attrs.brightness;
         if (on && data.rgb_color) attrs.rgb_color = data.rgb_color;
       }
-      update({ [data.entity_id]: { ...s, state: on ? 'on' : 'off', attributes: attrs } });
+      update({ [s.entity_id]: { ...s, state: on ? 'on' : 'off', attributes: attrs } });
     },
     callWS: async (msg) => {
       if (msg.type === 'floorplan3d/layout/get') return { layout: layoutStore };

@@ -233,12 +233,18 @@ don't flicker (z-fighting).
 
 ### Actions (optional `ui`)
 
-- `ui.tap`, `ui.hold`: `"toggle"`, `"more-info"`, `"popup"` or `"none"` (the type default otherwise).
+- `ui.tap_action`, `ui.hold_action`, `ui.double_tap_action`: Home Assistant actions
+  (`{ "action": "navigate", "navigation_path": "/lovelace/lights" }`, `toggle`, `more-info`, `url`,
+  `perform-action`, `assist`, `popup`, `none`; see the README's Actions). The older `ui.tap` /
+  `ui.hold` strings (`"toggle"`, `"more-info"`, `"popup"`, `"none"`) still work. The type default
+  otherwise; the Objects tab and the card YAML `actions:` override the model.
   Toggle acts on the object's entity, else its group controller.
 - `ui.popup`: rows of the popup, in order: `toggle`, `brightness`, `color`, `state`, `battery`,
   `power`, `energy`, `temperature`, `mode`, `start_dock` (mower start / dock). Rows that don't apply
   to the bound entity are left out. Grouped fixtures also show the group controller and why a
   fixture is dark ("Facade switch is off").
+  Links at the bottom: `history`, `logbook`, `statistics` and `{ "label": "…", "navigate": "/…" }`
+  or `{ "label": "…", "url": "https://…" }`.
 
 ## Re-exporting
 

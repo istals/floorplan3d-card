@@ -21,10 +21,19 @@ import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, imag
 import { ObjectLayer } from './objects/layer.js';
 import { bindObjects, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
-import { ObjectPopup, objectAction, actionTarget, toggleCall } from './objects/popup.js';
+import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
+import { typeOf } from './objects/types.js';
+import { resolveActions, actionCall, TapSequencer } from './actions.js';
 
 const VERSION = '0.4.1';
 const NONE = Object.freeze({}); // stable stand-in for a missing layout.objects / groups (binding cache key)
+// HA frontend navigation: push the path and tell the router.
+function navigate(path, replace = false) {
+  if (replace) window.history.replaceState(window.history.state, '', path);
+  else window.history.pushState(null, '', path);
+  window.dispatchEvent(new CustomEvent('location-changed', { detail: { replace } }));
+}
+
 const TAP_TOGGLE = new Set(['light', 'switch', 'fan', 'input_boolean']);
 const LONG_PRESS_MS = 500;
 const MOON_EVERY_MS = 60000;
@@ -118,6 +127,20 @@ const STYLE = `
   .fp-switch.on span { transform: translateX(16px); }
   .fp-pop-value { font-weight: 500; }
   .fp-pop-btns { display: flex; gap: 6px; }
+  .fp-pop-row.link { min-height: 26px; }
+  .fp-pop-row:not(.link) + .fp-pop-row.link { border-top: 1px solid var(--divider-color, rgba(0,0,0,.12)); margin-top: 4px; padding-top: 4px; }
+  .fp-pop-link { border: none; background: none; padding: 2px 0; font: inherit; color: var(--primary-color); cursor: pointer; }
+  .fp-toast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 4; width: max-content; max-width: calc(100% - 32px); box-sizing: border-box;
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; background: var(--card-background-color, #fff); color: var(--primary-text-color);
+    border: 1px solid var(--warning-color, #ff9800); box-shadow: 0 2px 8px rgba(0,0,0,.25); pointer-events: none; }
+  .fp-toast[hidden] { display: none; }
+  .fp-confirm { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; width: min(280px, calc(100% - 32px));
+    box-sizing: border-box; padding: 12px 14px; border-radius: 12px; font-size: 13px; background: var(--card-background-color, #fff);
+    color: var(--primary-text-color); border: 1px solid var(--divider-color, rgba(0,0,0,.12)); box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+  .fp-confirm-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  .fp-confirm-btns button { font: inherit; padding: 4px 12px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--divider-color, rgba(0,0,0,.12)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+  .fp-confirm-btns button.primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
   .fp-pop-btns button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 12px; cursor: pointer;
     border: 1px solid var(--divider-color, rgba(0,0,0,.12)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
   .body { display: flex; }
@@ -255,6 +278,11 @@ const STYLE = `
   .panel ul.otree li.obj .orow { display: flex; align-items: center; gap: 6px; --mdc-icon-size: 16px; margin-bottom: 3px; }
   .panel ul.otree li.obj .orow .name { flex: 1; font-size: 12.5px; }
   .panel ul.otree li.obj .orow label.check { margin: 0; font-size: 12px; }
+  .panel ul.otree li.obj .oacts { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
+  .panel ul.otree li.obj .oacts label.act { display: flex; flex-direction: column; margin: 0; font-size: 11px; color: var(--secondary-text-color); flex: 1; min-width: 80px; }
+  .panel ul.otree li.obj .oacts select { font-size: 12px; }
+  .panel ul.otree li.obj > input[data-field=obj-act-field] { margin-top: 3px; }
+  .panel ul.otree li.obj > .badge.warn { display: block; margin-top: 3px; white-space: normal; }
   .panel ul.otree li.obj input[type=text], .panel ul.otree li.obj input:not([type]) { width: 100%; box-sizing: border-box; }
   .panel ul.otree .badge { font-size: 9.5px; padding: 0 4px; border-radius: 4px; background: var(--secondary-background-color, rgba(127,127,127,.2)); color: var(--secondary-text-color); }
   .panel ul.otree .badge.warn { background: none; color: var(--error-color, #db4437); border: 1px solid currentColor; }
@@ -306,6 +334,7 @@ class Floorplan3dCard extends HTMLElement {
     this._layout = null;
     this._layoutReady = new Promise((r) => { this._layoutLoaded = r; }); // resolves once the stored layout has loaded (or failed)
     this._built = {};
+    this._taps = new TapSequencer(); // single vs double tap, per target
     this._markers = [];
     this._markerEls = new Map();
     this._floor = null;
@@ -534,6 +563,8 @@ class Floorplan3dCard extends HTMLElement {
   disconnectedCallback() {
     if (this._view) this._view.stop();
     this._endGesture();
+    this._taps.cancel();
+    this._closeConfirm();
     if (this._popup) this._popup.close(); // window listeners
     if (this._editing && this._edit) this._edit.detach(); // window listeners (keys, pick menu)
     if (this._ro) this._ro.disconnect();
@@ -570,6 +601,7 @@ class Floorplan3dCard extends HTMLElement {
             </div>
             <div class="empty" hidden></div>
             <div class="notice" hidden></div>
+            <div class="fp-toast" hidden></div>
           </div>
         </div>
       </ha-card>`;
@@ -579,6 +611,7 @@ class Floorplan3dCard extends HTMLElement {
     this._chips = root.querySelector('.chips');
     this._empty = root.querySelector('.empty');
     this._notice = root.querySelector('.notice');
+    this._toastEl = root.querySelector('.fp-toast');
     root.querySelector('.seg').addEventListener('click', (e) => {
       const mode = e.target.dataset && e.target.dataset.mode;
       if (mode) this._setMode(mode);
@@ -605,12 +638,13 @@ class Floorplan3dCard extends HTMLElement {
     this._view.onObjectsInvalidate = () => this._updateObjects(); // view, section or placement changed
     this._popup = new ObjectPopup(this._stage, {
       onAction: (domain, service, data) => this._hass && this._hass.callService(domain, service, data),
+      onLink: (action) => this._runAction(action, {}),
       project: (w) => this._view.projectWorld(w),
       anchor: (id) => this._objects.anchorOf(id),
       resolve: (id) => {
         const o = this._objects.objectAt(id);
         if (!o || !this._hass || (o.binding && o.binding.hidden)) return null;
-        return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups };
+        return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup };
       },
     });
     this._view.onRender = () => this._popup.position();
@@ -633,6 +667,8 @@ class Floorplan3dCard extends HTMLElement {
 
   _toggleEdit() {
     this._endGesture();
+    this._taps.cancel();
+    this._closeConfirm();
     this._popup.close();
     this._editing = !this._editing;
     this._body.classList.toggle('editing', this._editing);
@@ -1394,7 +1430,7 @@ class Floorplan3dCard extends HTMLElement {
     for (const a of layer.anchors()) {
       const o = layer.objectAt(a.id);
       const b = o && o.binding;
-      if (!all && (!b || b.hidden || (!b.missing && !actionTarget(o.obj, b, groups)))) continue;
+      if (!all && (!b || b.hidden || (!b.missing && !actionTarget(o.obj, b, groups) && !this._objectHasOwnActions(a.id, o)))) continue;
       if (!levelShown(o.obj.level) || !nodeShown(o.obj.node)) continue;
       const p = this._view.projectWorld(a.world);
       if (p) pts.push({ id: a.id, x: p[0], y: p[1], world: a.world, node: o.obj.node });
@@ -1439,7 +1475,7 @@ class Floorplan3dCard extends HTMLElement {
       this._endGesture();
       if (tap) {
         if (this._editing) this._edit.selectObject(id);
-        else this._runObjectAction(id, 'tap');
+        else this._taps.tap(`object:${id}`, !!this._objectActions(id).double_tap, () => this._runObjectAction(id, 'tap'), () => this._runObjectAction(id, 'double_tap'));
       }
     };
     g.cancel = () => this._endGesture();
@@ -1474,20 +1510,126 @@ class Floorplan3dCard extends HTMLElement {
     return true;
   }
 
-  // toggle: own entity, else the group controller; nothing usable (missing / unavailable): the popup says so.
+  // Resolved actions of an object: type defaults < model fp.ui < layout ui (Objects tab) < YAML actions.
+  _objectActions(id, o = this._objects && this._objects.objectAt(id)) {
+    if (!o) return resolveActions({});
+    const entity = (o.binding && o.binding.entity) || null;
+    const reg = entity && this._hass && this._hass.entities && this._hass.entities[entity];
+    return resolveActions({
+      modelUi: o.obj.ui, layoutUi: (((this._layout && this._layout.objects) || {})[id] || {}).ui, yaml: this._config.actions,
+      kind: 'object', id, entityId: entity, deviceId: (reg && reg.device_id) || null, typeDefaults: typeOf(o.obj.type).defaults,
+    });
+  }
+
+  // An unbound object is still tappable when an action needs no entity (navigate, url, perform-action, assist).
+  _objectHasOwnActions(id, o) {
+    const a = this._objectActions(id, o);
+    return [a.tap, a.hold, a.double_tap].some((x) => x && (['navigate', 'url', 'perform-action', 'assist'].includes(x.action) || x.entity));
+  }
+
+  _markerActions(m) {
+    return resolveActions({
+      yaml: this._config.actions, kind: 'marker', id: m.id, entityId: m.entityId, deviceId: m.deviceId,
+      typeDefaults: { tap_action: { action: TAP_TOGGLE.has(m.domain) ? 'toggle' : 'more-info' }, hold_action: { action: 'more-info' } },
+    });
+  }
+
+  // toggle / more-info on the object's entity (own, else the group controller); nothing usable
+  // (missing / unavailable): the popup says so.
   _runObjectAction(id, which) {
     const o = this._objects.objectAt(id);
     if (!o || !this._hass) return;
-    const action = objectAction(o.obj, which);
-    if (action === 'none') return;
+    const action = this._objectActions(id, o)[which];
+    if (!action || action.action === 'none') return;
     const target = actionTarget(o.obj, o.binding, this._groups || {}, this._hass.states);
     const st = target && this._hass.states[target];
     const usable = st && st.state !== 'unavailable' && st.state !== 'unknown';
-    if (action === 'popup' || !usable) {
-      const a = this._objects.anchors().find((x) => x.id === id);
-      if (a) this._popup.open(o.obj, a.world);
-    } else if (action === 'toggle') this._hass.callService(...toggleCall(target));
-    else this._moreInfo(target);
+    const onTarget = (action.action === 'toggle' || action.action === 'more-info') && !action.entity;
+    if (action.action === 'popup' || (onTarget && !usable)) this._openObjectPopup(id, o);
+    else this._runAction(action, { entity: target, objectId: id });
+  }
+
+  _openObjectPopup(id, o = this._objects.objectAt(id)) {
+    const a = o && this._objects.anchors().find((x) => x.id === id);
+    if (a) this._popup.open(o.obj, a.world);
+  }
+
+  _runMarkerAction(m, which) {
+    const action = this._markerActions(m)[which];
+    if (!action || action.action === 'none' || !this._hass) return;
+    this._runAction(action.action === 'popup' ? { ...action, action: 'more-info' } : action, { entity: m.entityId });
+  }
+
+  // Runs one HA action (after the in-card confirmation when it asks for one).
+  _runAction(action, ctx) {
+    const call = actionCall(action, { entity: ctx.entity || null });
+    if (call.kind === 'none') return;
+    if (call.kind === 'error') { this._toast(call.message); return; }
+    if (call.confirm) this._confirm(call.confirm, () => this._execCall(call, ctx));
+    else this._execCall(call, ctx);
+  }
+
+  _execCall(call, ctx) {
+    switch (call.kind) {
+      case 'service':
+        if (!this._hass) return;
+        if (call.target) this._hass.callService(call.domain, call.service, call.data, call.target);
+        else this._hass.callService(call.domain, call.service, call.data);
+        break;
+      case 'more-info': this._moreInfo(call.entityId); break;
+      case 'navigate': navigate(call.path, call.replace); break;
+      case 'url':
+        if (call.newTab) window.open(call.url, '_blank', 'noopener');
+        else window.location.assign(call.url);
+        break;
+      case 'assist':
+        // HA's frontend runs actions fired as hass-action (opens the Assist dialog)
+        this.dispatchEvent(new CustomEvent('hass-action', { detail: { config: { tap_action: call.action }, action: 'tap' }, bubbles: true, composed: true }));
+        break;
+      case 'popup':
+        if (ctx.objectId) this._openObjectPopup(ctx.objectId);
+        else if (ctx.entity) this._moreInfo(ctx.entity);
+        break;
+      default:
+    }
+  }
+
+  // A short message at the bottom of the stage (e.g. an action missing a field).
+  _toast(text) {
+    if (!this._toastEl) return;
+    this._toastEl.textContent = text;
+    this._toastEl.hidden = false;
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => { this._toastEl.hidden = true; }, 4000);
+  }
+
+  // In-card confirmation (never a browser dialog). OK runs ok(); Cancel, Esc or a new one drops it.
+  _confirm(text, ok) {
+    this._closeConfirm();
+    const el = document.createElement('div');
+    el.className = 'fp-confirm';
+    el.setAttribute('role', 'dialog');
+    el.innerHTML = '<div class="fp-confirm-text"></div><div class="fp-confirm-btns"><button data-c="no">Cancel</button><button data-c="yes" class="primary">OK</button></div>';
+    el.querySelector('.fp-confirm-text').textContent = text;
+    for (const t of ['pointerdown', 'pointerup', 'pointermove', 'click', 'contextmenu', 'wheel']) el.addEventListener(t, (e) => e.stopPropagation());
+    el.addEventListener('click', (e) => {
+      const c = e.target.dataset && e.target.dataset.c;
+      if (!c) return;
+      this._closeConfirm();
+      if (c === 'yes') ok();
+    });
+    this._confirmKey = (e) => { if (e.key === 'Escape') this._closeConfirm(); };
+    window.addEventListener('keydown', this._confirmKey);
+    this._confirmEl = el;
+    this._stage.append(el);
+    el.querySelector('[data-c=yes]').focus();
+  }
+
+  _closeConfirm() {
+    if (!this._confirmEl) return;
+    window.removeEventListener('keydown', this._confirmKey);
+    this._confirmEl.remove();
+    this._confirmEl = null;
   }
 
   _buildMarkers() {
@@ -1582,7 +1724,7 @@ class Floorplan3dCard extends HTMLElement {
       e.stopPropagation();
       start = [e.clientX, e.clientY];
       long = false;
-      timer = setTimeout(() => { long = true; this._moreInfo(m.entityId); }, LONG_PRESS_MS);
+      timer = setTimeout(() => { long = true; this._runMarkerAction(m, 'hold'); }, LONG_PRESS_MS);
     });
     el.addEventListener('pointermove', (e) => {
       if (start && Math.hypot(e.clientX - start[0], e.clientY - start[1]) >= CLICK_SLOP_PX) cancel();
@@ -1591,7 +1733,7 @@ class Floorplan3dCard extends HTMLElement {
       const wasClick = start && !long && timer && Math.hypot(e.clientX - start[0], e.clientY - start[1]) < CLICK_SLOP_PX;
       cancel();
       start = null;
-      if (wasClick) this._tap(m);
+      if (wasClick) this._taps.tap(`marker:${m.id}`, !!this._markerActions(m).double_tap, () => this._runMarkerAction(m, 'tap'), () => this._runMarkerAction(m, 'double_tap'));
     });
     el.addEventListener('pointerleave', cancel);
     el.addEventListener('pointercancel', cancel);
@@ -1624,14 +1766,6 @@ class Floorplan3dCard extends HTMLElement {
       }
     }
     this._view.setGlows(glows);
-  }
-
-  _tap(m) {
-    if (TAP_TOGGLE.has(m.domain)) {
-      this._hass.callService(m.domain, 'toggle', { entity_id: m.entityId });
-    } else {
-      this._moreInfo(m.entityId);
-    }
   }
 
   _moreInfo(entityId) {

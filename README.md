@@ -86,6 +86,7 @@ The options below can be set in the visual editor or in YAML.
 | `model_scale` | `1` | Model scale (e.g. `0.01` for a centimetre model). |
 | `model_opacity` | `1` | Model opacity, `0`–`1`. |
 | `lights` | `auto` | With a model: `auto` gives lit lamps real lights (at most 12, 4 with shadows); `off` keeps them glowing only (for weak tablets). |
+| `actions` | | Tap / hold / double tap actions for objects and markers (see [Actions](#actions)). |
 | `model_floors` | auto | Which HA floor each model level belongs to, e.g. `{ground: floor1, attic: floor2}` (for a `model:` URL; uploads set it in the Model tab). |
 
 ## Set up the plan
@@ -121,7 +122,9 @@ where it is as a normal pin. Hold **Alt** while dragging for a free drag at the 
 **Objects.** (Only with a model that has objects.) The model's objects grouped by level and room,
 each with its entity: *auto* means bound from the model's `suggest.entity`; type another entity
 to rebind, empty returns to auto, `none` leaves it unbound. *entity not found* means the entity
-doesn't exist in HA (the object stays unbound). **Test** toggles it like a tap, **Hide** ignores the
+doesn't exist in HA (the object stays unbound). **Tap / Hold / Double tap** pick the object's
+[actions](#actions) (*Default* = the model's or the type's action; navigate, url and perform-action
+show the fields they need and flag a missing one). **Test** toggles it like a tap, **Hide** ignores the
 object as a control (dark, and its device gets its marker back). Click an object in the view to
 find its row. *Groups*: a fixture group (e.g. all facade lamps) can get a controller entity, a
 relay that must be on too; empty or `none` removes it, an unknown entity is ignored and flagged.
@@ -258,12 +261,46 @@ has no marker: the object is the control.
   and for grouped fixtures the group controller and why a lamp is dark ("Facade switch is off").
   Esc or a tap outside closes it. Taps near an object (30 px, 52 px on touch) hit the object
   before markers. Other objects: mower popup (state, battery, start / dock), climate (temperature,
-  mode), EV charger (state, power, energy); `fp.ui` in the model can change tap / hold / rows.
+  mode), EV charger (state, power, energy); `fp.ui` in the model, the Objects tab or the card YAML
+  can change tap / hold / double tap and the rows (see [Actions](#actions)).
 - **Mower, dock, charger, climate:** the mower model drives where the mower is; the dock LED is
   lit while docked; the charger LED shows charging / ready / error with the power as a label; a
   climate unit shows its temperature and glows warm or cool while heating or cooling.
 - **Edit mode:** bind objects in the Objects tab; in the Devices tab a dragged marker sticks to the
   model's surfaces and attaches to an object it is dropped on (Alt: free drag, Detach to undo).
+
+### Actions
+
+Objects and markers take Home Assistant's standard actions: `tap_action`, `hold_action` (500 ms)
+and `double_tap_action`, each `{ action: ... }` with `toggle`, `more-info` (optional `entity`),
+`navigate` (`navigation_path`), `url` (`url_path`; a path starting with `/` opens in the same tab),
+`perform-action` (`perform_action`, `data`, `target`), `assist`, `none`, plus `popup` (the object's
+popup). `confirmation: true` (or `{ text: ... }`) asks first in a small dialog in the card.
+Later wins: the model's `fp.ui` (old `tap` / `hold` keys still work) → the Objects tab → the card
+YAML `actions:`, keyed `object:<id>` (model objects), `<entity_id>` or `device:<device_id>` (objects
+and markers):
+
+```yaml
+actions:
+  object:lamp_hall:
+    hold_action: { action: navigate, navigation_path: /lovelace/lights }
+    double_tap_action:
+      action: perform-action
+      perform_action: light.turn_on
+      target: { entity_id: light.hall }
+      data: { brightness_pct: 100 }
+  binary_sensor.front_door:
+    tap_action: { action: more-info }
+  object:mower:
+    popup: [state, battery, start, dock, history, { label: Mower map, navigate: /lovelace/garden }]
+```
+
+Defaults: lamps toggle on tap and open the popup on hold; markers toggle lights / switches / fans /
+input booleans and open more-info otherwise, hold opens more-info. A single tap waits 250 ms for a
+second tap only on objects or markers that have a `double_tap_action`; everything else reacts at
+once. An action missing a field (e.g. `perform-action` without a target) does nothing and shows a
+short message. Popup rows can end with links: `history`, `logbook` (open HA's history / logbook for
+the entity), `statistics` (the entity's more-info) and custom `{ label, navigate }` or `{ label, url }`.
 
 ### Views
 

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { popupRows, objectAction, actionTarget } from '../src/objects/popup.js';
+import { popupRows, actionTarget } from '../src/objects/popup.js';
+import { resolveActions } from '../src/actions.js';
+import { typeOf } from '../src/objects/types.js';
 import { chainState } from '../src/objects/logic.js';
 
 const st = (state, attributes = {}) => ({ state, attributes });
@@ -48,6 +50,19 @@ describe('popupRows', () => {
     const obj = { id: 'l1', type: 'light', ui: { popup: ['brightness', 'bogus', 'state'] } };
     const rows = popupRows(obj, chainState(obj, { entity: 'light.a' }, {}, states), states);
     expect(kinds(rows)).toEqual(['brightness', 'state']);
+  });
+
+  it('link rows (history / logbook / statistics / custom) at the bottom; a resolved list wins over fp.ui', () => {
+    const states = { 'sensor.t': st('21', {}) };
+    const obj = { id: 'x', type: 'something', ui: { popup: ['state'] } };
+    const chain = chainState(obj, { entity: 'sensor.t' }, {}, states);
+    const rows = popupRows(obj, chain, states, {}, ['history', 'state', { label: 'Plan', navigate: '/lovelace/plan' }]);
+    expect(kinds(rows)).toEqual(['state', 'link', 'link']);
+    expect(rows[1]).toMatchObject({ label: 'History', action: { action: 'navigate', navigation_path: '/history?entity_id=sensor.t' } });
+    expect(rows[2].label).toBe('Plan');
+    // unavailable: the state row and the links
+    const un = popupRows(obj, chain, { 'sensor.t': st('unavailable') }, {}, ['state', 'logbook']);
+    expect(kinds(un)).toEqual(['state', 'link']);
   });
 
   it('grouped fixture: one chain row per controller and a reason row when dark', () => {
@@ -142,13 +157,15 @@ describe('popupRows', () => {
   });
 });
 
-describe('objectAction / actionTarget', () => {
-  it('type defaults and fp.ui overrides, invalid falls back', () => {
-    expect(objectAction({ type: 'light' }, 'tap')).toBe('toggle');
-    expect(objectAction({ type: 'light' }, 'hold')).toBe('popup');
-    expect(objectAction({ type: 'zzz' }, 'tap')).toBe('more-info');
-    expect(objectAction({ type: 'light', ui: { tap: 'none' } }, 'tap')).toBe('none');
-    expect(objectAction({ type: 'light', ui: { hold: 'bogus' } }, 'hold')).toBe('popup');
+describe('object actions / actionTarget', () => {
+  const act = (obj, which) => resolveActions({ modelUi: obj.ui, kind: 'object', id: 'x', typeDefaults: typeOf(obj.type).defaults })[which].action;
+  it('type defaults and fp.ui overrides (legacy keys), invalid falls back', () => {
+    expect(act({ type: 'light' }, 'tap')).toBe('toggle');
+    expect(act({ type: 'light' }, 'hold')).toBe('popup');
+    expect(act({ type: 'zzz' }, 'tap')).toBe('more-info');
+    expect(act({ type: 'light', ui: { tap: 'none' } }, 'tap')).toBe('none');
+    expect(act({ type: 'light', ui: { hold: 'bogus' } }, 'hold')).toBe('popup');
+    expect(act({ type: 'light', ui: { tap_action: { action: 'more-info' } } }, 'tap')).toBe('more-info');
   });
 
   it('own entity first, else the group controller', () => {

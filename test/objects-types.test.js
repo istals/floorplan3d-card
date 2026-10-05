@@ -71,9 +71,9 @@ describe('types', () => {
     for (const k of ['light', 'light_strip', 'mower', 'dock', 'ev_charger', 'climate', 'generic']) {
       expect(typeof TYPES[k].prepare).toBe('function');
       expect(typeof TYPES[k].update).toBe('function');
-      expect(TYPES[k].defaults).toHaveProperty('tap');
+      expect(TYPES[k].defaults).toHaveProperty('tap_action');
     }
-    expect(TYPES.light.defaults).toEqual({ tap: 'toggle', hold: 'popup', popup: ['toggle', 'brightness', 'color'] });
+    expect(TYPES.light.defaults).toEqual({ tap_action: { action: 'toggle' }, hold_action: { action: 'popup' }, popup: ['toggle', 'brightness', 'color'] });
     expect(typeOf('nonsense')).toBe(TYPES.generic);
   });
 

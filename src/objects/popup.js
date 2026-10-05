@@ -1,11 +1,11 @@
 // Object popup: a small panel next to a model object with its controls (toggle, brightness,
 // colour, the group chain) and read-only values. popupRows() is the pure part (unit-tested).
 import { typeOf } from './types.js';
+import { toggleCall, popupLinks } from '../actions.js';
 
-export const ACTIONS = new Set(['toggle', 'more-info', 'popup', 'none']);
+export { toggleCall };
 const KINDS = new Set(['toggle', 'brightness', 'color', 'state', 'battery', 'power', 'energy', 'temperature', 'mode', 'start_dock']);
 const COLOR_MODES = new Set(['hs', 'rgb', 'xy', 'rgbw', 'rgbww']);
-const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean']);
 export const SWATCHES = [
   [255, 59, 48], [255, 149, 0], [255, 214, 10], [52, 199, 89], [48, 213, 200], [10, 132, 255], [175, 82, 222], [255, 55, 145],
 ];
@@ -19,13 +19,6 @@ const bad = (s) => !s || s.state === 'unavailable' || s.state === 'unknown';
 const nameOf = (states, e) => (states[e] && states[e].attributes && states[e].attributes.friendly_name) || e;
 const withUnit = (v, u) => (u ? `${v} ${u}` : String(v));
 
-// The tap / hold action of an object: fp.ui overrides the type default.
-export function objectAction(obj, which) {
-  const ui = (obj && obj.ui) || {};
-  const own = ui[which];
-  return ACTIONS.has(own) ? own : typeOf(obj && obj.type).defaults[which];
-}
-
 // The entity a toggle / more-info acts on: the object's own entity, else its group controller.
 // With states: an unavailable own entity (a bulb behind an off relay) falls back to a usable controller.
 export function actionTarget(obj, binding, groups = {}, states = null) {
@@ -35,12 +28,6 @@ export function actionTarget(obj, binding, groups = {}, states = null) {
   const own = (binding && binding.entity) || null;
   if (own && states && bad(states[own]) && ctrl && !bad(states[ctrl])) return ctrl;
   return own || ctrl;
-}
-
-// [domain, service, data] toggling an entity (domains without their own toggle use homeassistant.toggle).
-export function toggleCall(entity) {
-  const d = domainOf(entity);
-  return TOGGLE_DOMAINS.has(d) ? [d, 'toggle', { entity_id: entity }] : ['homeassistant', 'toggle', { entity_id: entity }];
 }
 
 function readValue(kind, e, s) {
@@ -74,12 +61,15 @@ function readValue(kind, e, s) {
 }
 
 /**
- * Popup rows for an object: fp.ui.popup or the type default, plus the group chain.
+ * Popup rows for an object: the popup list (resolved from fp.ui / layout / YAML; default fp.ui.popup or the
+ * type default), plus the group chain, then link rows (history / logbook / statistics / custom) at the bottom.
  * groups (layout.groups) tells the controller apart from the object's own entity.
- * Unavailable / unbound: a single state row "unavailable".
+ * Unavailable / unbound: a single state row "unavailable" (and the links).
  */
-export function popupRows(obj, chain, states = {}, groups = {}) {
-  const unavailable = [{ kind: 'state', label: 'State', value: 'unavailable' }];
+export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
+  const ui = Array.isArray(popup) ? popup : obj.ui && Array.isArray(obj.ui.popup) ? obj.ui.popup : typeOf(obj.type).defaults.popup;
+  const firstEntity = chain && chain.entities ? chain.entities[0] || null : null;
+  const unavailable = [{ kind: 'state', label: 'State', value: 'unavailable' }, ...popupLinks(ui, firstEntity)];
   if (!chain || !chain.entities || !chain.entities.some((e) => !bad(states[e]))) return unavailable;
   const g = obj.group && groups[obj.group];
   const ctrl = (g && g.entity && chain.entities.includes(g.entity) && g.entity) || null;
@@ -90,7 +80,6 @@ export function popupRows(obj, chain, states = {}, groups = {}) {
   const light = chain.entities.find((e) => e.startsWith('light.') && !bad(states[e])) || null;
   const ls = light ? states[light] : null;
   const modes = ls && Array.isArray(ls.attributes.supported_color_modes) ? ls.attributes.supported_color_modes : null;
-  const ui = obj.ui && Array.isArray(obj.ui.popup) ? obj.ui.popup : typeOf(obj.type).defaults.popup;
   const want = [];
   for (const k of ui) {
     const kind = k === 'start' || k === 'dock' ? 'start_dock' : k;
@@ -123,6 +112,7 @@ export function popupRows(obj, chain, states = {}, groups = {}) {
     for (const e of chain.entities) if (reason.startsWith(e + ' ')) reason = nameOf(states, e) + reason.slice(e.length);
   }
   if (reason) rows.push({ kind: 'reason', label: reason });
+  rows.push(...popupLinks(ui, own || ctrl));
   return rows;
 }
 
@@ -132,12 +122,14 @@ const STOP = ['pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'click
 
 /**
  * The DOM popup. root: the stage (position: relative). opts:
- *   onAction(domain, service, data), project(world: Vector3) -> [clientX, clientY] | null,
- *   resolve(id) -> { obj, chain, states, groups } | null (current data for the open object).
+ *   onAction(domain, service, data), onLink(action) (a link row: an HA action { action, ... }),
+ *   project(world: Vector3) -> [clientX, clientY] | null,
+ *   resolve(id) -> { obj, chain, states, groups, popup? } | null (current data for the open object).
  */
 export class ObjectPopup {
-  constructor(root, { onAction, project, resolve, anchor } = {}) {
+  constructor(root, { onAction, onLink, project, resolve, anchor } = {}) {
     this.root = root;
+    this.onLink = onLink || (() => {});
     this.anchorOf = anchor || null; // (id) -> world Vector3, re-read on every reposition
     this.onAction = onAction || (() => {});
     this.project = project || (() => null);
@@ -187,7 +179,10 @@ export class ObjectPopup {
   _rows() {
     const r = this._id ? this.resolve(this._id) : null;
     if (!r) return null;
-    return popupRows(r.obj, r.chain, r.states || {}, r.groups || {});
+    this._links = [];
+    const rows = popupRows(r.obj, r.chain, r.states || {}, r.groups || {}, r.popup || null);
+    for (const row of rows) if (row.kind === 'link') this._links.push(row.action);
+    return rows;
   }
 
   // Re-read the object's rows; same row layout: values only (a slider being dragged keeps its value).
@@ -195,7 +190,7 @@ export class ObjectPopup {
     if (!this.el) return;
     const rows = this._rows();
     if (!rows) { this.close(); return; }
-    const key = rows.map((r) => `${r.kind}:${r.entity || ''}`).join('|');
+    const key = rows.map((r) => `${r.kind}:${r.entity || ''}${r.kind === 'link' ? r.label : ''}`).join('|');
     const box = this.el.querySelector('.fp-pop-rows');
     if (key !== this._key) {
       this._key = key;
@@ -219,7 +214,7 @@ export class ObjectPopup {
         for (const s of row.querySelectorAll('.fp-swatch')) s.classList.toggle('on', !!v && s.dataset.rgb === v);
       } else if (r.kind === 'reason') {
         row.textContent = r.label;
-      } else if (r.kind !== 'start_dock') {
+      } else if (r.kind !== 'start_dock' && r.kind !== 'link') {
         row.querySelector('.fp-pop-value').textContent = r.value;
       }
     });
@@ -239,6 +234,8 @@ export class ObjectPopup {
         return `<div class="fp-pop-row start_dock">${label}<span class="fp-pop-btns"><button data-act="start">Start</button><button data-act="dock">Dock</button></span></div>`;
       case 'reason':
         return `<div class="fp-pop-row reason">${esc(r.label)}</div>`;
+      case 'link':
+        return `<div class="fp-pop-row link"><button class="fp-pop-link" data-act="link">${esc(r.label)}</button></div>`;
       default:
         return `<div class="fp-pop-row value">${label}<span class="fp-pop-value"></span></div>`;
     }
@@ -247,6 +244,12 @@ export class ObjectPopup {
   _click(e) {
     const b = e.target.closest && e.target.closest('[data-act]');
     const row = b && b.closest('.fp-pop-row');
+    if (b && b.dataset.act === 'link') {
+      const links = [...this.el.querySelectorAll('.fp-pop-row.link')];
+      const a = (this._links || [])[links.indexOf(row)];
+      if (a) this.onLink(a);
+      return;
+    }
     const entity = row && row.dataset.entity;
     if (!b || !entity) return;
     const act = b.dataset.act;
