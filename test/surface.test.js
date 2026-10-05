@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   surfaceKind, chooseSurface, needsStick, nearestDistance, rayGroups, nearPolygon, worldOf, planOf,
-  HORIZONTAL_DIRS, SURFACE_OFFSET, WALL_RANGE, CEILING_RANGE, FLOOR_RANGE, STICK_DISTANCE, surfaceKey, stickSurface,
+  HORIZONTAL_DIRS, SURFACE_OFFSET, WALL_RANGE, CEILING_RANGE, FLOOR_RANGE, STICK_DISTANCE, surfaceKey, stickSurface, surfaceSearch,
 } from '../src/surface.js';
 
 const close = (a, b, eps = 1e-9) => a.every((v, i) => Math.abs(v - b[i]) < eps);
@@ -39,6 +39,40 @@ describe('rayGroups', () => {
     expect(rayGroups('all')).toHaveLength(3);
     expect(rayGroups(null)).toEqual([]);
     expect([WALL_RANGE, CEILING_RANGE, FLOOR_RANGE]).toEqual([2.5, 4, 3]);
+  });
+});
+
+describe('surfaceSearch (rays stay on the device\'s floor)', () => {
+  // the first hit of a vertical ray from plan height `from` within `max` among surfaces at heights `zs` (plan, same floor)
+  const cast = (g, zs) => {
+    const up = g.dirs[0][1] > 0;
+    const d = zs.map((z) => (up ? z - g.from : g.from - z)).filter((x) => x >= 0 && x <= g.max).sort((a, b) => a - b)[0];
+    if (d === undefined) return [];
+    const z = up ? g.from + d : g.from - d;
+    return [h([0, z, 0], [0, up ? -1 : 1, 0], d, g.dirs[0])];
+  };
+  it('ceiling: starts at max(0.5, z - 1), ends 0.3 m above the floor height', () => {
+    expect(surfaceSearch('ceiling', 2.62, 2.7)).toEqual([{ dirs: [[0, 1, 0]], max: 3.0 - 1.62, from: 1.62 }]);
+    expect(surfaceSearch('ceiling', 1.0, 2.7)[0].from).toBe(0.5);
+    expect(surfaceSearch('ceiling', 2.62)[0].max).toBeCloseTo(1.38); // floor height unknown: 2.7
+  });
+  it('ceiling at 2.5 with an upper floor above: the light lands just under 2.5, never upstairs', () => {
+    const g = surfaceSearch('ceiling', 2.62, 2.7)[0]; // computed at the floor's 2.7 m height
+    const s = chooseSurface('ceiling', cast(g, [2.5, 3.0 + 2.5])); // this ceiling, the upper floor's ceiling
+    expect(s.point[1]).toBeCloseTo(2.45);
+    expect(chooseSurface('ceiling', cast(g, [3.2, 5.5]))).toBe(null); // only the floor above: keep the point
+  });
+  it('floor: down to 0.3 m below the floor, not through a stair opening to the floor below', () => {
+    const g = surfaceSearch('floor', 0.1, 2.7)[0];
+    expect(g).toEqual({ dirs: [[0, -1, 0]], max: 0.4, from: 0.1 });
+    expect(chooseSurface('floor', cast(g, [-3]))).toBe(null);
+    expect(chooseSurface('floor', cast(g, [0, -3])).point[1]).toBeCloseTo(0.05);
+  });
+  it('all (stick-all distances): from the point, vertical rays limited to the floor', () => {
+    const gs = surfaceSearch('all', 1.5, 2.7);
+    expect(gs).toEqual([{ dirs: HORIZONTAL_DIRS, max: WALL_RANGE, from: 1.5 }, { dirs: [[0, 1, 0]], max: 1.5, from: 1.5 }, { dirs: [[0, -1, 0]], max: 1.8, from: 1.5 }]);
+    expect(surfaceSearch('wall', 1.5, 2.7)).toEqual([{ dirs: HORIZONTAL_DIRS, max: WALL_RANGE, from: 1.5 }]);
+    expect(surfaceSearch(null, 1.5, 2.7)).toEqual([]);
   });
 });
 
@@ -136,6 +170,9 @@ describe('plan <-> world, nearPolygon, surfaceKey', () => {
     expect(nearPolygon([4.4, 1], sq, 0.5)).toBe(true);
     expect(nearPolygon([4.6, 1], sq, 0.5)).toBe(false);
     expect(nearPolygon([2, 1], null, 0.5)).toBe(true); // no room: no constraint
+  });
+  it('surfaceKey includes the room', () => {
+    expect(surfaceKey('wall', 'g', { x: 1, y: 2, z: 1.5 }, 'r1')).not.toBe(surfaceKey('wall', 'g', { x: 1, y: 2, z: 1.5 }, 'r2'));
   });
   it('surfaceKey changes with the point, floor and kind', () => {
     const a = surfaceKey('wall', 'g', { x: 1, y: 2, z: 1.5 });

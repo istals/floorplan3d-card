@@ -16,7 +16,7 @@ import { snapPin, attachOffset, floorAtHeight } from './objects/logic.js';
 import { actionTarget } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, validateAction } from './actions.js';
-import { surfaceKind, rayGroups, stickSurface, nearestDistance, needsStick, worldOf, planOf } from './surface.js';
+import { surfaceKind, surfaceSearch, stickSurface, nearestDistance, needsStick, worldOf, planOf } from './surface.js';
 
 const DENSE_TRIS = 150000;
 
@@ -1722,18 +1722,18 @@ export class EditMode {
   _stickMoves() {
     const vw = this.view, out = [];
     if (!vw.model) return out;
-    const byId = new Map((this.card._markers || []).map((m) => [m.id, m]));
+    const byId = new Map(this._allMarkers().map((m) => [m.id, m])); // hidden ones included
     for (const [id, pin] of Object.entries(this.layout.pins || {})) {
-      if (!pin || pin.attach || id === this.card._mowerMarkerId) continue;
-      const floorId = this.floors.some((f) => f.id === pin.floor_id) ? pin.floor_id : this.floors[0].id;
-      const elev = vw.floorElevation(floorId);
-      const world = worldOf({ x: pin.x, y: pin.y, z: pin.z ?? 1.2 }, elev);
-      const hits = rayGroups('all').flatMap((g) => vw.surfaceRays(world, g.dirs, g.max));
-      if (!needsStick(pin, nearestDistance(hits))) continue;
       const m = byId.get(id);
-      const kind = m ? surfaceKind(m.domain, m.deviceClass) : null;
-      const s = stickSurface(kind, hits);
-      if (s) out.push({ id, pin: { ...planOf(s.point, elev), floor_id: floorId, on_model: true } });
+      if (!m || !pin || pin.attach || id === this.card._mowerMarkerId) continue; // device gone: leave its pin alone
+      const floor = this.floors.find((f) => f.id === pin.floor_id) || this.floors[0];
+      const elev = vw.floorElevation(floor.id);
+      const z = pin.z ?? 1.2;
+      const world = worldOf({ x: pin.x, y: pin.y, z }, elev);
+      const hits = surfaceSearch('all', z, floor.height).flatMap((g) => vw.surfaceRays(world, g.dirs, g.max));
+      if (!needsStick(pin, nearestDistance(hits))) continue;
+      const s = stickSurface(surfaceKind(m.domain, m.deviceClass), hits);
+      if (s) out.push({ id, from: pin, pin: { ...planOf(s.point, elev), floor_id: floor.id, on_model: true } });
     }
     return out;
   }
@@ -2027,12 +2027,12 @@ export class EditMode {
       case 'unpin': this.commit(E.clearPin(this.layout, this.selectedMarker)); return;
       case 'stick-all': this.stick = { moves: this._stickMoves() }; break;
       case 'stick-cancel': this.stick = null; break;
-      case 'stick-apply': { // again now: the pins may have changed since the preview
-        const moves = this._stickMoves();
+      case 'stick-apply': { // the previewed moves; a pin changed since then is left alone
+        const moves = this.stick ? this.stick.moves : [];
         this.stick = null;
-        if (!moves.length) break;
         let layout = this.layout;
-        for (const mv of moves) layout = E.setPin(layout, mv.id, mv.pin, { grid: false });
+        for (const mv of moves) if ((layout.pins || {})[mv.id] === mv.from) layout = E.setPin(layout, mv.id, mv.pin, { grid: false });
+        if (layout === this.layout) break;
         this.commit(layout);
         return;
       }

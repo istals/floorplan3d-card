@@ -41,6 +41,29 @@ export function rayGroups(kind) {
   return [];
 }
 
+const CEILING_START_BELOW = 1.0; // the upward ray starts 1 m below the computed point (≥ 0.5 m above the floor)
+const CEILING_ABOVE = 0.3; // ceilings count up to 0.3 m above the floor's height, never the floor above
+const FLOOR_BELOW = 0.3; // floors count down to 0.3 m below the floor, never the floor below (stair openings)
+const r6 = (v) => Math.round(v * 1e6) / 1e6;
+
+// Rays for a point at plan height z on a floor of floorHeight (2.7 when unknown), staying on that floor:
+// [{ dirs, max, from }] with `from` the plan height (above the floor) of the ray origin.
+// 'all' (distance to any surface, stick-all) casts every ray from the point itself.
+export function surfaceSearch(kind, z, floorHeight = 2.7) {
+  const h = Number.isFinite(floorHeight) && floorHeight > 0 ? floorHeight : 2.7;
+  const top = h + CEILING_ABOVE, bottom = -FLOOR_BELOW;
+  const wall = { dirs: HORIZONTAL_DIRS, max: WALL_RANGE, from: z };
+  const down = { dirs: DOWN, max: r6(Math.max(0, Math.min(FLOOR_RANGE, z - bottom))), from: z };
+  if (kind === 'wall') return [wall];
+  if (kind === 'ceiling') {
+    const from = r6(Math.max(0.5, z - CEILING_START_BELOW));
+    return [{ dirs: UP, max: r6(Math.max(0, Math.min(CEILING_RANGE, top - from))), from }];
+  }
+  if (kind === 'floor') return [down];
+  if (kind === 'all' || kind === 'any') return [wall, { dirs: UP, max: r6(Math.max(0, Math.min(CEILING_RANGE, top - z))), from: z }, down];
+  return [];
+}
+
 const arr = (v) => (Array.isArray(v) ? v : [v.x, v.y, v.z]);
 
 // hits: [{ point, normal, distance, dir }] (arrays or {x,y,z}). Returns the hit to stick to
@@ -109,8 +132,8 @@ export function nearPolygon(pt, poly, margin) {
   return false;
 }
 
-// Cache key of one computed point (mm): a changed room, height or floor computes it again.
-export function surfaceKey(kind, floorId, p) {
+// Cache key of one computed point (mm) in its room: a changed room, height or floor computes it again.
+export function surfaceKey(kind, floorId, p, roomId = '') {
   const mm = (v) => Math.round(v * 1000);
-  return `${kind}|${floorId}|${mm(p.x)},${mm(p.y)},${mm(p.z)}`;
+  return `${kind}|${floorId}|${roomId}|${mm(p.x)},${mm(p.y)},${mm(p.z)}`;
 }

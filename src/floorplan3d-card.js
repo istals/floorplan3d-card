@@ -24,7 +24,7 @@ import { moonPosition } from './sky.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, actionCall, TapSequencer } from './actions.js';
-import { surfaceKind, surfaceKey, rayGroups, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
+import { surfaceKind, surfaceKey, surfaceSearch, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
 
 const VERSION = '0.4.1';
 const NONE = Object.freeze({}); // stable stand-in for a missing layout.objects / groups (binding cache key)
@@ -1728,15 +1728,17 @@ class Floorplan3dCard extends HTMLElement {
       const kind = key ? surfaceKind(m.domain, m.deviceClass) : null;
       let target = base;
       if (kind) {
-        const k = surfaceKey(kind, p.floorId, base);
+        if (!rooms) rooms = this._allRooms();
+        const room = rooms.find((r) => r.area_id === m.areaId);
+        const k = surfaceKey(kind, p.floorId, base, room ? room.id : '');
         let s = this._surf.map.get(k);
         if (s === undefined) {
           if (!compute || performance.now() - t0 > 10) { pending = true; continue; }
-          if (!rooms) rooms = this._allRooms();
-          const room = rooms.find((r) => r.area_id === m.areaId);
           const elev = vw.floorElevation(p.floorId);
-          const world = worldOf(base, elev);
-          const hits = rayGroups(kind).flatMap((g) => vw.surfaceRays(world, g.dirs, g.max));
+          const floor = this._floors.find((f) => f.id === p.floorId);
+          // ceiling / floor rays stay on the device's floor (never the floor above, never through a stair opening)
+          const hits = surfaceSearch(kind, base.z, floor && floor.height)
+            .flatMap((g) => vw.surfaceRays(worldOf({ ...base, z: g.from }, elev), g.dirs, g.max));
           // stay with the room: an open plan must not send a device to a wall across the house
           const accept = kind === 'wall' && room ? (w) => nearPolygon([w[0], -w[2]], room.polygon, 0.5) : null;
           const c = chooseSurface(kind, hits, { accept });
