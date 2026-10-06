@@ -26,7 +26,7 @@ export const DEMO_LAYOUT = {
   },
   hidden: [],
   // the facade lamps (one group in demo/house.glb) also need the facade switch on
-  groups: { facade: { entity: 'switch.demo_facade' } },
+  tags: { facade: { entity: 'switch.demo_facade' } },
   mower: {
     entity: 'device_tracker.sunseeker_position',
     source: 'gps',

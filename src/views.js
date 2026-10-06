@@ -1,7 +1,7 @@
 // Views: what each floor button shows. Pure: works on a node index built through the same adapter
 // as the manifest, so it is testable without three.js.
 
-const KINDS = ['all', 'level', 'role', 'room', 'zone', 'object', 'type', 'group', 'layer', 'node'];
+const KINDS = ['all', 'level', 'role', 'room', 'zone', 'object', 'type', 'group', 'tag', 'layer', 'node'];
 
 export function parseSelector(s) {
   if (typeof s !== 'string' || !s) return null;
@@ -103,6 +103,8 @@ export function matches(sel, info) {
     case 'object': return !!t && t.kind === 'object' && t.id === sel.value;
     case 'type': return !!t && t.kind === 'object' && t.type === sel.value;
     case 'group': return !!t && t.kind === 'object' && t.group === sel.value;
+    // object tags (the card writes the resolved tags into the index: info.tag.tags), else fp.group
+    case 'tag': return !!t && t.kind === 'object' && (Array.isArray(t.tags) ? t.tags.includes(sel.value) : t.group === sel.value);
     case 'layer': return info.layers.includes(sel.value);
     case 'node': return globRe(sel.value).test(info.path);
     default: return false;

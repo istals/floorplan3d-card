@@ -1,6 +1,7 @@
 // Object popup: a small panel next to a model object with its controls (toggle, brightness,
 // colour, the group chain) and read-only values. popupRows() is the pure part (unit-tested).
 import { typeOf } from './types.js';
+import { controllersOf } from './logic.js';
 import { toggleCall, popupLinks } from '../actions.js';
 import { applyBadges } from '../badge-dom.js';
 
@@ -20,15 +21,14 @@ const bad = (s) => !s || s.state === 'unavailable' || s.state === 'unknown';
 const nameOf = (states, e) => (states[e] && states[e].attributes && states[e].attributes.friendly_name) || e;
 const withUnit = (v, u) => (u ? `${v} ${u}` : String(v));
 
-// The entity a toggle / more-info acts on: the object's own entity, else its group controller.
+// The entity a toggle / more-info acts on: the object's own entity, else its first tag controller.
 // With states: an unavailable own entity (a bulb behind an off relay) falls back to a usable controller.
 export function actionTarget(obj, binding, groups = {}, states = null) {
   if (binding && binding.hidden) return null;
-  const g = obj && obj.group && groups[obj.group];
-  const ctrl = (g && g.entity) || null;
+  const ctrls = controllersOf(obj, binding, groups).map((c) => c.entity);
   const own = (binding && binding.entity) || null;
-  if (own && states && bad(states[own]) && ctrl && !bad(states[ctrl])) return ctrl;
-  return own || ctrl;
+  if (own && states && bad(states[own])) { const ok = ctrls.find((c) => !bad(states[c])); if (ok) return ok; }
+  return own || ctrls[0] || null;
 }
 
 function readValue(kind, e, s) {
@@ -64,7 +64,7 @@ function readValue(kind, e, s) {
 /**
  * Popup rows for an object: the popup list (resolved from fp.ui / layout / YAML; default fp.ui.popup or the
  * type default), plus the group chain, then link rows (history / logbook / statistics / custom) at the bottom.
- * groups (layout.groups) tells the controller apart from the object's own entity.
+ * groups (tag settings) tell the controllers apart from the object's own entity.
  * Unavailable / unbound: a single state row "unavailable" (and the links).
  */
 export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
@@ -72,9 +72,11 @@ export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
   const firstEntity = chain && chain.entities ? chain.entities[0] || null : null;
   const unavailable = [{ kind: 'state', label: 'State', value: 'unavailable' }, ...popupLinks(ui, firstEntity)];
   if (!chain || !chain.entities || !chain.entities.some((e) => !bad(states[e]))) return unavailable;
-  const g = obj.group && groups[obj.group];
-  const ctrl = (g && g.entity && chain.entities.includes(g.entity) && g.entity) || null;
-  const own = chain.entities.find((e) => e !== ctrl) || null;
+  // controllers: from the chain (tags), else the legacy fp.group lookup
+  const ctrls = (chain.controllers || controllersOf(obj, null, groups)).filter((c) => chain.entities.includes(c.entity));
+  const isCtrl = (e) => ctrls.some((c) => c.entity === e);
+  const own = chain.entities.find((e) => !isCtrl(e)) || null;
+  const ctrl = ctrls.length ? ctrls[0].entity : null;
   const ownBad = !!own && bad(states[own]);
   // an unavailable own entity: only the (usable) controller row and the reason
   const main = ownBad ? null : own || ctrl;
@@ -104,11 +106,12 @@ export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
       if (value !== null && value !== undefined) rows.push({ kind, entity: main, label, value });
     }
   }
-  // the controller row: the group's label (layout.groups[name].label) when set, else the entity's name
-  const ctrlName = ctrl ? (g && typeof g.label === 'string' && g.label) || nameOf(states, ctrl) : null;
-  if (ctrl && ctrl !== main) rows.push({ kind: 'chain', entity: ctrl, label: ctrlName, value: !bad(states[ctrl]) && states[ctrl].state === 'on' });
+  // a row per controller: the tag's label (layout.tags[name].label) when set, else the entity's name
+  const labelOf = (c) => { const g = groups[c.tag]; return (g && typeof g.label === 'string' && g.label) || nameOf(states, c.entity); };
+  for (const c of ctrls) if (c.entity !== main) rows.push({ kind: 'chain', entity: c.entity, label: labelOf(c), value: !bad(states[c.entity]) && states[c.entity].state === 'on' });
   let reason = null;
-  if (ctrl && !bad(states[ctrl]) && states[ctrl].state !== 'on') reason = `${ctrlName} is off`;
+  const off = ctrls.find((c) => !bad(states[c.entity]) && states[c.entity].state !== 'on');
+  if (off) reason = `${labelOf(off)} is off`;
   else if (ownBad) reason = `${nameOf(states, own)} is unavailable`;
   else if (!chain.lit && chain.reason) {
     reason = chain.reason;

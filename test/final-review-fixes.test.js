@@ -157,19 +157,19 @@ describe('tap candidates nearest first', () => {
 });
 
 describe('import keeps object bindings and group controllers', () => {
-  const cur = { objects: { lamp: { entity: 'light.x' } }, groups: { facade: { entity: 'switch.f' } } };
+  const cur = { objects: { lamp: { entity: 'light.x' } }, tags: { facade: { entity: 'switch.f' } } };
   it('a file without objects / groups keeps the current ones', () => {
     const l = mergeImport({ rooms: [], pins: {} }, { rooms: [] }, cur);
     expect(l.objects).toBe(cur.objects);
-    expect(l.groups).toBe(cur.groups);
+    expect(l.tags).toBe(cur.tags);
   });
   it('a file with its own wins; invalid ones keep ours', () => {
-    const own = mergeImport({ rooms: [], objects: { a: { hidden: true } }, groups: {} }, { objects: { a: { hidden: true } }, groups: {} }, cur);
+    const own = mergeImport({ rooms: [], objects: { a: { hidden: true } }, tags: {} }, { objects: { a: { hidden: true } }, groups: {} }, cur);
     expect(own.objects).toEqual({ a: { hidden: true } });
-    expect(own.groups).toEqual({});
+    expect(own.tags).toEqual({});
     const bad = mergeImport({ rooms: [] }, { objects: [1], groups: 'x' }, cur);
     expect(bad.objects).toBe(cur.objects);
-    expect(bad.groups).toBe(cur.groups);
+    expect(bad.tags).toBe(cur.tags);
     expect('objects' in mergeImport({ rooms: [] }, {}, {})).toBe(false);
   });
   it('normalise drops non-object objects / groups', () => {

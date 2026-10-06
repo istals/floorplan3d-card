@@ -186,8 +186,8 @@ describe('setObject / setGroup', () => {
   });
   it('setGroup sets and clears a controller', () => {
     const l = { groups: { g: { entity: 'light.g' } } };
-    expect(setGroup({}, 'g', { entity: 'switch.s' }).groups.g).toEqual({ entity: 'switch.s' });
-    expect(setGroup(l, 'g', { entity: '' }).groups).toEqual({});
+    expect(setGroup({}, 'g', { entity: 'switch.s' }).tags.g).toEqual({ entity: 'switch.s' });
+    expect(setGroup(l, 'g', { entity: '' }).tags).toEqual({});
     expect(l.groups.g.entity).toBe('light.g');
   });
   it('setObject label: trimmed, empty clears it (back to the model label), other fields kept', () => {
@@ -200,16 +200,16 @@ describe('setObject / setGroup', () => {
   });
   it('setGroup label: stored with or without a controller, empty clears it', () => {
     const l = { groups: { g: { entity: 'switch.g' } } };
-    expect(setGroup(l, 'g', { label: ' Facade ' }).groups.g).toEqual({ entity: 'switch.g', label: 'Facade' });
-    expect(setGroup({}, 'g', { label: 'Facade' }).groups.g).toEqual({ label: 'Facade' });
-    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { label: '' }).groups).toEqual({});
-    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { entity: 'none' }).groups.g).toEqual({ label: 'Facade' });
+    expect(setGroup(l, 'g', { label: ' Facade ' }).tags.g).toEqual({ entity: 'switch.g', label: 'Facade' });
+    expect(setGroup({}, 'g', { label: 'Facade' }).tags.g).toEqual({ label: 'Facade' });
+    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { label: '' }).tags).toEqual({});
+    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { entity: 'none' }).tags.g).toEqual({ label: 'Facade' });
   });
   it('setGroup: "none" (any case, padded) removes the controller, never stored literally', () => {
     const l = { groups: { g: { entity: 'light.g' } } };
-    expect(setGroup(l, 'g', { entity: 'none' }).groups).toEqual({});
-    expect(setGroup(l, 'g', { entity: ' None ' }).groups).toEqual({});
-    expect(setGroup(l, 'g', { entity: '  switch.s ' }).groups.g).toEqual({ entity: 'switch.s' });
+    expect(setGroup(l, 'g', { entity: 'none' }).tags).toEqual({});
+    expect(setGroup(l, 'g', { entity: ' None ' }).tags).toEqual({});
+    expect(setGroup(l, 'g', { entity: '  switch.s ' }).tags.g).toEqual({ entity: 'switch.s' });
   });
 });
 

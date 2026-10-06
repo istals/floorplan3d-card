@@ -153,6 +153,8 @@ const areas = Object.fromEntries(Object.entries(areaFloor).map(([id, f]) => [id,
 
 const devices = {};
 const entities = {};
+// HA labels (label registry): entities carry label ids, names come from here (default object tags)
+const labels = { outdoor: { label_id: 'outdoor', name: 'Outdoor', icon: 'mdi:tree' } };
 const states = {};
 function device(id, name, area, list) {
   devices[id] = { id, name, area_id: area };
@@ -171,7 +173,9 @@ device('living_climate', 'Living climate', 'living_room', [
   sensor('sensor.living_temperature', 21.4, 'temperature', '°C'), sensor('sensor.living_humidity', 44, 'humidity', '%'),
   sensor('sensor.living_battery', 87, 'battery', '%').concat([{ entity_category: 'diagnostic' }]),
 ]);
-device('tv', 'TV', 'living_room', [['media_player.tv', 'playing']]);
+// album art as the TV's entity_picture (a marker with a picture)
+const ART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7a59"/><stop offset="1" stop-color="#6a3cff"/></linearGradient></defs><rect width="40" height="40" fill="url(#g)"/><circle cx="20" cy="20" r="9" fill="#fff" opacity=".85"/><circle cx="20" cy="20" r="3" fill="#6a3cff"/></svg>');
+device('tv', 'TV', 'living_room', [['media_player.tv', 'playing', { entity_picture: ART }]]);
 device('living_motion', 'Living motion', 'living_room', [['binary_sensor.living_motion', 'off', { device_class: 'motion' }]]);
 device('living_blinds', 'Blinds', 'living_room', [['cover.living_blinds', 'open']]);
 device('living_window', 'Terrace door', 'living_room', [['binary_sensor.terrace_door', 'off', { device_class: 'door' }]]);
@@ -250,9 +254,9 @@ device('demo_living_lamp', 'Living ceiling lamp', 'living_room', [light('light.d
 device('demo_hall_lamp', 'Hall ceiling lamp', 'hall', [light('light.demo_hall', false)]);
 device('demo_kitchen_lamp', 'Kitchen ceiling lamp', 'kitchen', [light('light.demo_kitchen', true, 255)]);
 device('demo_strip', 'Kitchen strip', 'kitchen', [light('light.demo_strip', true, 150, [120, 200, 255])]);
-device('demo_facade', 'Facade lamps', 'terrace', [light('light.demo_facade', true, 230)]);
-device('demo_facade_switch', 'Facade switch', 'hall', [['switch.demo_facade', 'on']]); // group controller (layout.groups.facade)
-device('demo_terrace_spot', 'Terrace spot', 'terrace', [light('light.demo_terrace', true, 220, [255, 170, 90])]);
+device('demo_facade', 'Facade lamps', 'terrace', [[...light('light.demo_facade', true, 230), { labels: ['outdoor'] }]]);
+device('demo_facade_switch', 'Facade switch', 'hall', [['switch.demo_facade', 'on']]); // tag controller (layout.tags.facade)
+device('demo_terrace_spot', 'Terrace spot', 'terrace', [[...light('light.demo_terrace', true, 220, [255, 170, 90]), { labels: ['outdoor'] }]]);
 device('demo_climate', 'Living climate unit', 'living_room', [['climate.demo_living', 'heat',
   { current_temperature: 21.5, temperature: 22, hvac_action: 'heating', hvac_modes: ['off', 'heat', 'cool', 'auto'] }]]);
 device('demo_charger', 'EV charger', 'garden', [['sensor.demo_charger', 'charging', { power: 7.4, energy: 12.6 }]]);
@@ -291,7 +295,7 @@ export function createMockHass({ onChange }) {
   let layoutStore = JSON.parse(JSON.stringify(DEMO_LAYOUT));
   let current;
   const make = (st) => ({
-    states: st, entities, devices, areas, floors,
+    states: st, entities, devices, areas, floors, labels,
     user: { name: 'Demo', is_admin: true },
     config: { latitude: 52.0, longitude: 5.0, time_zone: 'UTC' }, // generic location (moon position)
     language: 'en',

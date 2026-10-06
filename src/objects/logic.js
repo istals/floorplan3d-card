@@ -36,10 +36,63 @@ export function bindObjects(objects, layoutObjects = {}, states = {}, opts = {})
     }
     out.set(o.id, { entity: s && states[s] ? s : null, auto: true, missing: !!s && !states[s], hidden });
   }
+  // opts.hass: every binding also carries the object's tags (saved, else fp.group + HA labels)
+  if (opts.hass) for (const o of objects) { const b = out.get(o.id); b.tags = objectTags(o, layoutObjects[o.id], b.entity, opts.hass); }
   return out;
 }
 
-// Group controllers that exist in HA. A controller entity HA doesn't know (a typo, a removed
+const cleanTags = (list) => {
+  const out = [];
+  for (const t of list) {
+    const v = typeof t === 'string' ? t.trim() : '';
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+};
+
+// An object's tags: layout.objects[id].tags when saved, else fp.group (if any) + the HA labels of the
+// bound entity (hass.entities[e].labels; names from hass.labels when HA exposes them, else the label ids).
+export function objectTags(obj, saved, entity, hass) {
+  if (saved && Array.isArray(saved.tags)) return cleanTags(saved.tags);
+  const out = [];
+  if (obj && obj.group) out.push(obj.group);
+  const reg = entity && hass && hass.entities ? hass.entities[entity] : null;
+  const labels = (hass && hass.labels) || {};
+  for (const id of (reg && Array.isArray(reg.labels) ? reg.labels : [])) {
+    const l = labels[id];
+    out.push((l && typeof l.name === 'string' && l.name) || id);
+  }
+  return cleanTags(out);
+}
+
+// Tag settings (controller entity, label) by tag name: layout.tags, with the pre-0.4.5 layout.groups under it.
+export function layoutTags(layout) {
+  const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  if (!plain(layout)) return {};
+  return { ...(plain(layout.groups) ? layout.groups : {}), ...(plain(layout.tags) ? layout.tags : {}) };
+}
+
+const tagsOf = (obj, binding) => (binding && Array.isArray(binding.tags) ? binding.tags : obj && obj.group ? [obj.group] : []);
+
+// The controllers an object's chain needs: [{ entity, tag }] for each of its tags with a controller
+// (unique, never the object's own entity). Without resolved tags: fp.group.
+export function controllersOf(obj, binding, tags = {}) {
+  const own = binding && binding.entity;
+  const out = [];
+  for (const t of tagsOf(obj, binding)) {
+    const e = tags && tags[t] && tags[t].entity;
+    if (e && e !== own && !out.some((c) => c.entity === e)) out.push({ entity: e, tag: t });
+  }
+  return out;
+}
+
+// Light budget grouping: objects sharing a controller tag are one group; else fp.group.
+export function budgetGroup(obj, binding, tags = {}) {
+  for (const t of tagsOf(obj, binding)) if (tags && tags[t] && tags[t].entity) return t;
+  return (obj && obj.group) || null;
+}
+
+// Tag controllers that exist in HA. A controller entity HA doesn't know (a typo, a removed
 // entity, a literal "none") is ignored: the group behaves as if it had no controller.
 export function effectiveGroups(groups = {}, states = {}) {
   const out = {};
@@ -51,20 +104,21 @@ export function effectiveGroups(groups = {}, states = {}) {
 }
 
 /**
- * Chain object state through group controller. Callers gate on `lit`; `source` may be an off light.
+ * Chain object state through its tag controllers: the own entity and every controller must be on.
+ * Callers gate on `lit`; `source` may be an off light. groups: effective tag settings (effectiveGroups).
  */
 export function chainState(obj, binding, groups = {}, states = {}) {
-  const ctrl = obj.group && groups[obj.group] && groups[obj.group].entity;
-  const entities = [binding && binding.entity, ctrl].filter(Boolean);
-  if (!entities.length) return { lit: false, unavailable: false, source: null, entities, reason: null };
+  const controllers = controllersOf(obj, binding, groups);
+  const entities = [binding && binding.entity, ...controllers.map((c) => c.entity)].filter(Boolean);
+  if (!entities.length) return { lit: false, unavailable: false, source: null, entities, reason: null, controllers };
   const sts = entities.map((e) => states[e]);
   const unavailable = sts.some(bad);
   const lit = !unavailable && sts.every(isOn);
   let reason = null;
-  if (!lit && !unavailable && ctrl && !isOn(states[ctrl])) reason = `${ctrl} is off`;
-  else if (!lit && !unavailable && binding && binding.entity && !isOn(states[binding.entity])) reason = null;
+  const off = controllers.find((c) => !isOn(states[c.entity]));
+  if (!lit && !unavailable && off) reason = `${off.entity} is off`;
   const source = sts.find((s, i) => s && entities[i].startsWith('light.')) || null;
-  return { lit, unavailable, source, entities, reason };
+  return { lit, unavailable, source, entities, reason, controllers };
 }
 
 function hsvToRgb(h, s, v) {

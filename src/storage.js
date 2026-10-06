@@ -93,9 +93,11 @@ export function normalise(l) {
     hidden: Array.isArray(l.hidden) ? l.hidden : [],
     model: migrateModel(l.model || null),
   };
-  // object bindings / group controllers: plain objects or absent (readers default to none)
-  for (const k of ['objects', 'groups']) {
+  // object bindings / tag settings: plain objects or absent (readers default to none)
+  for (const k of ['objects', 'groups', 'tags']) {
     if (k in out && !(out[k] && typeof out[k] === 'object' && !Array.isArray(out[k]))) delete out[k];
   }
+  // pre-0.4.5 group controllers are tags now (layout.tags wins over a leftover groups entry)
+  if (out.groups) { out.tags = { ...out.groups, ...(out.tags || {}) }; delete out.groups; }
   return out;
 }

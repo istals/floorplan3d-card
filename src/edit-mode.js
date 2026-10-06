@@ -14,7 +14,7 @@ import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextView
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
 import { levelsFromFloorMap } from './bindings.js';
 import { outlineLoops, pickLoop, rasterGrid, outlineFromGrid } from './outline.js';
-import { snapPin, attachOffset, floorAtHeight } from './objects/logic.js';
+import { snapPin, attachOffset, floorAtHeight, objectTags, layoutTags } from './objects/logic.js';
 import { actionTarget } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, validateAction } from './actions.js';
@@ -115,6 +115,8 @@ export class EditMode {
     this.vwExpanded = new Set(); // room/zone rows showing their objects
     this.objExpanded = new Set(); // Objects tab: room rows showing their objects (collapsed by default)
     this.objSel = null; // Objects tab: object picked in 3D / its row
+    this.objTagFilter = ''; // Objects tab: show only objects with this tag ('' = all)
+    this.objPicked = new Set(); // Objects tab: multi-select for Add tag / Remove tag
     this.menu = null;
     this._onMenuAway = (e) => { if (this.menu && !e.composedPath().includes(this.menu)) this._closeMenu(); };
   }
@@ -1251,7 +1253,11 @@ export class EditMode {
       const fixed = typeof yaml[k] === 'boolean';
       return `<label class="check"><input type="checkbox" data-field="badge" data-key="${k}" ${o[k] ? 'checked' : ''} ${fixed ? 'disabled' : ''}> ${label}${fixed ? ' <span class="dim">(card YAML)</span>' : ''}</label>`;
     };
-    return `<div class="sub">Badges</div>${row('integration', 'Show integration logos')}${row('status', 'Show status')}${row('battery', 'Show low battery')}`;
+    const th = this.layout.tap_hints || 'near';
+    const opt = (v, l) => `<option value="${v}"${th === v ? ' selected' : ''}>${l}</option>`;
+    return `<div class="sub">Badges</div>${row('integration', 'Show integration logos')}${row('status', 'Show status')}${row('battery', 'Show low battery')}
+      <label class="tap-hints">Tap hints <select data-field="tap-hints">${opt('always', 'Always')}${opt('near', 'Near pointer')}${opt('off', 'Off')}</select></label>
+      <p class="hint">Dots on tappable model objects: filled when a tap works, hollow grey when it is offline or a controller is off.</p>`;
   }
 
   _devicesTab() {
@@ -1365,20 +1371,35 @@ export class EditMode {
       // Test only where a tap could toggle something (not hidden, own entity or a known group controller)
       const testable = !b.hidden && !!actionTarget(o, b, this.card._groups || {});
       return `<li class="obj${sel ? ' sel' : ''}${b.hidden ? ' hid' : ''}" data-obj="${esc(o.id)}">
-        <div class="orow"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon><span class="name">${esc(this.card.objectLabel(o))}</span>${badge}
+        <div class="orow"><input type="checkbox" class="opick" data-field="obj-pick" data-id="${esc(o.id)}" ${this.objPicked.has(o.id) ? 'checked' : ''} title="Select for Add tag / Remove tag" aria-label="Select"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon><span class="name">${esc(this.card.objectLabel(o))}</span>${badge}
           ${testable ? `<button data-act="obj-test" data-id="${esc(o.id)}" title="Toggle it like a tap in the view">Test</button>` : ''}
           <label class="check"><input type="checkbox" data-field="obj-hidden" data-id="${esc(o.id)}" ${b.hidden ? 'checked' : ''}> Hide</label></div>
         <input class="olabel" data-field="obj-label" data-id="${esc(o.id)}" value="${esc(saved.label || '')}" placeholder="${esc(o.label || o.id)}" title="Label (empty: the model's)" aria-label="Label">
         <input list="fp-obj-${t}" data-field="obj-entity" data-id="${esc(o.id)}" value="${esc(value)}" placeholder="${esc(ph)}" title="Empty: automatic; type none to leave it unbound">
-        ${o.group ? `<div class="dim">Group ${esc(o.group)}</div>` : ''}${this._objActionsHtml(o, saved.ui)}</li>`;
+        ${tagChips(o)}${this._objActionsHtml(o, saved.ui)}</li>`;
     };
+    // tags: chips (x removes), + adds (datalist of known tags)
+    const tagsOf = (o) => objectTags(o, lo[o.id], (bindings.get(o.id) || {}).entity, this.hass); // from the layout: fresh right after an edit
+    const allTags = [...new Set([...objs.flatMap(tagsOf), ...Object.keys(layoutTags(this.layout))])].sort((a, b) => a.localeCompare(b));
+    const tagChips = (o) => `<div class="otags">${tagsOf(o).map((t) => `<span class="otag">${esc(t)}<button class="link" data-act="tag-rm"
+      data-id="${esc(o.id)}" data-tag="${esc(t)}" title="Remove the tag" aria-label="Remove ${esc(t)}">×</button></span>`).join('')}
+      <input class="tagadd" list="fp-tag-names" data-field="tag-add" data-id="${esc(o.id)}" placeholder="+ tag" title="Add a tag (Enter)" aria-label="Add a tag"></div>`;
+    const filter = this.objTagFilter && allTags.includes(this.objTagFilter) ? this.objTagFilter : '';
+    const shownObjs = filter ? objs.filter((o) => tagsOf(o).includes(filter)) : objs;
+    for (const id of [...this.objPicked]) if (!objs.some((o) => o.id === id)) this.objPicked.delete(id);
     const levelOf = new Map(mb.manifest.levels.map((l) => [l.id, l]));
     const roomOf = new Map(mb.manifest.rooms.map((r) => [r.id, r]));
     const order = [...new Set([...mb.manifest.levels.map((l) => l.id), ...objs.map((o) => o.level)])];
-    let out = datalists + '<p class="hint">Bind each model object to a Home Assistant entity. Empty means automatic; "none" leaves it unbound. Click an object in the plan to find its row. Tap / Hold / Double tap pick its actions (card YAML <code>actions:</code> overrides these).</p>';
+    let out = datalists + `<datalist id="fp-tag-names">${allTags.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`
+      + '<p class="hint">Bind each model object to a Home Assistant entity. Empty means automatic; "none" leaves it unbound. Click an object in the plan to find its row. Tap / Hold / Double tap pick its actions (card YAML <code>actions:</code> overrides these). Tags group objects (model group and HA labels by default).</p>';
+    out += `<div class="otagbar"><label>Tag <select data-field="obj-tag-filter"><option value="">All objects</option>${allTags.map((x) => `<option value="${esc(x)}"${x === filter ? ' selected' : ''}>${esc(x)}</option>`).join('')}</select></label>`;
+    const nPick = this.objPicked.size;
+    out += `<span class="dim">${nPick} selected</span><input class="tagadd" list="fp-tag-names" data-field="tag-bulk" placeholder="tag" aria-label="Tag for the selection" value="${esc(this.objTagBulk || '')}">
+      <button data-act="tag-bulk-add" ${nPick ? '' : 'disabled'}>Add tag</button><button data-act="tag-bulk-rm" ${nPick ? '' : 'disabled'}>Remove tag</button>
+      ${filter ? `<button class="link" data-act="tag-pick-all">Select all ${shownObjs.length}</button>` : ''}${nPick ? '<button class="link" data-act="tag-pick-none">Clear</button>' : ''}</div>`;
     out += '<ul class="otree">';
     for (const lid of order) {
-      const inLevel = objs.filter((o) => o.level === lid);
+      const inLevel = shownObjs.filter((o) => o.level === lid);
       if (!inLevel.length) continue;
       const lv = levelOf.get(lid);
       out += `<li class="room lvl"><span class="name">${esc(lv ? lv.label : lid || 'No level')}</span></li>`;
@@ -1386,7 +1407,7 @@ export class EditMode {
       for (const rid of roomIds) {
         const list = inLevel.filter((o) => (o.room || '') === rid);
         const key = `${lid}/${rid}`;
-        const open = this.objExpanded.has(key) || list.some((o) => o.id === this.objSel);
+        const open = !!filter || this.objExpanded.has(key) || list.some((o) => o.id === this.objSel);
         const r = roomOf.get(rid);
         out += `<li class="room" style="--d:1"><button class="link expand" data-act="obj-expand" data-key="${esc(key)}">${open ? '\u25be' : '\u25b8'}</button>
           <span class="name">${esc(r ? r.label : rid ? rid : 'No room')}</span><span class="dim">${list.length}</span></li>`;
@@ -1394,21 +1415,30 @@ export class EditMode {
       }
     }
     out += '</ul>';
-    const groups = [...new Set(objs.map((o) => o.group).filter(Boolean))].sort();
-    if (groups.length) {
-      const lg = this.layout.groups || {};
-      const gl = ids.filter((id) => /^(light|switch)\./.test(id));
-      out += `<div class="sub">Groups</div><p class="hint">A group controller must be on too: a fixture is lit only while its own entity and the controller are both on.</p>
+    if (allTags.length) {
+      const lg = layoutTags(this.layout);
+      const gl = ids.filter((id) => /^(light|switch|input_boolean)\./.test(id));
+      out += `<div class="sub">Tags</div><p class="hint">A tag's controller must be on too: an object is lit only while its own entity and the controllers of all its tags are on. Objects sharing a controller tag share the real-light budget. Views and card YAML <code>actions:</code> accept <code>tag:&lt;name&gt;</code>.</p>
         <datalist id="fp-grp-ents">${gl.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
-      out += groups.map((g) => {
+      out += allTags.map((g) => {
         const e = (lg[g] && lg[g].entity) || '', gl2 = (lg[g] && lg[g].label) || '';
+        const n = objs.filter((o) => tagsOf(o).includes(g)).length;
         const missing = e && !states[e] ? ' <span class="badge warn">entity not found</span>' : '';
-        return `<label class="grp" data-grp="${esc(g)}">${esc(gl2 || g)}${missing} <input list="fp-grp-ents" data-field="grp-entity" data-id="${esc(g)}"
+        return `<label class="grp" data-grp="${esc(g)}">${esc(gl2 || g)} <span class="dim">${n}</span>${missing} <input list="fp-grp-ents" data-field="grp-entity" data-id="${esc(g)}"
         value="${esc(e)}" placeholder="no controller" title="Empty or none: no controller">
         <input class="glabel" data-field="grp-label" data-id="${esc(g)}" value="${esc(gl2)}" placeholder="label: ${esc(g)}" title="Label in popups (empty: the controller's name)"></label>`;
       }).join('');
     }
     return out;
+  }
+
+  // Objects tab: current and default tags of an object (default = fp.group + HA labels of its entity).
+  _objTags(id) {
+    const mb = this.card.modelBindings();
+    const o = mb && mb.manifest.objects.find((x) => x.id === id);
+    const b = (this.card._bindings && this.card._bindings.get(id)) || {};
+    if (!o) return { cur: [], def: [] };
+    return { cur: objectTags(o, (this.layout.objects || {})[id], b.entity, this.hass), def: objectTags(o, null, b.entity, this.hass) };
   }
 
   // Objects tab: Tap / Hold / Double tap selects (Default = the model / type action) with the fields each needs.
@@ -2370,6 +2400,31 @@ export class EditMode {
         this.tab = id;
         this._syncStageClasses();
         break;
+      case 'tag-rm': {
+        const t = this._objTags(id);
+        this.commit(E.setObjectTags(this.layout, id, t.cur.filter((x) => x !== btn.dataset.tag), t.def));
+        this.render();
+        return;
+      }
+      case 'tag-bulk-add': case 'tag-bulk-rm': {
+        const tag = (this.objTagBulk || '').trim();
+        if (!tag) { this.message = { text: 'Type a tag first.', warn: true }; this.render(); return; }
+        const ids = [...this.objPicked];
+        const cur = (x) => this._objTags(x).cur, def = (x) => this._objTags(x).def;
+        this.commit(btn.dataset.act === 'tag-bulk-add' ? E.addTagToObjects(this.layout, ids, tag, cur, def) : E.removeTagFromObjects(this.layout, ids, tag, cur, def));
+        this.render();
+        return;
+      }
+      case 'tag-pick-all': {
+        const mb = this.card.modelBindings();
+        for (const o of (mb && mb.manifest.objects) || []) if (this._objTags(o.id).cur.includes(this.objTagFilter)) this.objPicked.add(o.id);
+        this.render();
+        return;
+      }
+      case 'tag-pick-none':
+        this.objPicked.clear();
+        this.render();
+        return;
       case 'obj-expand':
         if (this.objExpanded.has(btn.dataset.key)) this.objExpanded.delete(btn.dataset.key);
         else this.objExpanded.add(btn.dataset.key);
@@ -2574,6 +2629,11 @@ export class EditMode {
     if (f && f.startsWith('vw-')) this._viewsChange(f, el);
     else if (f === 'room-area' && sel) this.commit(E.upsertRoom(this.layout, { ...sel, area_id: el.value }));
     else if (f === 'room-outdoor' && sel) this.commit(E.upsertRoom(this.layout, { ...sel, outdoor: el.checked }));
+    else if (f === 'tap-hints') {
+      const l = { ...this.layout };
+      if (el.value === 'near') delete l.tap_hints; else l.tap_hints = el.value;
+      this.commit(l);
+    }
     else if (f === 'room-labels') {
       const l = { ...this.layout };
       if (el.value === 'size') delete l.room_labels; else l.room_labels = el.value;
@@ -2620,10 +2680,25 @@ export class EditMode {
       this.commit(E.setObject(this.layout, el.dataset.id, { label: el.value }));
       this.render();
     } else if (f === 'grp-label') {
-      this.commit(E.setGroup(this.layout, el.dataset.id, { label: el.value }));
+      this.commit(E.setTag(this.layout, el.dataset.id, { label: el.value }));
       this.render();
     } else if (f === 'grp-entity') {
-      this.commit(E.setGroup(this.layout, el.dataset.id, { entity: el.value.trim() }));
+      this.commit(E.setTag(this.layout, el.dataset.id, { entity: el.value.trim() }));
+      this.render();
+    } else if (f === 'tag-add') {
+      const v = el.value.trim();
+      if (!v) return;
+      const t = this._objTags(el.dataset.id);
+      if (!t.cur.includes(v)) this.commit(E.setObjectTags(this.layout, el.dataset.id, [...t.cur, v], t.def));
+      this.render();
+    } else if (f === 'tag-bulk') {
+      this.objTagBulk = el.value;
+    } else if (f === 'obj-pick') {
+      if (el.checked) this.objPicked.add(el.dataset.id);
+      else this.objPicked.delete(el.dataset.id);
+      this.render();
+    } else if (f === 'obj-tag-filter') {
+      this.objTagFilter = el.value;
       this.render();
     } else if (f === 'mower-entity') {
       this.setMower({ entity: el.value.trim() });

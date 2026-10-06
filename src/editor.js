@@ -3,6 +3,7 @@
 
 import { snap } from './placement.js';
 import { normalise } from './storage.js';
+import { layoutTags } from './objects/logic.js';
 import { transformPoint, inverseTransformPoint } from './bindings.js';
 
 export const GRID = 0.05;
@@ -261,8 +262,8 @@ const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 export function mergeImport(imported, raw, current) {
   const l = { ...imported };
   const cur = current || {};
-  for (const k of ['objects', 'groups']) {
-    if (plainObject(raw[k])) continue;
+  for (const k of ['objects', 'tags']) {
+    if (plainObject(raw[k]) || (k === 'tags' && plainObject(raw.groups))) continue; // old files: groups became tags (normalise)
     if (plainObject(cur[k])) l[k] = cur[k];
     else delete l[k];
   }
@@ -310,18 +311,47 @@ export function setObjectUi(layout, id, which, action) {
   return setObject(layout, id, { ui: Object.keys(ui).length ? ui : undefined });
 }
 
-// layout.groups[name] = { entity, label }: the optional controller of a fixture group and its display
-// label (popup chain rows). No entity (empty or "none") / empty label: not stored; nothing left: no entry.
-export function setGroup(layout, name, patch) {
-  const cur = { ...((layout.groups || {})[name] || {}), ...patch };
+// layout.tags[name] = { entity, label }: the optional controller of a tag (every object carrying the tag
+// is lit only while it is on) and its display label (popup chain rows). No entity (empty or "none") /
+// empty label: not stored; nothing left: no entry. Old layout.groups entries move into tags.
+export function setTag(layout, name, patch) {
+  const all = layoutTags(layout);
+  const cur = { ...(all[name] || {}), ...patch };
   if (typeof cur.entity === 'string') cur.entity = cur.entity.trim();
   if (!cur.entity || typeof cur.entity !== 'string' || cur.entity.toLowerCase() === 'none') delete cur.entity;
   if (typeof cur.label === 'string') cur.label = cur.label.trim();
   if (!cur.label || typeof cur.label !== 'string') delete cur.label;
-  const groups = { ...(layout.groups || {}) };
-  if (Object.keys(cur).length) groups[name] = cur;
-  else delete groups[name];
-  return { ...layout, groups };
+  const tags = { ...all };
+  if (Object.keys(cur).length) tags[name] = cur;
+  else delete tags[name];
+  const out = { ...layout, tags };
+  delete out.groups;
+  return out;
+}
+export const setGroup = setTag; // pre-0.4.5 name
+
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+// layout.objects[id].tags: the list, or no key when it equals the defaults (fp.group + HA labels stay live).
+export function setObjectTags(layout, id, tags, defaults = []) {
+  const list = [];
+  for (const t of tags) { const v = String(t).trim(); if (v && !list.includes(v)) list.push(v); }
+  return setObject(layout, id, { tags: sameList(list, defaults) ? undefined : list });
+}
+
+// Add / remove one tag on several objects. tagsOf(id): current tags; defaultsOf(id): the default tags.
+export function addTagToObjects(layout, ids, tag, tagsOf, defaultsOf) {
+  const t = String(tag).trim();
+  if (!t) return layout;
+  let l = layout;
+  for (const id of ids) { const cur = tagsOf(id); if (!cur.includes(t)) l = setObjectTags(l, id, [...cur, t], defaultsOf(id)); }
+  return l;
+}
+
+export function removeTagFromObjects(layout, ids, tag, tagsOf, defaultsOf) {
+  let l = layout;
+  for (const id of ids) { const cur = tagsOf(id); if (cur.includes(tag)) l = setObjectTags(l, id, cur.filter((x) => x !== tag), defaultsOf(id)); }
+  return l;
 }
 
 // A typed slider value: clamped to min..max and rounded to the step grid (from min); null when not a number.

@@ -46,11 +46,13 @@ function fromSource(ui) {
 /**
  * { tap, hold, double_tap, popup }: each action normalised ({ action, ... }); double_tap null when there
  * is none (or it is `none`): taps on that target are then never delayed. Later sources win:
- * type defaults < model fp.ui < layout.objects[id].ui < YAML `actions:` (device:<id> < <entity_id> < object:<id>).
+ * type defaults < model fp.ui < layout.objects[id].ui < YAML `actions:` (device:<id> < tag:<name> < <entity_id> < object:<id>).
+ * tags: the object's tags in order (a later tag wins over an earlier one).
  */
-export function resolveActions({ modelUi, layoutUi, yaml, kind = 'object', id, entityId, deviceId, typeDefaults } = {}) {
+export function resolveActions({ modelUi, layoutUi, yaml, kind = 'object', id, entityId, deviceId, typeDefaults, tags } = {}) {
   const y = plain(yaml) ? yaml : {};
-  const keys = [deviceId && `device:${deviceId}`, entityId, kind === 'object' && id && `object:${id}`].filter(Boolean);
+  const tagKeys = kind === 'object' && Array.isArray(tags) ? tags.map((t) => `tag:${t}`) : [];
+  const keys = [deviceId && `device:${deviceId}`, ...tagKeys, entityId, kind === 'object' && id && `object:${id}`].filter(Boolean);
   const sources = [typeDefaults, modelUi, layoutUi, ...keys.map((k) => y[k])].map(fromSource);
   const out = { tap: { action: 'none' }, hold: { action: 'none' }, double_tap: null, popup: ['state'] };
   for (const s of sources) Object.assign(out, s);
