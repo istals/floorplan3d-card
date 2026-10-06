@@ -7,6 +7,7 @@ import { roomFloorId, LEVEL_SPACING } from './layout.js';
 import { pointInPolygon, signedArea } from './placement.js';
 import { buildMarkers, areaName } from './registry.js';
 import { readSource, calibrationError, overlayUrl } from './mower.js';
+import { setupChecklist } from './mower-setup.js';
 import { readImagePixels, imagePixels, planToPixel, medianColor, fitOverlay } from './mower-image.js';
 import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
@@ -576,6 +577,31 @@ export class EditMode {
     if (this.tab !== 'mower') return;
     const el = this.panel.querySelector('.mower-live');
     if (el) el.innerHTML = this._mowerLiveHtml() + this._mapInfoHtml();
+    const cl = this.panel.querySelector('.mower-setup');
+    if (cl) {
+      this._setupOpen = cl.open;
+      const html = this._setupHtml(true);
+      if (html !== this._setupLast) { this._setupLast = html; cl.outerHTML = html; }
+    }
+  }
+
+  // Did the last position reading / icon detection put the mower on the plan?
+  _mowerFound() {
+    const m = this.mower(), live = this.card._mowerLive;
+    if (!live || !live.floorId) return false;
+    if (m.source !== 'image') return true;
+    const r = this.card._imageResult;
+    return !!(r && !r.error && !r.missing);
+  }
+
+  // Setup checklist at the top of the Mower tab; each row scrolls to its control.
+  _setupHtml(keepOpen) {
+    const { rows, complete } = setupChecklist(this.mower(), this.hass.states, this._mowerFound());
+    const open = !complete || (keepOpen && this._setupOpen);
+    const li = rows.map((r) => `<li><button class="link setup-row ${r.ok ? 'ok' : r.optional ? 'opt' : 'todo'}" data-act="setup-go" data-target="${esc(r.target)}">
+      <span class="mark">${r.ok ? '✓' : r.optional ? '–' : '✗'}</span> ${esc(r.label)}${r.optional && !r.ok ? ' <span class="dim">optional</span>' : ''}</button></li>`).join('');
+    return `<details class="mower-setup${complete ? ' complete' : ''}" ${open ? 'open' : ''}><summary>${complete ? '✓ Setup complete' : 'Setup'}</summary>
+      <ul class="plain setup">${li}</ul></details>`;
   }
 
   // "Stripes: 45° (NE–SW) · Mowed: 37 %" from the processed map, or ''.
@@ -1190,6 +1216,8 @@ export class EditMode {
       if (explicit) {
         value = saved.entity === null ? 'none' : saved.entity;
         if (b.missing) badge = '<span class="badge warn">entity not found</span>';
+      } else if (b.entity && b.from === 'mower') {
+        badge = '<span class="badge">auto</span>'; ph = `auto: ${b.entity} (from Mower tab)`;
       } else if (b.entity) { badge = '<span class="badge">auto</span>'; ph = b.entity; } else if (sug) {
         badge = '<span class="badge warn">entity not found</span>';
         ph = `auto: ${sug}`;
@@ -1315,7 +1343,8 @@ export class EditMode {
     const cal = m.calibration || [];
     const err = calibrationError(cal, m.source === 'xy' ? 'xy' : 'gps');
     const fitName = ['', 'shift only', 'shift, rotate, scale', 'affine (least squares)'][Math.min(cal.length, 3)];
-    let out = `<div class="sub">Position</div>
+    this._setupLast = this._setupHtml(false);
+    let out = `${this._setupLast}<div class="sub">Position</div>
       <label>Entity <input list="fp-pos-ents" data-field="mower-entity" value="${esc(m.entity || '')}" placeholder="device_tracker.mower_position"></label>
       ${datalist('fp-pos-ents', posIds)}
       <label>Source <select data-field="mower-source">
@@ -1329,6 +1358,8 @@ export class EditMode {
       <div class="sub">Warning</div>
       <label>Error entity (optional) <input list="fp-err-ents" data-field="mower-error-entity" value="${esc(m.error_entity || '')}" placeholder="binary_sensor.mower_error"></label>
       ${datalist('fp-err-ents', errIds)}
+      <label>OK values (optional, comma-separated) <input data-field="mower-ok-values" value="${esc(Array.isArray(m.ok_values) ? m.ok_values.join(', ') : m.ok_values || '')}" placeholder="rain delay, waiting"></label>
+      <p class="hint">Numbers: 0 = OK, anything else is an error code. Text: ok, none, normal, working, mowing, charging, docked, idle, returning, paused, standby… are OK; add your own above.</p>
       <label>Stuck after (minutes, 0 = off) <input type="number" min="0" max="120" step="1" data-field="mower-stuck-min" value="${m.stuck_minutes === undefined ? 5 : Number(m.stuck_minutes) || 0}"></label>
       <p class="hint mower-live">${this._mowerLiveHtml()}${this._mapInfoHtml()}</p>`;
     if (!m.entity) return out;
@@ -2267,7 +2298,24 @@ export class EditMode {
         if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
         break;
       }
-      case 'ov-align-done': this.aligning = null; break;
+      case 'ov-align-done': {
+        const done = this.aligning && this.aligning.pairs.length >= 2;
+        this.aligning = null;
+        if (done) { this.setOverlay({ aligned: true }); this._syncStageClasses(); return; }
+        break;
+      }
+      case 'setup-go': {
+        const t = btn.dataset.target && this.panel.querySelector(btn.dataset.target);
+        if (!t) return;
+        const box = t.closest('label') || t;
+        box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        box.classList.remove('setup-flash');
+        void box.offsetWidth;
+        box.classList.add('setup-flash');
+        setTimeout(() => box.classList.remove('setup-flash'), 1600);
+        if (t.matches('input, select')) t.focus({ preventScroll: true });
+        return;
+      }
       case 'ov-align-cancel': this._cancelAlign(); break;
       case 'model-fit': this.view.fit({ model: true }); return;
       case 'model-delete':
@@ -2374,6 +2422,9 @@ export class EditMode {
       this.setMower({ floor_id: el.value });
     } else if (f === 'mower-error-entity') {
       this.setMower({ error_entity: el.value.trim() });
+    } else if (f === 'mower-ok-values') {
+      const v = el.value.split(',').map((x) => x.trim()).filter(Boolean);
+      this.setMower({ ok_values: v.length ? v : undefined });
     } else if (f === 'mower-stuck-min') {
       this.setMower({ stuck_minutes: Math.max(0, Math.min(120, Math.round(Number(el.value) || 0))) });
     } else if (f === 'mower-trail') {

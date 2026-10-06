@@ -305,6 +305,28 @@ try {
     JSON.stringify({ moved, want: q2, live: await ev(`${card}._mowerLive`) }));
   check('mower tab shows the detection', /Found at [\d.-]+, [\d.-]+ \(\d+ px\)/.test(await ev(`${card}.shadowRoot.querySelector(".mower-live").textContent`)),
     await ev(`${card}.shadowRoot.querySelector(".mower-live").textContent`));
+  // setup checklist: all required rows done collapses to "Setup complete"; a row scrolls to and flashes its control
+  await ev(`${card}._edit.render()`);
+  await sleep(200);
+  const setup = await ev(`(() => { const d = ${card}.shadowRoot.querySelector('details.mower-setup');
+    return d && { complete: d.classList.contains('complete'), open: d.open, summary: d.querySelector('summary').textContent.trim(),
+      rows: [...d.querySelectorAll('.setup-row')].map((b) => b.textContent.replace(/\\s+/g, ' ').trim()) }; })()`);
+  check('setup checklist complete (mowed colour optional)', !!setup && setup.complete && !setup.open && setup.summary === '✓ Setup complete'
+    && setup.rows.length === 6 && setup.rows.some((r) => r.startsWith('– Mowed colour optional')), JSON.stringify(setup));
+  await ev(`(() => { const d = ${card}.shadowRoot.querySelector('details.mower-setup'); d.open = true;
+    [...d.querySelectorAll('.setup-row')].find((b) => b.textContent.includes('Mowed colour')).click(); })()`);
+  await sleep(100);
+  check('setup row flashes its control', await ev(`!!${card}.shadowRoot.querySelector('[data-act="map-pick"][data-kind="mowed"].setup-flash')`));
+  await ev(`(() => { const i = ${card}.shadowRoot.querySelector('[data-field=mower-ok-values]'); i.value = 'Rain delay, wait'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(150);
+  check('OK values stored', JSON.stringify((await layout()).mower.ok_values) === '["Rain delay","wait"]', JSON.stringify((await layout()).mower.ok_values));
+  await ev(`${card}._edit.commit({ ...${card}._edit.layout, mower: { ...${card}._edit.layout.mower, image: {} } })`);
+  await ev(`${card}._edit.render()`);
+  await sleep(200);
+  const setup2 = await ev(`(() => { const d = ${card}.shadowRoot.querySelector('details.mower-setup');
+    return { open: d.open, complete: d.classList.contains('complete'), colour: d.querySelector('[data-target*="img-pick"]').className }; })()`);
+  check('setup checklist open with a missing step', setup2.open && !setup2.complete && setup2.colour.includes('todo'), JSON.stringify(setup2));
+  await ev(`${card}._edit.commit({ ...${card}._edit.layout, mower: { ...${card}._edit.layout.mower, image: { color: ${JSON.stringify(col)}, tolerance: 40, min_pixels: 4 } } })`);
   await page.screenshot({ path: path.join(shots, 'edit-mower-image.png') });
   await ev('window.__demoMowerPaused = false');
 

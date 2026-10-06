@@ -2,8 +2,25 @@
 const isOn = (s) => !!s && s.state === 'on';
 const bad = (s) => !s || s.state === 'unavailable' || s.state === 'unknown';
 
-export function bindObjects(objects, layoutObjects = {}, states = {}) {
+const MOWER_TYPES = new Set(['mower', 'dock']);
+
+// The lawn_mower entity behind the Mower tab entity: itself, else a lawn_mower of the same device, else as is.
+export function mowerTabEntity(entity, entities = {}) {
+  if (!entity) return null;
+  if (entity.startsWith('lawn_mower.')) return entity;
+  const reg = entities && entities[entity];
+  if (reg && reg.device_id) {
+    const sib = Object.keys(entities).find((e) => e.startsWith('lawn_mower.') && entities[e].device_id === reg.device_id);
+    if (sib) return sib;
+  }
+  return entity;
+}
+
+// opts.mowerEntity: mower / dock objects without an explicit binding whose suggest.entity is missing
+// (or not in HA) use it (auto, from: 'mower').
+export function bindObjects(objects, layoutObjects = {}, states = {}, opts = {}) {
   const out = new Map();
+  const me = opts.mowerEntity && states[opts.mowerEntity] ? opts.mowerEntity : null;
   for (const o of objects) {
     const saved = layoutObjects[o.id] || {};
     const hidden = !!saved.hidden;
@@ -13,6 +30,10 @@ export function bindObjects(objects, layoutObjects = {}, states = {}) {
       continue;
     }
     const s = (o.suggest || {}).entity;
+    if (!(s && states[s]) && me && MOWER_TYPES.has(o.type)) {
+      out.set(o.id, { entity: me, auto: true, missing: false, hidden, from: 'mower' });
+      continue;
+    }
     out.set(o.id, { entity: s && states[s] ? s : null, auto: true, missing: !!s && !states[s], hidden });
   }
   return out;

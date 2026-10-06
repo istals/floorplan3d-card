@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isProblem, errorKind, errorText, stuckStep, stuckDueIn } from '../src/mower-warning.js';
+import { isProblem, errorKind, errorText, stuckStep, stuckDueIn, parseOkValues } from '../src/mower-warning.js';
 
 const S = (entity_id, state, attributes = {}) => ({ entity_id, state, attributes });
 
@@ -17,6 +17,30 @@ describe('error classification', () => {
     expect(errorKind(S('lawn_mower.m', 'error'), null)).toBe('error');
     expect(errorKind(S('lawn_mower.m', 'mowing'), S('sensor.e', 'lifted'))).toBe('error');
     expect(errorKind(S('lawn_mower.m', 'mowing'), S('sensor.e', 'none'))).toBe(null);
+  });
+  it('numeric codes: 0 is OK, anything else a problem', () => {
+    expect(isProblem(S('sensor.code', '0'))).toBe(false);
+    expect(isProblem(S('sensor.code', '0.0'))).toBe(false);
+    expect(isProblem(S('sensor.code', '12'))).toBe(true);
+    expect(isProblem(S('sensor.code', '-1'))).toBe(true);
+    expect(errorText(null, S('sensor.code', '12'))).toBe('Error code 12');
+    expect(errorText(null, S('sensor.code', '0'))).toBe(null);
+  });
+  it('status words are OK, case-insensitive', () => {
+    for (const s of ['working', 'Mowing', 'CHARGING', 'docked', 'idle', 'returning', 'paused', 'standby', 'sleeping',
+      'ready', 'home', 'off', 'normal', 'no_error']) expect(isProblem(S('sensor.status', s))).toBe(false);
+    expect(isProblem(S('sensor.status', 'Rain delay'))).toBe(true);
+  });
+  it('extra OK values', () => {
+    expect(parseOkValues(' Rain delay, ,Wait ')).toEqual(['rain delay', 'wait']);
+    expect(parseOkValues(undefined)).toEqual([]);
+    expect(isProblem(S('sensor.status', 'Rain Delay'), 'rain delay, wait')).toBe(false);
+    expect(isProblem(S('sensor.status', 'Rain Delay'), ['wait'])).toBe(true);
+    expect(isProblem(S('sensor.code', '7'), '7')).toBe(false);
+    expect(errorKind(S('lawn_mower.m', 'mowing'), S('sensor.e', 'wait'), 'wait')).toBe(null);
+  });
+  it('binary_sensor unknown / unavailable is not a problem', () => {
+    expect(isProblem(S('binary_sensor.e', 'unavailable'))).toBe(false);
   });
   it('text', () => {
     expect(errorText(S('lawn_mower.m', 'mowing'), S('sensor.e', 'E12', { description: 'Wheel blocked' }))).toBe('E12: Wheel blocked');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bindObjects, chainState, lightColor, lightLevel, lightBudget, nightFactor, sunVector, screenNearest, sunStrength, clampSunDir, snapPin, attachedPosition, attachOffset, floorAtHeight, effectiveGroups } from '../src/objects/logic.js';
+import { bindObjects, mowerTabEntity, chainState, lightColor, lightLevel, lightBudget, nightFactor, sunVector, screenNearest, sunStrength, clampSunDir, snapPin, attachedPosition, attachOffset, floorAtHeight, effectiveGroups } from '../src/objects/logic.js';
 
 const st = (entity_id, state, attributes = {}) => ({ entity_id, state, attributes });
 
@@ -23,6 +23,36 @@ describe('bindObjects', () => {
   });
   it('explicit entity that no longer exists is missing', () => {
     expect(bindObjects(objects, { a: { entity: 'light.gone' } }, states).get('a').missing).toBe(true);
+  });
+});
+
+describe('bindObjects: mower / dock from the Mower tab', () => {
+  const objects = [
+    { id: 'm', type: 'mower', suggest: { entity: 'lawn_mower.other' } },
+    { id: 'd', type: 'dock', suggest: {} },
+    { id: 'l', type: 'lamp', suggest: { entity: 'light.gone' } },
+    { id: 'm2', type: 'mower', suggest: { entity: 'lawn_mower.real' } },
+  ];
+  const states = { 'lawn_mower.mine': st('lawn_mower.mine', 'docked'), 'lawn_mower.real': st('lawn_mower.real', 'mowing') };
+  it('uses the Mower tab entity when suggest is missing or not found', () => {
+    const b = bindObjects(objects, {}, states, { mowerEntity: 'lawn_mower.mine' });
+    expect(b.get('m')).toEqual({ entity: 'lawn_mower.mine', auto: true, missing: false, hidden: false, from: 'mower' });
+    expect(b.get('d').entity).toBe('lawn_mower.mine');
+    expect(b.get('l').entity).toBe(null);
+    expect(b.get('m2')).toEqual({ entity: 'lawn_mower.real', auto: true, missing: false, hidden: false });
+  });
+  it('explicit bindings and none win; unknown mower entity is ignored', () => {
+    const b = bindObjects(objects, { m: { entity: null }, d: { entity: 'lawn_mower.real' } }, states, { mowerEntity: 'lawn_mower.mine' });
+    expect(b.get('m').entity).toBe(null);
+    expect(b.get('d')).toEqual({ entity: 'lawn_mower.real', auto: false, missing: false, hidden: false });
+    expect(bindObjects(objects, {}, states, { mowerEntity: 'lawn_mower.nope' }).get('m').missing).toBe(true);
+  });
+  it('mowerTabEntity resolves the lawn_mower of the same device', () => {
+    const ents = { 'device_tracker.pos': { device_id: 'd1' }, 'lawn_mower.x': { device_id: 'd1' }, 'sensor.y': { device_id: 'd2' } };
+    expect(mowerTabEntity('device_tracker.pos', ents)).toBe('lawn_mower.x');
+    expect(mowerTabEntity('lawn_mower.z', ents)).toBe('lawn_mower.z');
+    expect(mowerTabEntity('sensor.y', ents)).toBe('sensor.y');
+    expect(mowerTabEntity('', ents)).toBe(null);
   });
 });
 

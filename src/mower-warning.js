@@ -1,30 +1,47 @@
 // Mower warning: error classification and the "stuck?" detector (pure, no DOM / Three.js).
 
-const OK_STATES = new Set(['', 'none', 'ok', 'no error', 'unknown', 'unavailable']);
+export const OK_WORDS = ['ok', 'none', 'no error', 'no_error', 'normal', 'working', 'mowing', 'charging', 'docked',
+  'idle', 'returning', 'paused', 'standby', 'sleeping', 'ready', 'home', 'off'];
+const OK_STATES = new Set(OK_WORDS);
+const NO_READING = new Set(['', 'unknown', 'unavailable']);
 export const STUCK_MOVE_M = 0.3;
 export const STUCK_DEFAULT_MIN = 5;
 
-// An error entity reports a problem: binary_sensor on, or a sensor whose state is not one of the "fine" words.
-export function isProblem(st) {
+// "a, b ,c" or ['a', 'b'] -> lower-case trimmed words.
+export function parseOkValues(v) {
+  const list = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : [];
+  return list.map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+}
+
+const numeric = (s) => /^[-+]?\d+(\.\d+)?$/.test(s);
+
+// An error entity reports a problem: binary_sensor on; a numeric code other than 0; or a text state
+// that is not one of the OK words (plus the user's extra okValues). No reading is never a problem.
+export function isProblem(st, okValues) {
   if (!st || st.state === undefined || st.state === null) return false;
   const s = String(st.state).trim().toLowerCase();
+  if (NO_READING.has(s)) return false;
   if (String(st.entity_id || '').startsWith('binary_sensor.')) return s === 'on';
+  const extra = parseOkValues(okValues);
+  if (extra.includes(s)) return false;
+  if (numeric(s)) return Number(s) !== 0;
   return !OK_STATES.has(s);
 }
 
 // 'error' when the mower reports error (state) or the error entity reports a problem, else null.
-export function errorKind(mowerState, errorState) {
+export function errorKind(mowerState, errorState, okValues) {
   if (mowerState && String(mowerState.state).toLowerCase() === 'error') return 'error';
-  return isProblem(errorState) ? 'error' : null;
+  return isProblem(errorState, okValues) ? 'error' : null;
 }
 
-// Text for the popup: the error entity's state and its description / message attributes.
-export function errorText(mowerState, errorState) {
-  if (isProblem(errorState)) {
+// Text for the popup: the error entity's state ("Error code N" for numbers) and its description / message attributes.
+export function errorText(mowerState, errorState, okValues) {
+  if (isProblem(errorState, okValues)) {
     const a = errorState.attributes || {};
     const extra = [a.description, a.message].filter((v) => typeof v === 'string' && v.trim());
-    const base = String(errorState.state).toLowerCase() === 'on' && String(errorState.entity_id || '').startsWith('binary_sensor.')
-      ? (a.friendly_name || 'Problem') : String(errorState.state);
+    const raw = String(errorState.state).trim();
+    const base = raw.toLowerCase() === 'on' && String(errorState.entity_id || '').startsWith('binary_sensor.')
+      ? (a.friendly_name || 'Problem') : numeric(raw) ? `Error code ${Number(raw)}` : raw;
     return [base, ...extra].join(': ');
   }
   if (mowerState && String(mowerState.state).toLowerCase() === 'error') return 'Mower reports an error';

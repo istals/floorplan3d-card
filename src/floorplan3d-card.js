@@ -20,7 +20,7 @@ import { readSource, mowerTransform, overlayUrl } from './mower.js';
 import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from './mower-warning.js';
 import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint } from './mower-image.js';
 import { ObjectLayer } from './objects/layer.js';
-import { bindObjects, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
+import { bindObjects, mowerTabEntity, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
@@ -300,6 +300,17 @@ const STYLE = `
   .panel ul.otree .badge.warn { background: none; color: var(--error-color, #db4437); border: 1px solid currentColor; }
   .panel ul.otree li.flash { animation: fp-flash 1.2s ease-out; }
   .panel ul.vtree li.flash { animation: fp-flash 1.2s ease-out; }
+  .panel .setup-flash { animation: fp-flash 1.5s ease-out; border-radius: 4px; }
+  .panel details.mower-setup { border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 8px; margin: 4px 0 8px; }
+  .panel details.mower-setup summary { cursor: pointer; font-weight: 500; }
+  .panel details.mower-setup.complete summary { color: var(--success-color, #43a047); }
+  .panel ul.setup { margin: 4px 0 0; }
+  .panel ul.setup li { padding: 1px 0; }
+  .panel ul.setup button.setup-row { color: var(--primary-text-color); text-align: left; font: inherit; cursor: pointer; }
+  .panel ul.setup .mark { display: inline-block; width: 1.2em; font-weight: 700; }
+  .panel ul.setup .ok .mark { color: var(--success-color, #43a047); }
+  .panel ul.setup .todo .mark { color: var(--error-color, #db4437); }
+  .panel ul.setup .opt .mark { color: var(--secondary-text-color); }
   @keyframes fp-flash { 0%, 40% { background: color-mix(in srgb, var(--primary-color, #03a9f4) 35%, transparent); } 100% { background: transparent; } }
   .panel ul.vtree li.part .state { color: var(--primary-color); }
   .panel ul.vtree button.expand { font-size: 12px; color: var(--secondary-text-color); padding: 0 4px; }
@@ -922,7 +933,7 @@ class Floorplan3dCard extends HTMLElement {
     const minutes = cfg.stuck_minutes === undefined ? STUCK_DEFAULT_MIN : Number(cfg.stuck_minutes) || 0;
     const now = Date.now();
     this._stuck = stuckStep(this._stuck, { now, pos, state: ms && ms.state, minutes });
-    const kind = errorKind(ms, es) || (this._stuck.stuck ? 'stuck' : null);
+    const kind = errorKind(ms, es, cfg.ok_values) || (this._stuck.stuck ? 'stuck' : null);
     this._warning = kind ? { kind, minutes } : null;
     if (kind && pos) view.setMowerWarning({ kind, x: pos[0], y: pos[1], floorId: live.floorId });
     else view.setMowerWarning(null);
@@ -937,7 +948,7 @@ class Floorplan3dCard extends HTMLElement {
     if (!w || !h || !cfg) return null;
     if (w.kind === 'stuck' && !(this._mowerLive && this._mowerLive.x !== undefined)) return { label: 'Position', value: 'no position reading' };
     if (w.kind === 'stuck') return { label: 'Stuck?', value: `no movement for ${w.minutes} min` };
-    return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], cfg.error_entity ? h.states[cfg.error_entity] : null) || 'error' };
+    return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], cfg.error_entity ? h.states[cfg.error_entity] : null, cfg.ok_values) || 'error' };
   }
 
   // ---------- mower position from the live map image ----------
@@ -1638,10 +1649,11 @@ class Floorplan3dCard extends HTMLElement {
       const e = lo[o.id] && lo[o.id].entity !== undefined ? lo[o.id].entity : (o.suggest || {}).entity;
       return e && states[e] ? 1 : 0;
     }).join('') + '|' + Object.values(groups).map((g) => (g && g.entity && states[g.entity] ? 1 : 0)).join('');
-    const key = [model, lo, groups, exists];
+    const mowerEntity = mowerTabEntity(l.mower && l.mower.entity, this._hass.entities);
+    const key = [model, lo, groups, exists, mowerEntity && states[mowerEntity] ? mowerEntity : ''];
     if (this._bindKey && key.every((x, i) => x === this._bindKey[i])) return false;
     this._bindKey = key;
-    this._bindings = bindObjects(objs, lo, states);
+    this._bindings = bindObjects(objs, lo, states, { mowerEntity });
     this._groups = effectiveGroups(groups, states); // controllers HA doesn't know are ignored
     this._objects.setBindings(this._bindings, this._groups);
     const bound = new Set();
