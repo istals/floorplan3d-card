@@ -13,7 +13,8 @@ position over its map.
 - Tap toggles lights, switches, fans and input booleans; other devices (and long-press) open
   the more-info dialog
 - Lights that are on cast a glow on the floor in their colour and brightness
-- Markers show a value next to the icon (temperature, power, …)
+- Markers show a value next to the icon (temperature, power, …); their shape tells what a tap does:
+  circles act, rounded squares show readings, diamonds are alarms, pictures for people and players
 - Edit mode for admins: draw rooms, doors, floors, pin and hide devices, import/export
 - One layout shared by every user and device (stored by the companion integration)
 - Robot mower: live position, trail, map image or camera overlay, point calibration
@@ -29,7 +30,8 @@ position over its map.
 - Model objects are the controls: lamps glow and really light rooms and the facade (night is dark,
   the lamps carry it), tap a lamp to toggle it, hold it for brightness and colour; the mower model
   drives on the plan, the dock, EV charger and climate units show their state. Objects bind to
-  their entities from the model's suggestions without setup
+  their entities from the model's suggestions without setup. Every lit lamp washes its wall with
+  light, and tags (model groups, HA labels) give groups of lamps a shared controller
 - Follows the HA theme, light and dark
 
 ## Install
@@ -135,6 +137,20 @@ found the computed spot stays. **Stick all to surfaces** (Devices tab) moves pin
 float more than 15 cm from any surface onto the nearest suitable one; it shows how many will
 move, with Apply / Cancel.
 
+**Marker shapes** follow what a tap does: controllable devices (lights, switches, fans, covers,
+locks, climate, media players, …) are **circles**; a sensor with a value is a **rounded square**
+showing the value; a binary sensor a rounded square with its state icon (door open / closed, …);
+alarm classes (smoke, gas, safety, moisture, carbon monoxide: red; problem, tamper: yellow) are
+**diamonds**, coloured while active; devices that only open more-info get a rounded square with a
+small "i". People, media players, image entities and lawn mowers with an `entity_picture` show the
+picture in a circle (the icon when it fails to load). Icons stay HA's (entity icon, device class).
+
+**Tap hints** (Devices tab, `layout.tap_hints`): a small dot on every tappable model object, filled
+(in the lamp's colour while lit) when a tap works, hollow grey when the object or its device is
+offline or a controller in its chain is off. *Always*, *Near pointer* (default: the dots fade in
+within about 120 px of the mouse; on touch they show for 3 s after a touch) or *Off*. On desktop
+the object under the mouse gets an outline and a pointer cursor.
+
 **Badges** (Devices tab, stored in the layout; card YAML `badges:` overrides per key):
 - **Show integration logos** (off by default): the integration's logo from
   `brands.home-assistant.io` (the dark variant in dark themes, falling back to the normal one),
@@ -156,8 +172,16 @@ doesn't exist in HA (the object stays unbound). **Tap / Hold / Double tap** pick
 [actions](#actions) (*Default* = the model's or the type's action; navigate, url and perform-action
 show the fields they need and flag a missing one). **Test** toggles it like a tap, **Hide** ignores the
 object as a control (dark, and its device gets its marker back). Click an object in the view to
-find its row. *Groups*: a fixture group (e.g. all facade lamps) can get a controller entity, a
-relay that must be on too; empty or `none` removes it, an unknown entity is ignored and flagged.
+find its row. **Tags** group objects: by default an object carries its model group (`fp.group`)
+and the [HA labels](https://www.home-assistant.io/docs/organizing/labels/) of its entity. Each row
+shows its tags as chips (× removes one, *+ tag* adds one; a changed list is stored in the layout,
+back to the defaults when it matches them again). *Tag* at the top filters the list; tick rows
+(or *Select all*) and **Add tag** / **Remove tag** for all of them at once. In the **Tags** section
+each tag can get a controller entity (e.g. the facade's `switch.*` relay) and a label: an object is
+lit only while its own entity and the controllers of all its tags are on; empty or `none` removes
+the controller, an unknown entity is ignored and flagged. Objects sharing a controller tag share the
+real-light budget like a model group, and views (`tag:<name>`) and `actions:` (`tag:<name>`) can
+select them. Layouts from before 0.4.5 keep their group controllers (they load as tags).
 See [Lamps and objects](#lamps-and-objects).
 
 **Mower.** See below.
@@ -382,6 +406,13 @@ has no marker: the object is the control.
   the pool is full, a group may keep its glow only. Other lit lamps only glow. `lights: off` keeps glow only and
   takes the light pool out of the shaders (the switch recompiles them once). Shadow maps are
   redrawn only for lit lamps that changed and for the sun while it is up.
+- **Wall washes:** since only a few real lights exist, every lit lamp also washes the surface next to
+  it with a soft additive light decal in its colour and brightness: the nearest wall within 0.6 m
+  (a cone below a down light, above an uplight, an oval around a `point` lamp), else a pool on the
+  floor (or the ceiling for an uplight); spots light a pool where they aim. Size follows
+  `hints.max` / `hints.distance`; lamps that also got a real light wash at half strength. A wash is
+  placed the first time its lamp is lit (and again after the model is moved); turning lamps on and
+  off only shows and hides them, no shader is rebuilt.
 - **Day / Night:** the toolbar button cycles Auto, Day, Night. Auto follows `sun.sun`: by night
   the house is nearly dark and the lamps carry the scene; the sun's direction and shadows follow
   the real sun.
@@ -409,7 +440,9 @@ has no marker: the object is the control.
   radius is set too, but three.js ignores it with soft PCF shadows, so the softening is the fainter
   shadow.)
 - **Tap** a lamp to toggle it, **hold** (500 ms) for a small popup: on / off, brightness, colour,
-  and for grouped fixtures the group controller and why a lamp is dark ("Facade switch is off").
+  and a row per tag controller and why a lamp is dark ("Facade switch is off"). A tap on an object
+  that can't act does nothing but say why: "Not reachable (offline)" or "Turn on first: <controller>"
+  (hold still opens the popup).
   Esc or a tap outside closes it. Taps near an object (30 px, 52 px on touch) hit the object
   before markers. Other objects: mower popup (state, battery, start / dock), climate (temperature,
   mode), EV charger (state, power, energy); `fp.ui` in the model, the Objects tab or the card YAML
@@ -425,8 +458,8 @@ has no marker: the object is the control.
   "uplight", "up_light", "uplighter") or straight down. `npm run check-model` and the Model tab warn
   "spot target looks wrong (shared / too far): <ids>".
 - **Labels:** every Objects tab row has a Label field (empty: the model's label); it names the object
-  in the Objects tab, its popup, the Attach preview and panel and the Views tree. A group can have a label too (Groups section), shown in popups
-  on the group controller row.
+  in the Objects tab, its popup, the Attach preview and panel and the Views tree. A tag can have a label too (Tags section), shown in popups
+  on its controller row.
 - **Edit mode:** bind objects in the Objects tab; in the Devices tab a dragged marker sticks to the
   model's surfaces and attaches to an object it is dropped on (Alt: free drag, Detach to undo).
 
@@ -440,8 +473,9 @@ with `/` the same tab; other schemes are refused), `perform-action` (`perform_ac
 object's popup). `confirmation: true` (or `{ text: ..., exemptions: [{ user: <user id> }] }`) asks
 first in a small dialog in the card, except for the listed users.
 Later wins: the model's `fp.ui` (old `tap` / `hold` keys still work) → the Objects tab → the card
-YAML `actions:`, keyed `object:<id>` (model objects), `<entity_id>` or `device:<device_id>` (objects
-and markers):
+YAML `actions:`, keyed `object:<id>` (model objects), `<entity_id>`, `tag:<name>` (objects with that
+tag) or `device:<device_id>` (objects and markers); `object:` wins over the entity, the entity over
+`tag:`, `tag:` over `device:`:
 
 ```yaml
 actions:
@@ -454,6 +488,8 @@ actions:
       data: { brightness_pct: 100 }
   binary_sensor.front_door:
     tap_action: { action: more-info }
+  tag:facade:
+    hold_action: { action: more-info, entity: switch.facade }
   object:mower:
     popup: [state, battery, start, dock, history, { label: Mower map, navigate: /lovelace/garden }]
 ```
@@ -533,6 +569,7 @@ views:
     rules:
       - hide: layer:furniture
       - hide: node:house/level0/sofa
+      - hide: tag:garden_lights      # objects carrying a tag (Edit -> Objects)
     camera: { position: [18, 22, 16], target: [6, 0, -4] }
     camera_top: { center: [6, 4], zoom: 1.5 }   # plan metres
     zoom_to: cursor

@@ -142,6 +142,7 @@ Selectors:
 | `role:<storey\|basement\|exterior\|roof>` | every level with that role |
 | `room:<id>` / `zone:<id>` | a room or zone |
 | `object:<id>` / `type:<type>` / `group:<name>` | objects by id, type or group |
+| `tag:<name>` | objects carrying the tag (Edit → Objects; by default the object's `group` and the HA labels of its entity) |
 | `layer:<name>` | every node with that layer (below) |
 | `node:<path>` | a node by its name path from the root, `/`-separated; `*` matches within a name, `**` across levels |
 
