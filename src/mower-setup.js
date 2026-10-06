@@ -22,7 +22,7 @@ export function setupChecklist(m, states = {}, found = false, auto = null) {
     { id: 'aligned', label: 'Aligned', ok: overlayAligned(o), target: o && o.entity ? '[data-act="ov-align"]' : '[data-field="ov-entity"]' },
   ];
   if (auto) {
-    rows.push({ id: 'static', label: 'Static map', ok: !!auto.static, target: '[data-field="mower-static"]' });
+    rows.push({ id: 'static', label: auto.mismatch ? "Static map doesn't match the live map" : 'Static map', ok: !!auto.static && !auto.mismatch, target: '[data-field="mower-static"]' });
     rows.push({ id: 'picture', label: 'Mower picture', ok: !!auto.picture, optional: true, target: '[data-field="mower-picture"]' });
   } else if (image) rows.push({ id: 'color', label: 'Mower colour', ok: colorList(m.image).length > 0, target: '[data-act="img-pick"]' });
   rows.push({ id: 'found', label: 'Found', ok: !!found, target: '.mower-live' });

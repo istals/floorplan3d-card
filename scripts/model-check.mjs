@@ -2273,6 +2273,7 @@ try {
       const n = await ev(`${card}._edit.aligning.pairs.length`);
       // the image point in the 2D picker on the original picture
       await until(`!!${card}._edit.picker`, 'the align picker');
+      await sleep(200); // the picker has its size (fit) before the click
       const a = await ev(`${card}._edit.picker.clientOf(${px}, ${py})`);
       await page.mouse.click(a[0], a[1]);
       await until(`!!${card}._edit.aligning && !!${card}._edit.aligning.pending`, 'the image point');
@@ -2465,6 +2466,7 @@ try {
   check('offline chip next to the mower', await until(`(() => { const el = ${card}.shadowRoot.querySelector('.fp-mower-chip.offline'); return !!el && el.textContent.includes('offline'); })()`, 'the offline chip'));
   const off = await ev(`(() => { const c = ${card}, o = c._objects.objectAt('mower'); c._popup.open(o.obj, null); const t = c.shadowRoot.querySelector('.fp-popup').textContent; c._popup.close(); return t; })()`);
   check('popup: offline since', /Offline\s*since \d+ min/.test(off), off.slice(0, 200));
+  check('offline: the mower model is dimmed (shared dimmed materials)', await until(`(() => { const n = ${card}._objects._dimNode; let d = 0; if (n) n.traverse((o) => { if (o.isMesh && o.userData.fpUndim) d++; }); return d > 0; })()`, 'the dimmed mower'));
   await ev(`window.__setDemoStates({ 'binary_sensor.robo_online': 'on', 'sensor.robo_rain_sensor': 'Wet' })`);
   check('rain chip (weather-rainy) while wet', await until(`(() => { const el = ${card}.shadowRoot.querySelector('.fp-mower-chip.rain ha-icon'); return !!el && el.getAttribute('icon') === 'mdi:weather-rainy'; })()`, 'the rain chip'));
   await ev(`window.__setDemoStates({ 'sensor.robo_rain_sensor': 'Dry countdown', 'sensor.robo_rain_sensor_countdown': '12' })`);
@@ -2477,6 +2479,29 @@ try {
   check('popup text "Error code 12"', (await ev(`JSON.stringify(${card}._warningText())`)).includes('Error code 12'));
   await ev(`window.__setDemoStates({ 'sensor.robo_errorcode': '0' })`);
   check('error code 0: no warning', await until(`!${card}._warning`, 'no warning'));
+  check('online again: the mower model back to its materials', await until(`(() => { let d = 0; const m = ${card}._objects._mower(); if (m) m.p.obj.node.traverse((o) => { if (o.isMesh && o.userData.fpUndim) d++; }); return d === 0; })()`, 'the undimmed mower'));
+  // main-thread time per refresh: auto pass in the worker vs on the main thread (no worker)
+  const timing = async () => {
+    const out = [];
+    for (let i = 0; i < 4; i++) {
+      await ev(`window.__setRobot(${1 + i * 0.05})`);
+      await sleep(900);
+      out.push(await ev(`(() => { const c = ${card}; return (c._autoMainMs || 0) + (c._mapProc.lastMainMs || 0); })()`));
+    }
+    return out.sort((a, b) => a - b)[1];
+  };
+  const inWorker = await timing();
+  await ev(`(() => { const p = ${card}._mapProc; p._killWorker(); })()`);
+  const onMain = await timing();
+  console.log(`     auto pass main-thread time per refresh: worker ${inWorker.toFixed(1)} ms, main thread ${onMain.toFixed(1)} ms`);
+  check('auto mode in the worker keeps the main thread light', inWorker < onMain, `${inWorker} vs ${onMain}`);
+  // a static map that does not match the live map (another aspect): flagged, no auto detection
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, static_entity: 'image.robo_mower_image' } }); })()`);
+  await ev(`window.__setRobot(1.4)`);
+  check('mismatching static map flagged', await until(`${card}._autoMismatch === true`, 'the mismatch'));
+  await ev(`(() => { const c = ${card}, l = c._layout; const m = { ...l.mower }; delete m.static_entity; c._commit({ ...l, mower: m }); })()`);
+  await ev(`window.__setRobot(1.45)`);
+  check('matching static map again', await until(`${card}._autoMismatch === false`, 'no mismatch'));
   // edit mode: the Mower tab shows auto mode, the checklist rows and the heading
   await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
   await until(`${card}._editing`, 'edit mode');

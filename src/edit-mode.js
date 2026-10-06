@@ -599,7 +599,8 @@ export class EditMode {
 
   // Setup checklist at the top of the Mower tab; each row scrolls to its control.
   _setupHtml(keepOpen) {
-    const m = this.mower(), auto = this.card.mowerAuto(m);
+    const m = this.mower(), on = this.card.mowerAuto(m);
+    const auto = on ? { ...on, mismatch: !!this.card._autoMismatch } : null;
     const { rows, complete } = setupChecklist(m, this.hass.states, this._mowerFound(), auto);
     const open = !complete || (keepOpen && this._setupOpen);
     const li = rows.map((r) => `<li><button class="link setup-row ${r.ok ? 'ok' : r.optional ? 'opt' : 'todo'}" data-act="setup-go" data-target="${esc(r.target)}">
@@ -1510,6 +1511,7 @@ export class EditMode {
     const imgs = Object.keys(this.hass.states).filter((e) => e.startsWith('image.')).sort();
     const on = !!this.card.mowerAuto(m);
     let out = '<div class="sub">Automatic</div>';
+    if (on && this.card._autoMismatch) out += `<p class="hint auto-state" style="color: var(--error-color, #db4437)">Static map doesn't match the live map: ${colorList(m.image).length ? 'the colour picks are used' : 'no detection'} until it does.</p>`;
     out += `<p class="hint auto-state">${on ? `<b>Auto (static map${det.picture ? ' + mower picture' : ''})</b>: live map ${esc(det.live)}, static map ${esc(det.static)}${det.picture ? `, mower picture ${esc(det.picture)}` : ''}.`
       : det.static ? 'Auto mode is off: the colour picks below are used.' : 'No static map found: pick the colours below, or set the static map.'}</p>`;
     out += `<label>Static map <input list="fp-img-ents" data-field="mower-static" value="${esc(m.static_entity ?? '')}" placeholder="${esc(m.static_entity === undefined && det.static ? `auto: ${det.static}` : 'image.mower_map')}"></label>`;

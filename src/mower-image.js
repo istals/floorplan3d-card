@@ -580,13 +580,33 @@ const yieldOnce = () => new Promise((r) => {
   else setTimeout(r, 0);
 });
 
+// Auto mode (mower-auto.js registers itself: no import cycle): { source (worker code defining A),
+// run (the same autoProcess on the main thread) }.
+let AUTO = null;
+export function registerAuto(a) { AUTO = a; }
+
 // Worker running the kernel: one message per picture, the pixel and output buffers transferred both ways.
 function workerSource() {
   return `const K = (${mapKernel.toString()})();
+${AUTO ? AUTO.source : 'const A = null;'}
 const bufs = {};
 let zone = { key: null, mask: null };
+let stat = { key: null, data: null }, tpl = { key: null, t: null, cache: new Map() };
+function auto(m) {
+  if (m.stat) stat = { key: m.statKey, data: new Uint8ClampedArray(m.stat) };
+  if (m.tplKey !== tpl.key) tpl = { key: m.tplKey, t: m.template, cache: new Map() };
+  if (stat.key !== m.statKey) throw new Error('static map missing');
+  const r = A.autoProcess(stat.data, new Uint8ClampedArray(m.live), m.w, m.h, Object.assign({}, m.ctx, { template: tpl.t, cache: tpl.cache }));
+  const out = r.data.buffer;
+  delete r.data;
+  self.postMessage(Object.assign({ id: m.id, out, live: m.live }, r), [out, m.live]);
+}
 self.onmessage = (e) => {
   const m = e.data;
+  if (m.type === 'auto') {
+    try { auto(m); } catch (err) { self.postMessage({ id: m.id, error: String(err), live: m.live }, [m.live]); }
+    return;
+  }
   try {
     bufs.out = new Uint8ClampedArray(m.out);
     let zm = null;
@@ -745,6 +765,59 @@ export class MapProcessor {
         else resolve({ mowed: m.mowed, background: m.background, nomow: m.nomow, icon: m.icon, zone: m.zone, angle: m.angle });
       });
       wk.postMessage({ id, rgba: pix, out, w, h, opts, zonePts, zoneKey, stripes }, [pix, out]);
+    });
+  }
+
+  // Auto mode pass (mower-auto.js autoProcess) in the worker, else on the main thread after one
+  // yield. px: read() pixels (consumed); stat: { key, data } (sent to the worker once per key);
+  // template: { key, t }; ctx: autoProcess context (no cache / template). -> Promise of its result.
+  auto(px, stat, template, ctx) {
+    const run = this._queue.then(() => this._auto(px, stat, template, ctx));
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _auto(px, stat, template, ctx) {
+    const { width: w, height: h } = px;
+    const wk = AUTO ? this._getWorker() : null;
+    if (wk) {
+      try {
+        this.lastMainMs = 0;
+        return await this._autoViaWorker(wk, px.data, w, h, stat, template, ctx);
+      } catch (e) {
+        if (e && e.disposed) throw e;
+        console.warn('floorplan3d: map worker failed, processing on the main thread', e);
+        this._killWorker();
+        if (!px.data.byteLength) throw e;
+      }
+    }
+    await yieldOnce();
+    if (!this._autoCache || this._autoCache.key !== (template && template.key)) this._autoCache = { key: template && template.key, cache: new Map() };
+    const t0 = performance.now();
+    const r = AUTO.run(stat.data, px.data, w, h, { ...ctx, template: template && template.t, cache: this._autoCache.cache });
+    this.lastMainMs = performance.now() - t0; // the pass on the main thread (no worker)
+    return r;
+  }
+
+  _autoViaWorker(wk, rgba, w, h, stat, template, ctx) {
+    const id = ++this._seq;
+    const live = rgba.byteOffset === 0 && rgba.byteLength === rgba.buffer.byteLength ? rgba.buffer : rgba.slice().buffer;
+    const msg = { type: 'auto', id, live, w, h, ctx, statKey: stat.key, tplKey: template ? template.key : null, template: null };
+    const tr = [live];
+    if (this._sentStat !== stat.key) { msg.stat = stat.data.slice().buffer; tr.push(msg.stat); }
+    if (this._sentTpl !== msg.tplKey) msg.template = template ? template.t : null;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this._waiting.delete(id); reject(new Error('timeout')); }, WORKER_TIMEOUT_MS);
+      this._waiting.set(id, (m) => {
+        clearTimeout(timer);
+        this._waiting.delete(id);
+        if (m.disposed) reject(Object.assign(new Error('disposed'), { disposed: true }));
+        else if (m.error) { this._sentStat = null; this._sentTpl = undefined; reject(new Error(m.error)); }
+        else { m.data = new Uint8ClampedArray(m.out); resolve(m); }
+      });
+      wk.postMessage(msg, tr);
+      this._sentStat = stat.key;
+      this._sentTpl = msg.tplKey;
     });
   }
 

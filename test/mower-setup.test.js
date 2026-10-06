@@ -27,6 +27,9 @@ describe('mower setup checklist', () => {
     const r = setupChecklist(m, states, true, { static: 'image.static', picture: null });
     expect(r.rows.map((x) => x.id)).toEqual(['entity', 'map', 'aligned', 'static', 'picture', 'found']);
     expect(r.complete).toBe(true);
+    const mm = setupChecklist(m, states, true, { static: 'image.static', picture: null, mismatch: true });
+    expect(mm.rows.find((x) => x.id === 'static')).toMatchObject({ ok: false, label: "Static map doesn't match the live map" });
+    expect(mm.complete).toBe(false);
   });
   it('missing entities are not ok', () => {
     expect(ok(setupChecklist({ entity: 'lawn_mower.x', overlay: { entity: 'image.y' } }, states))).toMatchObject({ entity: false, map: false });

@@ -59,6 +59,8 @@ export class ObjectLayer {
   setModel(model, { keepLights = false } = {}) {
     this._keepLights = !model && keepLights;
     if (model && this.model === model) return;
+    if (this._dimNode) this._applyDim(this._dimNode, false);
+    if (this._dimMats) { for (const d of this._dimMats.values()) d.dispose(); this._dimMats = null; this._dimNode = null; }
     for (const p of this.parts.values()) p.type.dispose(p.part);
     this.parts.clear();
     this._darken();
@@ -131,6 +133,40 @@ export class ObjectLayer {
 
   mowerBound() {
     return !!this._mower();
+  }
+
+  // Offline mower: its model dimmed by swapping in dimmed copies of its materials (made once per
+  // material and reused, so toggling never recompiles), and back.
+  setMowerDim(on) {
+    const m = this._mower();
+    const node = m && m.p.obj.node;
+    if (this._dimNode && this._dimNode !== node) this._applyDim(this._dimNode, false);
+    this._dimNode = on ? node : null;
+    if (node) this._applyDim(node, !!on);
+  }
+
+  _applyDim(node, on) {
+    const cache = (this._dimMats = this._dimMats || new Map());
+    const dim = (mat) => {
+      let d = cache.get(mat);
+      if (!d) {
+        d = mat.clone();
+        d.transparent = true;
+        d.opacity = (mat.opacity ?? 1) * 0.45;
+        if (d.color) d.color.multiplyScalar(0.55);
+        if (d.emissive) d.emissive.multiplyScalar(0.3);
+        d.userData = { ...mat.userData, fpDimOf: mat };
+        cache.set(mat, d);
+      }
+      return d;
+    };
+    let changed = false;
+    node.traverse((o) => {
+      if (!o.isMesh) return;
+      if (on && !o.userData.fpUndim) { o.userData.fpUndim = o.material; o.material = Array.isArray(o.material) ? o.material.map(dim) : dim(o.material); changed = true; }
+      if (!on && o.userData.fpUndim) { o.material = o.userData.fpUndim; delete o.userData.fpUndim; changed = true; }
+    });
+    if (changed) this.view.markDirty();
   }
 
   // { x, y, floorId, heading } (plan metres, radians ccw from east) or null: moves the mower node.

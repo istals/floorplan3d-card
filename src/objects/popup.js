@@ -119,6 +119,12 @@ export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
   return rows;
 }
 
+// Row layout key: a change rebuilds the rows; the label is part of it for link and info rows, so a
+// label never stays next to another row's value (the per-row update only writes values).
+export function rowsKey(rows) {
+  return rows.map((r) => `${r.kind}:${r.entity || ''}${r.kind === 'link' || r.kind === 'info' ? `:${r.label}` : ''}`).join('|');
+}
+
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const STOP = ['pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'click', 'dblclick', 'contextmenu',
   'mousedown', 'mouseup', 'touchstart', 'touchend', 'touchmove', 'wheel', 'keydown'];
@@ -201,7 +207,7 @@ export class ObjectPopup {
     const rows = this._rows();
     if (!rows) { this.close(); return; }
     applyBadges(this.el.querySelector('.fp-pop-badges'), this._badge || null, !!this._dark);
-    const key = rows.map((r) => `${r.kind}:${r.entity || ''}${r.kind === 'link' ? r.label : ''}`).join('|');
+    const key = rowsKey(rows);
     const box = this.el.querySelector('.fp-pop-rows');
     if (key !== this._key) {
       this._key = key;

@@ -46,6 +46,9 @@ describe('mower device auto-detection', () => {
     expect(findProgress(h, 'lawn_mower.robo')).toBe('sensor.robo_progress');
     expect(progressValue(h, 'sensor.robo_progress')).toBeCloseTo(0.39, 9);
     expect(findStaticMap(h, 'camera.nope', 'lawn_mower.nope')).toBe(null);
+    // a static map whose name says "live" is still found; the live map is excluded by its id
+    const lv = hassOf([['lawn_mower.l', 'x'], ['camera.l_live_map', 'x'], ['image.l_live_area_map', 'x']]);
+    expect(findStaticMap(lv, 'camera.l_live_map', 'lawn_mower.l')).toBe('image.l_live_area_map');
     expect(mowerDevice(h, 'x.y').entities).toEqual([]);
   });
   it('connectivity and rain', () => {
@@ -62,6 +65,10 @@ describe('mower device auto-detection', () => {
     expect(zoneEntities(h, list, 'Zone A')).toEqual({ area: 'sensor.robo_zone_a_area', estimated: 'sensor.robo_zone_a_estimated_time', started: 'binary_sensor.robo_zone_a_started', finished: 'binary_sensor.robo_zone_a_finished' });
     expect(zoneEntities(h, list, 'zone b').area).toBe('sensor.robo_zone_b_area');
     expect(zoneEntities(h, list, '')).toEqual({});
+    const z = hassOf([['lawn_mower.r', 'x'], ['sensor.r_zone_10_area', '1'], ['sensor.r_zone_1_area', '2'], ['sensor.r_zone_area_total', '3']]);
+    const zl = Object.keys(z.entities);
+    expect(zoneEntities(z, zl, 'Zone 1').area).toBe('sensor.r_zone_1_area');
+    expect(zoneEntities(z, zl, 'Zone A').area).toBe(null);
   });
   it('popup rows', () => {
     const rows = deviceRows(h, 'lawn_mower.robo', Date.parse('2026-10-06T10:42:00Z'));

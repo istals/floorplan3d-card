@@ -38,9 +38,9 @@ const firstMatch = (hass, list, re, domain) => list.find((eid) => (!domain || ei
 export function findStaticMap(hass, liveEntity, mowerEntity) {
   const { entities } = mowerDevice(hass, liveEntity, mowerEntity);
   return entities.find((eid) => {
-    if (!eid.startsWith('image.') || eid === liveEntity) return false;
+    if (!eid.startsWith('image.') || eid === liveEntity) return false; // the live map by its id
     const id = lc(eid.split('.')[1]);
-    if (/mower_image|wifi|live/.test(id) || /wifi|live|mower image/.test(label(hass, eid))) return false;
+    if (/mower_image|wifi/.test(id) || /wifi|mower image/.test(label(hass, eid))) return false;
     return /map$/.test(id);
   }) || null;
 }
@@ -107,7 +107,8 @@ export function rain(hass, mowerEntity) {
 export function zoneEntities(hass, entities, region) {
   const r = words(region);
   if (!r || r === 'unknown' || r === 'unavailable') return {};
-  const mine = entities.filter((e) => label(hass, e).includes(r));
+  // whole words: "zone 1" is not "zone 10", "zone a" is not "zone area"
+  const mine = entities.filter((e) => ` ${label(hass, e)} `.includes(` ${r} `));
   const pick = (re, domain) => mine.find((e) => (!domain || e.startsWith(domain + '.')) && re.test(label(hass, e))) || null;
   return {
     area: pick(/area/, 'sensor'), estimated: pick(/estimat/, 'sensor'),
