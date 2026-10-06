@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readTag, buildManifest, gltfAdapter, summarize } from '../src/manifest.js';
+import { readTag, buildManifest, gltfAdapter, threeAdapter, summarize } from '../src/manifest.js';
 
 // tiny tree helper: { name, extras, children }
 const tree = (roots) => {
@@ -170,5 +170,32 @@ describe('kindless fp keeps name tags', () => {
     const m = buildManifest(tree([{ name: 'floor:ground', children: [lamp] }]));
     expect(m.errors).toEqual([]);
     expect(m.objects).toMatchObject([{ id: 'lamp_1', type: 'light' }]);
+  });
+});
+
+describe('spot target warning', () => {
+  const lvl = (children) => ({ name: 'g', extras: { fp: { kind: 'level', id: 'g' } }, children });
+  const json = (objs) => ({ scene: 0, scenes: [{ nodes: [0] }], nodes: [lvl(objs.map((_, i) => i + 1)), ...objs] });
+  const up = (id, x, target, extra = {}) => ({ name: id, translation: [x, 1, 0], extras: { fp: { kind: 'object', id, type: 'light', group: 'ups', hints: { beam: 'up', target } } }, ...extra });
+
+  it('warns for targets shared in a group or too far (node origin from translation / rotation / matrix)', () => {
+    const m = buildManifest(gltfAdapter(json([
+      up('u1', 0, [5, 5, 5]), up('u2', 2, [5, 5, 5]),
+      { name: 'far', rotation: [0, Math.SQRT1_2, 0, Math.SQRT1_2], extras: { fp: { kind: 'object', id: 'far', type: 'light', hints: { beam: 'spot', target: [0, 0, 9] } } } },
+      { name: 'ok', matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 20, 0, 0, 1], extras: { fp: { kind: 'object', id: 'ok', type: 'light', hints: { beam: 'spot', target: [21, 0, 1] } } } },
+    ])));
+    expect(m.warnings).toEqual(['spot target looks wrong (shared / too far): far, u1, u2']);
+  });
+
+  it('no warning for distinct, near targets', () => {
+    const m = buildManifest(gltfAdapter(json([up('u1', 0, [0, 3, 0]), up('u2', 2, [2, 3, 0])])));
+    expect(m.warnings).toEqual([]);
+  });
+
+  it('three adapter: positions in the root frame', () => {
+    const a = threeAdapter({ children: [] });
+    const node = { position: { toArray: () => [1, 2, 3] }, quaternion: { toArray: () => [0, 0, 0, 1] }, scale: { toArray: () => [2, 2, 2] }, parent: null };
+    const child = { position: { toArray: () => [1, 0, 0] }, quaternion: { toArray: () => [0, 0, 0, 1] }, scale: { toArray: () => [1, 1, 1] }, parent: node };
+    expect(a.position(child)).toEqual([3, 2, 3]);
   });
 });

@@ -189,6 +189,17 @@ for (const [i, x] of [4, 6.25, 8.5].entries()) {
     ['glow', new THREE.SphereGeometry(0.04, 12, 8), glowMat(), [0, -0.08, 0.05]],
   ]);
 }
+// two uplights at the foot of the south wall (group, beam up: spots aimed straight up the facade)
+for (const [i, x] of [5.1, 7.4].entries()) {
+  object(ext, {
+    id: `wall_uplight_${i + 1}`, type: 'light', label: `Wall uplight ${i + 1}`, group: 'uplights', glow: 'glow',
+    hints: { beam: 'up', max: 6, distance: 4, decay: 2, angle: 24, castShadow: false },
+    suggest: { entity: 'light.demo_facade' },
+  }, [x, -0.3, 0], [
+    [`wall_uplight_${i + 1}_body`, new THREE.CylinderGeometry(0.06, 0.07, 0.08, 12), darkMat, [0, 0.04, 0]],
+    ['glow', new THREE.CylinderGeometry(0.045, 0.045, 0.01, 12), glowMat(), [0, 0.085, 0]],
+  ]);
+}
 // a terrace pole with a spot aimed at the terrace
 object(ext, {
   id: 'terrace_spot', type: 'light', label: 'Terrace spot', glow: 'glow',

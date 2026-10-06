@@ -1,6 +1,7 @@
 // Reads the fp tags of a house model (docs/model-builder-guide.md). Works on any node tree
 // through an adapter, so the card (three.js nodes) and tools/check-model.mjs (glTF JSON) share it.
 import { normSection, normTopCamera } from './views.js';
+import { badTargets, aimWarning } from './objects/aim.js';
 
 export const KINDS = ['level', 'room', 'zone', 'object'];
 export const ROLES = ['storey', 'basement', 'exterior', 'roof'];
@@ -122,7 +123,26 @@ export function buildManifest(adapter) {
     for (const c of adapter.children(node)) walk(c, next, path, false);
   };
   for (const t of tops) walk(t, { level: null, room: null }, '', true);
+  if (adapter.position) {
+    const v3 = (a) => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
+    const spots = m.objects.filter((o) => o.hints && (o.hints.beam === 'spot' || o.hints.beam === 'up') && v3(o.hints.target))
+      .map((o) => ({ id: o.id, group: o.group, pos: adapter.position(o.node), target: o.hints.target, distance: o.hints.distance }));
+    const w = aimWarning(badTargets(spots));
+    if (w) m.warnings.push(w);
+  }
   return m;
+}
+
+// p (node frame) -> parent frame: scale, rotate (quaternion [x, y, z, w]), translate; or a column-major matrix.
+function toParent(p, { t, q, s, matrix }) {
+  if (matrix) {
+    const e = matrix;
+    return [e[0] * p[0] + e[4] * p[1] + e[8] * p[2] + e[12], e[1] * p[0] + e[5] * p[1] + e[9] * p[2] + e[13], e[2] * p[0] + e[6] * p[1] + e[10] * p[2] + e[14]];
+  }
+  const v = [p[0] * s[0], p[1] * s[1], p[2] * s[2]];
+  const [x, y, z, w] = q;
+  const ix = w * v[0] + y * v[2] - z * v[1], iy = w * v[1] + z * v[0] - x * v[2], iz = w * v[2] + x * v[1] - y * v[0], iw = -x * v[0] - y * v[1] - z * v[2];
+  return [ix * w + iw * -x + iy * -z - iz * -y + t[0], iy * w + iw * -y + iz * -x - ix * -z + t[1], iz * w + iw * -z + ix * -y - iy * -x + t[2]];
 }
 
 export function threeAdapter(root) {
@@ -132,6 +152,12 @@ export function threeAdapter(root) {
     name: (n) => (n.userData && n.userData.name) || n.name || '', // GLTFLoader strips ':' from n.name
     extras: (n) => n.userData || {},
     parent: (n) => (n.parent && n.parent !== root ? n.parent : null),
+    // node origin in the root's frame
+    position: (n) => {
+      let p = [0, 0, 0];
+      for (let x = n; x && x !== root; x = x.parent) p = toParent(p, { t: x.position.toArray(), q: x.quaternion.toArray(), s: x.scale.toArray() });
+      return p;
+    },
   };
 }
 
@@ -146,6 +172,16 @@ export function gltfAdapter(json) {
     name: (i) => nodes[i].name || '',
     extras: (i) => nodes[i].extras || {},
     parent: (i) => (parent.has(i) ? parent.get(i) : null),
+    // node origin in the scene's frame
+    position: (i) => {
+      let p = [0, 0, 0];
+      for (let x = i; x !== undefined && x !== null && nodes[x]; x = parent.get(x)) {
+        const n = nodes[x];
+        p = toParent(p, Array.isArray(n.matrix) && n.matrix.length === 16 ? { matrix: n.matrix }
+          : { t: n.translation || [0, 0, 0], q: n.rotation || [0, 0, 0, 1], s: n.scale || [1, 1, 1] });
+      }
+      return p;
+    },
   };
 }
 

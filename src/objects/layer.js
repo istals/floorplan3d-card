@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import { chainState, lightBudget } from './logic.js';
 import { typeOf } from './types.js';
+import { badTargets, aimPoint, aimsUp } from './aim.js';
 
 const POINTS = 8, SPOTS = 4, SHADOWS = 4;
 const DEG = Math.PI / 180;
@@ -77,10 +78,27 @@ export class ObjectLayer {
         }
       }
     }
+    this._aimSpots();
     this.view.objectsGroup.visible = !!model || this._keepLights;
     this._showLights();
     this._applyPose();
     this.view.markDirty();
+  }
+
+  // Spot aim points (model root frame), once per model: hints.target unless it is too far from the lamp or
+  // shared within its group (see aim.js), else straight up for uplights / down. badTargets: id -> reason.
+  _aimSpots() {
+    const spots = [];
+    for (const [id, p] of this.parts) {
+      const h = p.part.hints;
+      if (!p.part.pool || !h || h.beam !== 'spot' || !p.part.anchor) continue;
+      spots.push({ id, group: p.obj.group, pos: p.part.anchor.toArray(), target: h.target, distance: h.distance });
+    }
+    this.badTargets = badTargets(spots);
+    for (const s of spots) {
+      const p = this.parts.get(s.id);
+      p.part.aim = new THREE.Vector3(...aimPoint(s.pos, s.target, { bad: this.badTargets.has(s.id), up: p.part.hints.up || aimsUp(p.obj) }));
+    }
   }
 
   // The pool joins the scene only with a model and lights on (a change recompiles the shaders once).
@@ -272,7 +290,8 @@ export class ObjectLayer {
       if (l.isSpotLight) {
         l.angle = h.angle * DEG;
         l.penumbra = h.penumbra;
-        if (h.target) l.target.position.copy(root.localToWorld(new THREE.Vector3(...h.target)));
+        // aim from _aimSpots: a plausible target, else straight up (uplights) / down from the lamp itself
+        if (p.part.aim) l.target.position.copy(root.localToWorld(p.part.aim.clone()));
         else l.target.position.copy(l.position).y -= 1;
         l.target.updateMatrixWorld();
       }

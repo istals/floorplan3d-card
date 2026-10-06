@@ -7,11 +7,12 @@ import { lightColor, lightLevel } from './logic.js';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
 const vec3 = (a) => (Array.isArray(a) && a.length === 3 && a.every(fin) ? a.slice() : null);
 
-// Invalid hints fall back to defaults; down / up beams are point lights.
+// Invalid hints fall back to defaults; a down beam is a point light, an up beam a spot aimed up (up: true).
 export function hintDefaults(hints) {
   const h = hints && typeof hints === 'object' ? hints : {};
   return {
-    beam: h.beam === 'spot' ? 'spot' : 'point',
+    beam: h.beam === 'spot' || h.beam === 'up' ? 'spot' : 'point',
+    up: h.beam === 'up',
     max: fin(h.max) && h.max >= 0 ? h.max : 5,
     distance: fin(h.distance) && h.distance >= 0 ? h.distance : 0,
     decay: fin(h.decay) && h.decay >= 0 ? h.decay : 2,

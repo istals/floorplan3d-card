@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { hintDefaults, findGlow, TYPES, typeOf, statusColor, objectLabel } from '../src/objects/types.js';
 
-const DEF = { beam: 'point', max: 5, distance: 0, decay: 2, angle: 24, penumbra: 0.6, target: null, castShadow: true, offset: null };
+const DEF = { beam: 'point', up: false, max: 5, distance: 0, decay: 2, angle: 24, penumbra: 0.6, target: null, castShadow: true, offset: null };
 
 describe('hintDefaults', () => {
   it('fills defaults for empty or missing hints', () => {
@@ -13,12 +13,12 @@ describe('hintDefaults', () => {
 
   it('keeps valid hints', () => {
     expect(hintDefaults({ beam: 'spot', max: 34, distance: 9, decay: 1.5, angle: 30, penumbra: 0.2, target: [1, 0, 2], castShadow: false, offset: [0, 0, 0.12] }))
-      .toEqual({ beam: 'spot', max: 34, distance: 9, decay: 1.5, angle: 30, penumbra: 0.2, target: [1, 0, 2], castShadow: false, offset: [0, 0, 0.12] });
+      .toEqual({ beam: 'spot', up: false, max: 34, distance: 9, decay: 1.5, angle: 30, penumbra: 0.2, target: [1, 0, 2], castShadow: false, offset: [0, 0, 0.12] });
   });
 
-  it('treats down / up as point and unknown beams as point', () => {
+  it('treats down as point, up as a spot aimed up (24 deg, penumbra 0.6) and unknown beams as point', () => {
     expect(hintDefaults({ beam: 'down' }).beam).toBe('point');
-    expect(hintDefaults({ beam: 'up' }).beam).toBe('point');
+    expect(hintDefaults({ beam: 'up' })).toMatchObject({ beam: 'spot', up: true, angle: 24, penumbra: 0.6 });
     expect(hintDefaults({ beam: 'laser' }).beam).toBe('point');
   });
 

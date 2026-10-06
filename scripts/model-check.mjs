@@ -485,6 +485,46 @@ try {
   await s.close();
 }
 
+// 1u. uplights: the demo's wall uplights aim straight up; a shared (bad) target in their group is ignored
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 560 });
+try {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.evaluate('window.__setDemoSun(-20, 0)'); // night: lamps on
+  await sleep(500);
+  const aims = () => page.evaluate(`(() => { const c = ${card}, L = c._objects, v = c._view;
+    const out = {}; for (const [id, slot] of L._slots) { const l = slot.light; if (!l.isSpotLight) continue;
+      const a = L.anchorOf(id); out[id] = { at: l.position.toArray().map((x) => +x.toFixed(3)), d: l.target.position.clone().sub(l.position).toArray().map((x) => +x.toFixed(3)),
+        own: a.distanceTo(l.position) < 1e-6, on: l.intensity > 0 }; }
+    return { out, warnings: v.modelManifest().warnings, bad: Object.fromEntries(L.badTargets || []) }; })()`);
+  let a = await aims();
+  const ups = ['wall_uplight_1', 'wall_uplight_2'];
+  check('demo uplights: spots aimed straight up from their own lamps, no model warning', ups.every((id) => a.out[id] && a.out[id].on && a.out[id].own && a.out[id].d[0] === 0 && a.out[id].d[2] === 0 && a.out[id].d[1] > 1.9)
+    && !a.warnings.some((w) => /spot target/.test(w)), JSON.stringify(a));
+  const bad = path.join(root, 'screenshots', 'uplights-bad.glb');
+  fs.writeFileSync(bad, rewriteGlbJson(fs.readFileSync(path.join(root, 'demo', 'house.glb')), (json) => {
+    for (const n of json.nodes || []) if (n.extras && n.extras.fp && /^wall_uplight_/.test(n.extras.fp.id)) n.extras.fp.hints = { ...n.extras.fp.hints, target: [6.25, 0, 0.5] };
+    return json;
+  }));
+  await page.evaluate(`${card}.setConfig({ ...${card}._config, model: '/screenshots/uplights-bad.glb' })`);
+  await page.waitForFunction(`(${card}._view.modelManifest()?.warnings || []).some((w) => /spot target/.test(w))`, { timeout: 15000 }).catch(() => {});
+  await sleep(800);
+  a = await aims();
+  check('shared bad target: Model warning names both uplights', a.warnings.includes('spot target looks wrong (shared / too far): wall_uplight_1, wall_uplight_2'), JSON.stringify(a.warnings));
+  check('shared bad target ignored: each spot aims up from its own lamp', ups.every((id) => a.out[id] && a.out[id].own && a.out[id].d[0] === 0 && a.out[id].d[2] === 0 && a.out[id].d[1] > 1.9)
+    && a.out.wall_uplight_1.at[0] !== a.out.wall_uplight_2.at[0] && a.bad.wall_uplight_1 === 'shared', JSON.stringify(a));
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await sleep(300);
+  await page.evaluate(() => { const b = [...document.querySelector('floorplan3d-card').shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Model'); if (b) b.click(); });
+  await sleep(300);
+  const report = await page.evaluate(`(${card}.shadowRoot.querySelector('.panel details.report') || {}).textContent || ''`);
+  check('Model tab lists the spot target warning', /spot target looks wrong \(shared \/ too far\): wall_uplight_1, wall_uplight_2/.test(report), report.slice(0, 200));
+  fs.unlinkSync(bad);
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
 // 1a. static meshes merged at load (per owner + material), merge: false keeps every part, node: rules keep theirs
 s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 560 });
 try {

@@ -36,6 +36,16 @@ describe('checkGlb', () => {
     expect(r.levels[0]).toEqual({ id: 'ground', role: 'storey', order: 0, elevation: 0 });
   });
 
+  it('warns about a spot target shared by a group or too far from the lamp', () => {
+    const up = (id, x) => ({ name: id, translation: [x, 0, 0], extras: fp({ kind: 'object', id, type: 'light', group: 'ups', hints: { beam: 'up', target: [1, 2, 1] } }) });
+    const r = checkGlb(glb({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0, 3] }], nodes: [
+      { name: 'ground', extras: fp({ kind: 'level', id: 'ground' }), children: [1, 2] },
+      up('up_1', 0), up('up_2', 2),
+      { name: 'roof', extras: fp({ kind: 'level', id: 'roof', role: 'roof' }) },
+    ] }));
+    expect(r.warnings).toContain('spot target looks wrong (shared / too far): up_1, up_2');
+  });
+
   it('warns about huge meshes inside storeys but not inside exterior', () => {
     const r = checkGlb(glb({ ...bigPlane, asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0, 2] }], nodes: [
       { name: 'ground', extras: fp({ kind: 'level', id: 'ground' }), children: [1] },

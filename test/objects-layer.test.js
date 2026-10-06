@@ -149,6 +149,25 @@ describe('ObjectLayer', () => {
     expect(lit(points(layer))).toHaveLength(0);
   });
 
+  it('uplights sharing one target in a group aim straight up from their own lamp; a far target is ignored', () => {
+    const ups = [0, 1, 2].map((i) => ({ id: `up${i}`, x: i * 2, group: 'uplights', hints: { beam: 'up', target: [3, 0, 3], max: 8 } }));
+    const far = { id: 'spot_far', x: 9, hints: { beam: 'spot', target: [9, 0, 30], distance: 6, max: 8 } };
+    const m = model([...ups, far]);
+    m.root.position.set(10, 0, 0);
+    layer.setModel(m);
+    expect(Object.fromEntries(layer.badTargets)).toEqual({ up0: 'shared', up1: 'shared', up2: 'shared', spot_far: 'far' });
+    layer.setBindings(bind([...ups.map((u) => [u.id, 'light.u']), ['spot_far', 'light.f']]), {});
+    layer.update({ 'light.u': st('on'), 'light.f': st('on') }, ctx);
+    const on = lit(layer.pool.spots);
+    expect(on).toHaveLength(4);
+    for (const l of on) {
+      expect(l.target.position.x).toBeCloseTo(l.position.x);
+      expect(l.target.position.z).toBeCloseTo(l.position.z);
+      const up = l.position.x < 19; // the uplights at x 10..14, the far spot at 19 points down
+      expect(l.target.position.y - l.position.y).toBeCloseTo(up ? 2 : -1);
+    }
+  });
+
   it('hidden levels and lights: off give no real light, emissive stays', () => {
     const m = model([{ id: 'a', x: 1 }]);
     layer.setModel(m);
