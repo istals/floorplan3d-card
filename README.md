@@ -89,6 +89,7 @@ The options below can be set in the visual editor or in YAML.
 | `model_opacity` | `1` | Model opacity, `0`–`1`. |
 | `lights` | `auto` | With a model: `auto` gives lit lamps real lights (at most 12, 4 with shadows); `off` keeps them glowing only (for weak tablets). |
 | `actions` | | Tap / hold / double tap actions for objects and markers (see [Actions](#actions)). |
+| `badges` | from the layout | Device badges per card, overriding Edit → Devices: `{ integration: true, status: true, battery: true }` (each key optional). |
 | `model_floors` | auto | Which HA floor each model level belongs to, e.g. `{ground: floor1, attic: floor2}` (for a `model:` URL; uploads set it in the Model tab). |
 
 ## Set up the plan
@@ -133,8 +134,22 @@ found the computed spot stays. **Stick all to surfaces** (Devices tab) moves pin
 float more than 15 cm from any surface onto the nearest suitable one; it shows how many will
 move, with Apply / Cancel.
 
+**Badges** (Devices tab, stored in the layout; card YAML `badges:` overrides per key):
+- **Show integration logos** (off by default): the integration's logo from
+  `brands.home-assistant.io` (the dark variant in dark themes, falling back to the normal one),
+  14 px at the marker's top right. A platform without a logo shows nothing (and is not asked again).
+- **Show status** (on): a dot at the bottom right: green = on / active or a sensor with a value,
+  grey = off / idle, red = unavailable or unknown, yellow = low battery or a `problem` binary sensor
+  of the device that is on.
+- **Show low battery** (on): a "12 %" chip above the marker when a battery sensor of the device is
+  under 20 %.
+Model objects show the status dot and the logo in their popup header. Badges are only redrawn when
+their inputs change.
+
 **Objects.** (Only with a model that has objects.) The model's objects grouped by level and room,
-each with its entity: *auto* means bound from the model's `suggest.entity`; type another entity
+each with its entity: *auto* means bound from the model's `suggest.entity`; mower and dock objects
+without a binding whose suggested entity is missing use the Mower tab's entity (*auto: … (from
+Mower tab)*); type another entity
 to rebind, empty returns to auto, `none` leaves it unbound. *entity not found* means the entity
 doesn't exist in HA (the object stays unbound). **Tap / Hold / Double tap** pick the object's
 [actions](#actions) (*Default* = the model's or the type's action; navigate, url and perform-action
@@ -177,6 +192,22 @@ For the Sunseeker integration ([Sdahl1234/Sunseeker-lawn-mower](https://github.c
 pick the mower position entity with source GPS and the *Map* image entity (or *Live map* camera)
 as overlay. Check the attribute names in Developer tools → States first.
 
+**Quick setup.** The Mower tab starts with a **Setup** checklist (✓ / ✗): Entity · Map image ·
+Aligned · Mower colour (live map source) or, in auto mode, Static map · Mower picture · Found ·
+Mowed colour (optional). Each row scrolls to the control that fixes it; when everything required is
+done it collapses to *Setup complete*.
+
+For a Sunseeker (wireless models):
+1. **Entity**: the `lawn_mower.*` entity; source **Live map image** (or GPS when the position
+   entity has latitude / longitude).
+2. **Map overlay**: the *Live map* camera (`camera.<mower>_live_map`).
+3. **Auto mode** turns on by itself when the same device has a static *Map* image
+   (`image.<mower>_map`): the live map is compared with it each refresh, and the mower is found by its
+   product picture (`image.<mower>_mower_image`). Both entities can be set by hand; **Use colour
+   picks instead** switches back to the colour picks.
+4. **Align by points** until the map sits on the lawn.
+5. The error code sensor of the device is used automatically (see the warning below).
+
 In the **Mower** tab:
 1. Pick the position entity, the source and the floor (usually the ground floor).
 2. Calibrate: drive or carry the mower to a spot you can find on the plan (a corner of the lawn,
@@ -184,7 +215,7 @@ In the **Mower** tab:
    a GPS track north-up, two points also fix rotation and scale, three or more also correct skew.
    Spread the points far apart. The fit error is shown for 3+ points.
 3. Overlay: pick the image or camera entity, then line it up: **Align by points** (click a spot
-   on the map image, then the same spot on the model; two points fix position, rotation and size,
+   on the original map picture in the picker over the plan, then the same spot on the model; two points fix position, rotation and size,
    more refine it by least squares; **Done** or Esc ends), then fine-tune with the sliders or
    **Move with mouse**. Cameras refresh every N seconds; images when they change.
    The map lies on the model's surface under its centre (2 cm above the lawn, whatever the HA
@@ -195,28 +226,70 @@ In the **Mower** tab:
 The mower's own marker follows the live position and draws a trail for the current session.
 
 A pulsing **warning** appears over the mower (marker or model, also in top view): red when the mower
-entity's state is `error` or the optional **Error entity** (Mower tab) reports a problem (a
-`binary_sensor` that is on, or a sensor whose state is not empty / none / ok / no error / unknown /
-unavailable); yellow *Stuck?* when the state is `mowing` and the detected position (GPS, x/y or map
-image) moved less than 0.3 m for **Stuck after** minutes (default 5, 0 = off; never while docked,
-paused or returning). Tap it for the mower popup with the error text and Start / Dock.
+entity's state is `error` or the **Error entity** reports a problem; yellow *Stuck?* when the state
+is `mowing` and the detected position (GPS, x/y or map image) moved less than 0.3 m for **Stuck
+after** minutes (default 5, 0 = off; never while docked, paused or returning, offline, or waiting
+for the rain). Tap it for the mower popup with the error text and Start / Dock.
+
+**Error codes.** Without an Error entity in the Mower tab, a `sensor` of the mower's device whose
+id or name contains *error code* / *errorcode* is used. The rules:
+- a `binary_sensor`: on = problem;
+- a number: `0` = OK, anything else is an error code (the popup shows *Error code 12*);
+- empty, `unknown`, `unavailable`: no problem;
+- text: `ok`, `none`, `no error`, `no_error`, `normal`, `working`, `mowing`, `charging`, `docked`,
+  `idle`, `returning`, `paused`, `standby`, `sleeping`, `ready`, `home`, `off` are OK (any case);
+  anything else is a problem. **OK values** (comma-separated) adds your own words.
+
+**Mower device rows.** The mower popup lists the device's own entities when they exist (popup item
+`device`, in the default list; leave it out of a custom popup list to hide them): mower status,
+progress, battery, rain (*Wet* / *Drying, 12 min left*), work region with that zone's area,
+estimated time, *≈ N min left* (estimated × (1 − progress)) and started / finished, wifi strength,
+robot signal, cutter time left, total area, work records, error code, online. A progress sensor
+(id / name with *progress*, unit %) is the **Mowed** value (*progress sensor*), otherwise the map
+estimate. When the device's connectivity sensor is off, the mower marker is dimmed and an
+*offline* chip shows next to it (popup: *Offline since …*, no warning); when its rain sensor is
+*Wet*, a rain chip (`mdi:weather-rainy`), while drying `mdi:weather-partly-rainy` with the minutes
+left.
 
 ### Mower map how-to
 
 1. **Overlay**: pick the map image / camera entity. 2. **Align by points** until it sits on the lawn.
-3. **Pick background / mowed / no-mow colours** (Map picture). 4. Source **Live map image**, then
-**Pick mower colour**. 5. Optionally set an **Error entity** and **Stuck after** minutes for the warning.
+3. With a static map of the same device: nothing more (auto mode). Otherwise **Pick background /
+mowed / no-mow colours** (Map picture), source **Live map image**, then **Pick mower colour**.
+4. Optionally set an **Error entity** and **Stuck after** minutes for the warning.
+
+**Colour picker.** Every Pick button opens the original map picture over the plan (nothing in 3D is
+in the way): zoom with the wheel, a pinch or + / −, drag to pan; a loupe shows the exact pixel and
+its colour. A click adds that pixel's colour (median of 3×3) to the category; the picker stays open
+for more (**Done** / Esc closes). Each category (background, mowed, no-mow, mower icon) takes up to
+4 colours (e.g. two shades of unmowed green), shown as chips with × to remove, with one tolerance
+for all of them. **Show matches** tints the pixels the current colours and tolerance would catch.
+Without a loaded picture the pick falls back to clicking the map on the plan.
+
+**Auto mode** (static map + live map): pixels that did not change are transparent, lighter green on
+the lawn is drawn as mowed stripes, grey areas of the static map are shaded as no-mow, the icons are
+hidden. The mower is the changed blob that best matches its picture (normalized cross-correlation
+over rotations and a few scales): its centre is the position and the picture's top its heading. The
+dock (the large grey icon) is ignored. Mowed = mowed pixels / lawn pixels of the static map.
+
+**Heading.** With the live map source the mower model turns to the icon's heading: the picture
+match when its score is at least 0.5, else the icon's shape (principal axis, front where it
+tapers, for arrow or teardrop icons; round icons give none), else the direction of travel. Small
+changes are smoothed, jumps over 120° need two pictures in a row. **Mark front** (click the icon's
+front tip in the picker) stores a correction for icons whose front is not the pointed end. The
+Mower tab shows *Heading N° (mower picture | icon | movement)*.
 
 ### Map picture (Sunseeker live map)
 
 The live map is mostly dark green (unmowed), with light mowed stripes, grey no-mow areas, a boundary
 line and a large mower icon. Under **Map picture** in the Mower tab, each refresh of the picture is
 processed once before it is drawn on the lawn (large pictures on a copy at most 1024 px wide):
-- **Pick background colour**, then click the dark green on the map: it becomes transparent, so the
-  model's lawn shows through. Without a background colour the picture is drawn as it is.
+- **Pick background colour**, then click the dark green in the picker: it becomes transparent, so
+  the model's lawn shows through (pick again for a second shade). Without a background colour the
+  picture is drawn as it is.
 - **Pick mowed colour** (click a light stripe): mowed pixels stay as subtle light stripes.
 - **Pick no-mow colour** (click a grey area): no-mow areas are drawn dark, translucent and hatched.
-- Each picked colour has a **Tolerance** slider and a **Clear** link.
+- Each category has a **Tolerance** slider; × on a colour chip removes that colour.
 - **Hide mower icon on the map** (live map image source; on by default): the detected icon (plus
   3 px) is removed from the picture, so only the mower model or marker shows the mower.
 - **Clip to zone**: pixels outside the zone outline are not drawn. *Automatic* uses the model zone
@@ -233,13 +306,12 @@ processed once before it is drawn on the lawn (large pictures on a copy at most 
 
 Models without latitude / longitude still render a map with the mower on it. In the **Mower** tab:
 1. Pick the mower entity (e.g. its `lawn_mower.*` entity; its marker follows the detection) and
-   source **Live map image (mower icon colour)**.
+   source **Live map image (mower found on the map)**.
 2. Add the *Live map* camera (or *Map* image) as overlay and line it up with the plan
    (**Align by points**, sliders or **Move with mouse**). This alignment is the calibration: no
    calibration points.
-3. Click **Pick mower colour**, then click the mower icon on the overlay (Esc cancels). The colour
-   (median of the 5×5 pixels around the click) is shown as a swatch; widen **Colour tolerance** if
-   the icon is shaded, narrow it if the lawn picks up matches.
+3. Click **Pick mower colour**, then click the mower icon in the picker. The colours are shown as
+   chips; widen **Colour tolerance** if the icon is shaded, narrow it if the lawn picks up matches.
 4. The tab shows "Found at x, y (N px)" or "Mower icon not found". The image is read on every
    refresh (cameras: the overlay refresh interval, at least 2 s; images: when they change), only
    while the card is visible. Optionally read a different image entity with the same geometry
