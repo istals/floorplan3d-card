@@ -6,7 +6,7 @@ import { EditMode } from './edit-mode.js';
 import './card-editor.js';
 import { LayoutStore } from './storage.js';
 import { buildMarkers, registrySignature, iconFor, isActive, displayValue, areaName } from './registry.js';
-import { mergeFloors, roomFloorId, markerPositions, lightGlow, roomLabel } from './layout.js';
+import { mergeFloors, roomFloorId, markerPositions, lightGlow, roomLabel, roomLabelMode } from './layout.js';
 import {
   resolveLevels, resolveRoomAreas, modelRooms, combineRooms, levelFloorOverrides, bindingDiff, snapshotDiff, levelsFromFloorMap,
   measuredElevations, transformPoint,
@@ -864,7 +864,7 @@ class Floorplan3dCard extends HTMLElement {
       b.modelKeyNow = mb ? JSON.stringify([mb.levels, mb.rooms, this._modelAlign()]) : '';
     }
     const modelKey = b.modelKeyNow;
-    if (structure || (viewsChanged && !viewsOnly) || l.rooms !== b.rooms || l.floors !== b.lfloors || h.floors !== b.floors || h.areas !== b.areas
+    if (structure || (viewsChanged && !viewsOnly) || l.rooms !== b.rooms || (l.room_labels || null) !== (b.roomLabels ?? null) || l.floors !== b.lfloors || h.floors !== b.floors || h.areas !== b.areas
       || (mb && mb.manifest) !== b.manifest || modelKey !== b.modelKey) {
       b.manifest = mb && mb.manifest;
       b.modelKey = modelKey;
@@ -1578,6 +1578,7 @@ class Floorplan3dCard extends HTMLElement {
   _buildStructure(mb, viewsChanged = false) {
     const h = this._hass, b = this._built;
     b.rooms = this._layout.rooms;
+    b.roomLabels = this._layout.room_labels || null;
     b.lfloors = this._layout.floors;
     b.floors = h.floors;
     b.areas = h.areas;
@@ -1664,7 +1665,7 @@ class Floorplan3dCard extends HTMLElement {
   _pushStructure() {
     const hasModel = !!this._view.model;
     const st = this._viewState;
-    const mode = this._config.room_labels || 'size';
+    const mode = this._roomLabelMode();
     this._labelKey = this._labelKeyNow();
     const labelled = (r) => !hasModel || !!this._editing || (!!st && !st.overview && !!st.primary && r.levelId === st.primary);
     const rooms = (this._roomList || []).map((r) => ({
@@ -1675,6 +1676,11 @@ class Floorplan3dCard extends HTMLElement {
       walls: !hasModel, fills: !hasModel, outlines: !hasModel || !!this._editing, labels: true,
     });
     this._stage.classList.toggle('has-model', hasModel);
+  }
+
+  // Room labels: card YAML room_labels wins over the layout's (Edit -> Rooms), default name and size.
+  _roomLabelMode() {
+    return roomLabelMode(this._config, this._layout);
   }
 
   _labelKeyNow() {

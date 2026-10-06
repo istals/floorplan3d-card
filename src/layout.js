@@ -131,6 +131,12 @@ export function lightGlow(stateObj) {
 }
 
 // Room label text: name plus size (bounding width × depth for rectangles, area otherwise).
+// Room label mode: card YAML room_labels wins over the layout's (Edit -> Rooms); default name and size.
+export function roomLabelMode(config, layout) {
+  const v = (config && config.room_labels) || (layout && layout.room_labels) || 'size';
+  return ['size', 'name', 'none'].includes(v) ? v : 'size';
+}
+
 export function roomLabel(name, polygon, mode = 'size') {
   if (mode === 'none') return '';
   if (mode === 'name' || !polygon || polygon.length < 3) return name || '';

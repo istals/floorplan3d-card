@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeFloors, roomFloorId, wallSegments, markerPositions, lightGlow, roomLabel } from '../src/layout.js';
+import { mergeFloors, roomFloorId, wallSegments, markerPositions, lightGlow, roomLabel, roomLabelMode } from '../src/layout.js';
 import { pointInPolygon } from '../src/placement.js';
 
 const hass = {
@@ -145,5 +145,14 @@ describe('markerPositions: attached pins', () => {
   it('fall back to the stored position when the object is not there', () => {
     const pos = markerPositions(markers, layout, {}, floors, () => null);
     expect(pos.get('device:a')).toEqual({ x: 1, y: 1, z: 1, floorId: 'g', auto: false });
+  });
+});
+
+describe('roomLabelMode', () => {
+  it('card YAML wins over the layout, default name and size', () => {
+    expect(roomLabelMode({}, {})).toBe('size');
+    expect(roomLabelMode({}, { room_labels: 'name' })).toBe('name');
+    expect(roomLabelMode({ room_labels: 'none' }, { room_labels: 'name' })).toBe('none');
+    expect(roomLabelMode({}, { room_labels: 'bogus' })).toBe('size');
   });
 });

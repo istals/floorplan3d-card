@@ -1178,6 +1178,11 @@ export class EditMode {
         </div></section>`;
     }
 
+    const yamlLabels = this.card._config && this.card._config.room_labels;
+    const rl = yamlLabels || this.layout.room_labels || 'size';
+    out += `<label class="room-labels">Room labels <select data-field="room-labels" ${yamlLabels ? 'disabled title="Set in the card YAML (room_labels)"' : ''}>
+      ${[['size', 'Name and size'], ['name', 'Name only'], ['none', 'None']].map(([v, t]) => `<option value="${v}" ${v === rl ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      ${yamlLabels ? '<p class="hint">Set in the card YAML (room_labels), which wins over this setting.</p>' : ''}`;
     const byFloor = new Map(this.floors.map((f) => [f.id, []]));
     byFloor.set('', []);
     for (const a of areas) (byFloor.get(a.floor_id) || byFloor.get('')).push(a);
@@ -2558,6 +2563,11 @@ export class EditMode {
     if (f && f.startsWith('vw-')) this._viewsChange(f, el);
     else if (f === 'room-area' && sel) this.commit(E.upsertRoom(this.layout, { ...sel, area_id: el.value }));
     else if (f === 'room-outdoor' && sel) this.commit(E.upsertRoom(this.layout, { ...sel, outdoor: el.checked }));
+    else if (f === 'room-labels') {
+      const l = { ...this.layout };
+      if (el.value === 'size') delete l.room_labels; else l.room_labels = el.value;
+      this.commit(l);
+    }
     else if (f === 'room-floor' && sel) {
       const area = this.hass.areas && this.hass.areas[sel.area_id];
       const next = { ...sel, floor_id: el.value };

@@ -109,6 +109,22 @@ try {
   check('"All" chip hidden while editing', !(await ev(`[...${card}.shadowRoot.querySelectorAll(".chip")].some(b => b.textContent === "All")`)));
   check('garage listed as missing', await ev(`[...${card}.shadowRoot.querySelectorAll(".panel li")].some(li => li.textContent.includes("Garage") && li.textContent.includes("missing"))`));
 
+  // Rooms tab: room labels (Name and size / Name only / None) stored in the layout
+  const labelTexts = () => ev(`[...${card}.shadowRoot.querySelectorAll('.fp-room-label')].map((e) => e.textContent).filter(Boolean)`);
+  const setLabels = (v) => ev(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=room-labels]'); el.value = '${v}'; el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  check('room labels: name and size by default', (await labelTexts()).some((t) => t.includes('×')), JSON.stringify((await labelTexts()).slice(0, 3)));
+  await setLabels('name');
+  await sleep(300);
+  let lt = await labelTexts();
+  check('room labels: name only, stored in the layout', (await ev(`${card}._layout.room_labels`)) === 'name' && lt.length > 0 && !lt.some((t) => t.includes('×')), JSON.stringify(lt.slice(0, 3)));
+  await setLabels('none');
+  await sleep(300);
+  check('room labels: none', (await labelTexts()).length === 0);
+  await setLabels('size');
+  await sleep(300);
+  lt = await labelTexts();
+  check('room labels: back to name and size (key removed)', (await ev(`'room_labels' in ${card}._layout`)) === false && lt.some((t) => t.includes('×')));
+
   // draw the garage west of the bedroom, sharing its wall (x = 0)
   check('start drawing', await rowButton('Garage', 'Draw'));
   await ev(`(() => { const v = ${card}._view; v.ortho.zoom = 0.75; v.ortho.updateProjectionMatrix(); v.dirty = true; })()`);
