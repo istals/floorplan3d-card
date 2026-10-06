@@ -2,6 +2,7 @@
 // colour, the group chain) and read-only values. popupRows() is the pure part (unit-tested).
 import { typeOf } from './types.js';
 import { toggleCall, popupLinks } from '../actions.js';
+import { applyBadges } from '../badge-dom.js';
 
 export { toggleCall };
 const KINDS = new Set(['toggle', 'brightness', 'color', 'state', 'battery', 'power', 'energy', 'temperature', 'mode', 'start_dock']);
@@ -160,7 +161,7 @@ export class ObjectPopup {
     this._anchor = anchorWorld && anchorWorld.clone ? anchorWorld.clone() : anchorWorld;
     const el = document.createElement('div');
     el.className = 'fp-popup';
-    el.innerHTML = `<div class="fp-pop-head"><span class="fp-pop-title"></span><button class="fp-pop-x" title="Close">×</button></div><div class="fp-pop-rows"></div>`;
+    el.innerHTML = `<div class="fp-pop-head"><span class="fp-pop-badges"></span><span class="fp-pop-title"></span><button class="fp-pop-x" title="Close">×</button></div><div class="fp-pop-rows"></div>`;
     el.querySelector('.fp-pop-title').textContent = obj.label || obj.id;
     for (const t of STOP) el.addEventListener(t, (e) => e.stopPropagation()); // no HA long-press / orbit / marker
     el.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.close(); }); // window never sees it (stopped)
@@ -182,6 +183,8 @@ export class ObjectPopup {
     const r = this._id ? this.resolve(this._id) : null;
     if (!r) return null;
     this._links = [];
+    this._badge = r.badge || null;
+    this._dark = !!r.dark;
     const rows = popupRows(r.obj, r.chain, r.states || {}, r.groups || {}, r.popup || null);
     // read-only rows from the card (e.g. the mower's Stripes / Mowed), above the links
     if (Array.isArray(r.extra) && r.extra.length) {
@@ -197,6 +200,7 @@ export class ObjectPopup {
     if (!this.el) return;
     const rows = this._rows();
     if (!rows) { this.close(); return; }
+    applyBadges(this.el.querySelector('.fp-pop-badges'), this._badge || null, !!this._dark);
     const key = rows.map((r) => `${r.kind}:${r.entity || ''}${r.kind === 'link' ? r.label : ''}`).join('|');
     const box = this.el.querySelector('.fp-pop-rows');
     if (key !== this._key) {

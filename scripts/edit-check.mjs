@@ -3,11 +3,11 @@
 // Writes screenshots/edit-*.png and exits non-zero on any failed step or page error.
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDemo, root } from './lib/demo-browser.mjs';
+import { openDemo, root, brandRequests } from './lib/demo-browser.mjs';
 
 const shots = path.join(root, 'screenshots');
 fs.mkdirSync(shots, { recursive: true });
-const { page, errors, close } = await openDemo({ height: '560px' }, { width: 1500, height: 680 });
+const { page, errors, close } = await openDemo({ height: '560px' }, { width: 1500, height: 680 }, { brands: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
 const check = (name, ok, detail = '') => {
@@ -83,6 +83,7 @@ const stems = () => ev(`(() => { const v = ${card}._view; return [v.stems.size, 
 
 try {
   await ev(`window.__demoMower = ${card}._layout.mower`);
+  await ev(`window.__demoLayout = ${card}._layout`);
   // markers are anchored at their dot (the value line hangs below it), also after orbit and zoom
   await settle();
   let off = await dotOffset();
@@ -329,6 +330,43 @@ try {
   await ev(`${card}._edit.commit({ ...${card}._edit.layout, mower: { ...${card}._edit.layout.mower, image: { color: ${JSON.stringify(col)}, tolerance: 40, min_pixels: 4 } } })`);
   await page.screenshot({ path: path.join(shots, 'edit-mower-image.png') });
   await ev('window.__demoMowerPaused = false');
+
+  // device badges: status dots and the low battery chip by default, integration logos once switched on
+  await ev(`${card}._edit.commit({ ...window.__demoLayout, mower: ${card}._edit.layout.mower })`);
+  await panelClick('Devices');
+  await sleep(300);
+  const badgeState = () => ev(`(() => { const s = ${card}.shadowRoot, el = (id) => ${card}._markerEls.get(id);
+    const q = (id, sel) => { const e = el(id); return e ? e.querySelector(':scope > ' + sel) : null; };
+    const img = q('device:front_lock', '.fp-logo');
+    return { logos: s.querySelectorAll('.fp-marker > .fp-logo').length, dots: s.querySelectorAll('.fp-marker > .fp-status').length,
+      batt: s.querySelectorAll('.fp-marker > .fp-batt').length,
+      smoke: (q('device:smoke_hall', '.fp-status') || {}).dataset?.status, lock: (q('device:front_lock', '.fp-status') || {}).dataset?.status,
+      chip: (q('device:front_lock', '.fp-batt') || {}).textContent, lockLogo: !!img && img.complete && img.naturalWidth > 0,
+      cover: !!q('device:living_blinds', '.fp-logo'), checks: [...s.querySelectorAll('[data-field=badge]')].map((c) => c.dataset.key + ':' + c.checked) }; })()`);
+  let bs = await badgeState();
+  check('badges: status dots and low battery chip by default, no logos', bs.logos === 0 && bs.dots > 10 && bs.batt === 1 && bs.chip === '12 %'
+    && bs.checks.join() === 'integration:false,status:true,battery:true', JSON.stringify(bs));
+  check('badges: unavailable is red, low battery is yellow', bs.smoke === 'red' && bs.lock === 'yellow', JSON.stringify(bs));
+  const toggle = async (key) => { await ev(`(() => { const c = ${card}.shadowRoot.querySelector('[data-field=badge][data-key=${key}]'); c.click(); })()`); await sleep(300); };
+  await toggle('integration');
+  await page.waitForFunction(`(() => { const e = ${card}._markerEls.get('device:front_lock'); const i = e && e.querySelector('.fp-logo'); return !!i && i.complete && i.naturalWidth > 0; })()`, { timeout: 5000 }).catch(() => {});
+  bs = await badgeState();
+  check('badges: integration logos appear (stored in the layout)', bs.logos > 5 && bs.lockLogo && (await layout()).badges.integration === true, JSON.stringify(bs));
+  check('badges: a platform without a logo shows no image', !bs.cover && brandRequests.includes('nobrand/icon'), JSON.stringify(brandRequests.slice(0, 12)));
+  const reqs = brandRequests.length;
+  await ev(`${card}._refreshStates()`);
+  await sleep(100);
+  check('badges: no repeated logo requests', brandRequests.length === reqs, `${reqs} -> ${brandRequests.length}`);
+  await toggle('status');
+  await toggle('battery');
+  await toggle('integration');
+  bs = await badgeState();
+  check('badges: toggles hide them', bs.logos === 0 && bs.dots === 0 && bs.batt === 0, JSON.stringify(bs));
+  await toggle('status');
+  await toggle('battery');
+  bs = await badgeState();
+  check('badges: back on', bs.dots > 10 && bs.batt === 1, JSON.stringify(bs));
+  await page.screenshot({ path: path.join(shots, 'edit-badges.png') });
 
   // leave edit mode: markers behave as in view mode again
   await ev(`${card}.shadowRoot.querySelector("button.edit").click()`);

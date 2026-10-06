@@ -86,8 +86,9 @@ device('living_window', 'Terrace door', 'living_room', [['binary_sensor.terrace_
 
 device('hall_light', 'Hall light', 'hall', [light('light.hall', false)]);
 device('front_door', 'Front door', 'hall', [['binary_sensor.front_door', 'off', { device_class: 'door' }]]);
-device('front_lock', 'Front lock', 'hall', [['lock.front_door', 'locked']]);
-device('smoke_hall', 'Smoke detector', 'hall', [['binary_sensor.smoke_hall', 'off', { device_class: 'smoke' }]]);
+device('front_lock', 'Front lock', 'hall', [['lock.front_door', 'locked'],
+  sensor('sensor.front_lock_battery', 12, 'battery', '%').concat([{ entity_category: 'diagnostic' }])]); // low battery badge
+device('smoke_hall', 'Smoke detector', 'hall', [['binary_sensor.smoke_hall', 'unavailable', { device_class: 'smoke' }]]); // red status dot
 
 device('kitchen_main', 'Kitchen light', 'kitchen', [light('light.kitchen', true, 255)]);
 device('kitchen_island', 'Island light', 'kitchen', [light('light.kitchen_island', false)]);
@@ -140,6 +141,14 @@ device('demo_climate', 'Living climate unit', 'living_room', [['climate.demo_liv
   { current_temperature: 21.5, temperature: 22, hvac_action: 'heating', hvac_modes: ['off', 'heat', 'cool', 'auto'] }]]);
 device('demo_charger', 'EV charger', 'garden', [['sensor.demo_charger', 'charging', { power: 7.4, energy: 12.6 }]]);
 void temp;
+// integration (platform) per entity for the logo badges; 'nobrand' has no logo (the badge stays hidden)
+const PLATFORMS = { light: 'hue', switch: 'shelly', lock: 'zwave_js', binary_sensor: 'zha', fan: 'shelly', media_player: 'cast',
+  climate: 'tado', lawn_mower: 'sunseeker', cover: 'nobrand' };
+for (const [eid, e] of Object.entries(entities)) {
+  const p = PLATFORMS[eid.split('.')[0]];
+  if (p && !e.platform) e.platform = p;
+  if (e.device_id === 'front_lock') e.platform = 'zwave_js';
+}
 // weather (no device, no marker): clouds and light follow cloud_coverage; ?clouds=60 starts cloudy
 const demoClouds = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('clouds')) || 0;
 states['weather.demo'] = { entity_id: 'weather.demo', state: demoClouds ? 'partlycloudy' : 'sunny', attributes: { friendly_name: 'Demo weather', cloud_coverage: demoClouds } };

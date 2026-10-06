@@ -17,6 +17,8 @@ import {
   defaultViewId, viewCut, orderViews, unmatchedSelectors, sectionPlane, sectionCamera, zoomToFor, roomAt, exteriorShown, cameraToCard, topCameraToCard,
 } from './views.js';
 import { readSource, mowerTransform, overlayUrl } from './mower.js';
+import { badgeOptions, badgeInfo } from './badges.js';
+import { applyBadges } from './badge-dom.js';
 import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from './mower-warning.js';
 import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint } from './mower-image.js';
 import { ObjectLayer } from './objects/layer.js';
@@ -104,6 +106,21 @@ const STYLE = `
     background: var(--card-background-color, #fff); color: var(--primary-text-color);
     box-shadow: 0 1px 3px rgba(0,0,0,.2); }
   .fp-val:empty { display: none; }
+  /* device badges: integration logo (top right), status dot (bottom right), low battery chip (above) */
+  .fp-marker > .fp-logo { position: absolute; top: -6px; right: -8px; width: 14px; height: 14px; box-sizing: border-box; padding: 1px;
+    object-fit: contain; border-radius: 4px; background: var(--card-background-color, #fff); box-shadow: 0 0 0 1px var(--divider-color, rgba(0,0,0,.15)), 0 1px 2px rgba(0,0,0,.25); pointer-events: none; }
+  .fp-status { display: inline-block; width: 7px; height: 7px; border-radius: 50%; box-sizing: content-box;
+    border: 1.5px solid var(--card-background-color, #fff); background: #9e9e9e; pointer-events: none; }
+  .fp-marker > .fp-status { position: absolute; right: -1px; bottom: -1px; }
+  .fp-status[data-status="green"] { background: #43a047; }
+  .fp-status[data-status="grey"] { background: #9e9e9e; }
+  .fp-status[data-status="red"] { background: #e53935; }
+  .fp-status[data-status="yellow"] { background: #fbc02d; }
+  .fp-batt { position: absolute; bottom: calc(100% + 1px); left: 50%; transform: translateX(-50%); font-size: 9.5px; font-weight: 700; line-height: 13px;
+    padding: 0 4px; border-radius: 7px; white-space: nowrap; background: #fbc02d; color: #212121; box-shadow: 0 1px 2px rgba(0,0,0,.35); pointer-events: none; }
+  .fp-pop-badges { display: inline-flex; align-items: center; gap: 4px; }
+  .fp-pop-badges:empty { display: none; }
+  .fp-pop-badges .fp-logo { width: 16px; height: 16px; object-fit: contain; }
   .fp-popup { position: absolute; left: 0; top: 0; z-index: 3; min-width: 190px; max-width: 260px; padding: 8px 10px 10px;
     box-sizing: border-box; overflow: auto;
     border-radius: 12px; background: var(--card-background-color, #fff); color: var(--primary-text-color);
@@ -701,7 +718,8 @@ class Floorplan3dCard extends HTMLElement {
           const wt = this._warningText();
           if (wt) extra.unshift({ kind: 'info', label: wt.label, value: wt.value });
         }
-        return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra };
+        return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra,
+          badge: this._objectBadge(o.binding && o.binding.entity), dark: !!(this._built.theme && this._built.theme.dark) };
       },
     });
     this._view.onRender = () => this._popup.position();
@@ -834,8 +852,9 @@ class Floorplan3dCard extends HTMLElement {
       this._mowerFn = m && m.entity ? mowerTransform(m) : null;
       mower = true;
     }
-    if (h.states !== b.states || markers || mower) {
+    if (h.states !== b.states || markers || mower || l.badges !== b.badges || structure) {
       b.states = h.states;
+      b.badges = l.badges;
       this._refreshStates();
       this._refreshMower(mower);
     }
@@ -2097,9 +2116,24 @@ class Floorplan3dCard extends HTMLElement {
     return el;
   }
 
+  // Badge toggles: layout (Edit -> Devices), then the card YAML `badges:` per key.
+  badgeOpts() {
+    return badgeOptions(this._layout && this._layout.badges, this._config && this._config.badges);
+  }
+
+  // Popup header badges for a model object's bound entity (status dot + logo, no battery chip).
+  _objectBadge(entity) {
+    const h = this._hass, o = this.badgeOpts();
+    if (!entity || !h || !(o.status || o.integration)) return null;
+    const reg = h.entities && h.entities[entity];
+    return badgeInfo(h, { entityId: entity, deviceId: reg && reg.device_id }, { ...o, battery: false });
+  }
+
   _refreshStates() {
     const h = this._hass;
     const glows = [];
+    const bo = this.badgeOpts(), anyBadge = bo.integration || bo.status || bo.battery;
+    const dark = !!(this._built.theme && this._built.theme.dark);
     for (const m of this._markers) {
       const el = this._markerEls.get(m.id);
       if (!el) continue;
@@ -2113,6 +2147,7 @@ class Floorplan3dCard extends HTMLElement {
       el.querySelector('.fp-val').textContent = own || (m.secondaryId ? displayValue(h, m.secondaryId) : '');
       const name = st && st.attributes.friendly_name;
       el.title = m.name + (name && name !== m.name ? ' – ' + name : '');
+      if (anyBadge || el._fpBadgeSig) applyBadges(el, anyBadge ? badgeInfo(h, m, bo) : null, dark);
 
       if (m.domain === 'light') {
         const g = lightGlow(st);

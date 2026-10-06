@@ -687,6 +687,9 @@ try {
       vis: el.style.visibility, t: el.style.transform }; })()`);
   let pp = await pop();
   check('hold opens the popup (toggle + brightness) without toggling', !!pp && pp.title === 'Hall ceiling lamp' && pp.rows.join() === 'toggle,brightness' && pp.vis !== 'hidden' && (await calls()) === n0, JSON.stringify(pp));
+  const head = await page.evaluate(`(() => { const b = ${card}.shadowRoot.querySelector('.fp-popup .fp-pop-badges');
+    return b && { status: (b.querySelector('.fp-status') || {}).dataset?.status || null, logo: !!b.querySelector('.fp-logo') }; })()`);
+  check('popup header shows the status dot (no logo by default)', !!head && head.status === (await hall() === 'on' ? 'green' : 'grey') && !head.logo, JSON.stringify(head));
   await page.screenshot({ path: path.join(root, 'screenshots', 'object-popup.png') });
   await page.evaluate(`(() => { const r = ${card}.shadowRoot.querySelector('.fp-popup .brightness input'); r.value = '100'; r.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   const last = await page.evaluate('JSON.stringify(window.__serviceCalls[window.__serviceCalls.length - 1])');

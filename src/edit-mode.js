@@ -1116,6 +1116,16 @@ export class EditMode {
     return buildMarkers(this.hass, { ...this.layout, hidden: [] }, { group_by: this.card._config.group_by });
   }
 
+  // Badge toggles (layout.badges); keys set in the card YAML `badges:` win and are shown disabled.
+  _badgesHtml() {
+    const o = this.card.badgeOpts(), yaml = (this.card._config && this.card._config.badges) || {};
+    const row = (k, label) => {
+      const fixed = typeof yaml[k] === 'boolean';
+      return `<label class="check"><input type="checkbox" data-field="badge" data-key="${k}" ${o[k] ? 'checked' : ''} ${fixed ? 'disabled' : ''}> ${label}${fixed ? ' <span class="dim">(card YAML)</span>' : ''}</label>`;
+    };
+    return `<div class="sub">Badges</div>${row('integration', 'Show integration logos')}${row('status', 'Show status')}${row('battery', 'Show low battery')}`;
+  }
+
   _devicesTab() {
     const all = this._allMarkers();
     const byId = new Map(all.map((m) => [m.id, m]));
@@ -1156,6 +1166,7 @@ export class EditMode {
       }
     }
 
+    out += this._badgesHtml();
     const unplaced = all.filter((x) => !hidden.includes(x.id) && !hidden.includes(x.entityId) && !(this.card._positions || new Map()).has(x.id));
     out += `<div class="sub">Devices without a room (${unplaced.length})</div>`;
     if (unplaced.length) {
@@ -2427,6 +2438,9 @@ export class EditMode {
       this.setMower({ ok_values: v.length ? v : undefined });
     } else if (f === 'mower-stuck-min') {
       this.setMower({ stuck_minutes: Math.max(0, Math.min(120, Math.round(Number(el.value) || 0))) });
+    } else if (f === 'badge') {
+      this.commit({ ...this.layout, badges: { ...(this.layout.badges || {}), [el.dataset.key]: el.checked } });
+      this.render();
     } else if (f === 'mower-trail') {
       this.setMower({ trail: el.checked });
     } else if (f === 'ov-edit-only') {

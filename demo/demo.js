@@ -26,6 +26,7 @@ for (const c of cards) {
     // example actions (see README): double tap the mower marker to open the garden camera
     actions: { 'lawn_mower.demo': { double_tap_action: { action: 'more-info', entity: 'camera.garden' } } },
     ...(params.get('merge') === '0' ? { merge: false } : {}), // ?merge=0: every model part its own mesh
+    ...(params.get('logos') === '1' ? { badges: { integration: true } } : {}), // ?logos=1: integration logos on
   });
 }
 
