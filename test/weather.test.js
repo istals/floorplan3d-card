@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   cloudCoverage, weatherEntity, cloudLight, cloudCount, coverageChanged, CLOUD_MAX,
-  cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir, CLOUD_DRIFT_DEG, CLOUD_DRIFT_RATE,
+  cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir, CLOUD_DRIFT_DEG, CLOUD_DRIFT_RATE, cloudFade, cloudNear,
 } from '../src/weather.js';
 
 const w = (state, attributes = {}) => ({ entity_id: 'weather.x', state, attributes });
@@ -120,5 +120,19 @@ describe('cloud placement', () => {
       expect(Math.abs(dAz) / 0.1).toBeLessThanOrEqual(1.0001);
       prev = p;
     }
+  });
+});
+
+describe('cloudFade / cloudNear', () => {
+  const c = [0, 0, 0];
+  it('full up to 50 deg camera elevation, gone from 65 deg', () => {
+    expect(cloudFade([30, 20, 0], c)).toBe(1); // ~34 deg
+    expect(cloudFade([10, Math.tan(57.5 * Math.PI / 180) * 10, 0], c)).toBeCloseTo(0.5);
+    expect(cloudFade([1, 40, 1], c)).toBe(0); // high orbit
+    expect(cloudFade([0, 0, 0], c)).toBe(0);
+  });
+  it('near: closer than the cloud size', () => {
+    expect(cloudNear([0, 0, 0], [3, 0, 0], 5)).toBe(true);
+    expect(cloudNear([0, 0, 0], [30, 0, 0], 5)).toBe(false);
   });
 });

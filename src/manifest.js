@@ -1,7 +1,7 @@
 // Reads the fp tags of a house model (docs/model-builder-guide.md). Works on any node tree
 // through an adapter, so the card (three.js nodes) and tools/check-model.mjs (glTF JSON) share it.
 import { normSection, normTopCamera } from './views.js';
-import { badTargets, aimWarning } from './objects/aim.js';
+import { badTargets, aimWarning, aimsUp } from './objects/aim.js';
 
 export const KINDS = ['level', 'room', 'zone', 'object'];
 export const ROLES = ['storey', 'basement', 'exterior', 'roof'];
@@ -126,7 +126,8 @@ export function buildManifest(adapter) {
   if (adapter.position) {
     const v3 = (a) => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
     const spots = m.objects.filter((o) => o.hints && (o.hints.beam === 'spot' || o.hints.beam === 'up') && v3(o.hints.target))
-      .map((o) => ({ id: o.id, group: o.group, pos: adapter.position(o.node), target: o.hints.target, distance: o.hints.distance }));
+      .map((o) => ({ id: o.id, group: o.group, pos: adapter.position(o.node), target: o.hints.target, distance: o.hints.distance,
+        up: aimsUp(o), targetOk: o.hints.target_ok === true }));
     const w = aimWarning(badTargets(spots));
     if (w) m.warnings.push(w);
   }

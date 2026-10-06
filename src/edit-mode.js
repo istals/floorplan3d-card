@@ -48,7 +48,7 @@ export function sliderHtml(field, label, min, max, step, value, unit = '') {
   const v = Number(value);
   return `<label class="slider"><span class="lab">${label}</span><span class="slrow">
     <input type="range" data-field="${field}" min="${min}" max="${max}" step="${step}" value="${v}">
-    <input type="number" class="slnum" data-num-for="${field}" min="${min}" max="${max}" step="${step}" value="${fmt(v)}" aria-label="${label}"><span class="unit">${unit}</span></span></label>`; // the unit column also keeps unitless rows aligned
+    <input type="text" inputmode="decimal" pattern="-?[0-9]*[.,]?[0-9]*" class="slnum" data-num-for="${field}" min="${min}" max="${max}" step="${step}" value="${fmt(v)}" aria-label="${label}"><span class="unit">${unit}</span></span></label>`; // the unit column also keeps unitless rows aligned
 }
 
 
@@ -83,12 +83,22 @@ export class EditMode {
     // arrow keys in a slider's number: one step, applied at once
     this.panel.addEventListener('keydown', (e) => {
       const num = e.target;
-      if (!num.dataset || !num.dataset.numFor || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      if (!num.dataset || !num.dataset.numFor) return;
+      if (e.key === 'Enter') { e.preventDefault(); clearTimeout(this._numTimer); this._commitSliderNumber(num); return; }
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       e.preventDefault();
       const cur = Number(String(num.value).replace(',', '.'));
-      const step = Number(num.step) || 1;
-      num.value = String((Number.isFinite(cur) ? cur : Number(num.min) || 0) + (e.key === 'ArrowUp' ? step : -step));
-      this._commitSliderNumber(num);
+      const step = Number(num.getAttribute('step')) || 1, min = num.getAttribute('min'), max = num.getAttribute('max');
+      const v = E.sliderValue((Number.isFinite(cur) ? cur : Number(min) || 0) + (e.key === 'ArrowUp' ? step : -step), min, max, step);
+      if (v === null) return;
+      num.value = fmt(v);
+      this._sliding = true; // hold renders; saved 400 ms after the last key
+      clearTimeout(this._numTimer);
+      const field = num.dataset.numFor;
+      this._numTimer = setTimeout(() => {
+        const el = num.isConnected ? num : this.panel.querySelector(`input.slnum[data-num-for="${field}"]`);
+        if (el) { el.value = fmt(v); this._commitSliderNumber(el); }
+      }, 400);
     });
     this.panel.addEventListener('focusout', (e) => { if (e.target.dataset && e.target.dataset.numFor) setTimeout(release, 0); });
     window.addEventListener('pointerup', release);
@@ -337,7 +347,7 @@ export class EditMode {
     if (owner.kind === 'room' || owner.kind === 'zone') {
       const cur = this.layout.model || {};
       this.picking = null;
-      this.message = { text: `Linked ${owner.label || owner.id} to ${areaName(this.hass, pk.areaId)}` };
+      this.message = { text: `Linked ${owner.kind === 'object' ? this.card.objectLabel(owner) : owner.label || owner.id} to ${areaName(this.hass, pk.areaId)}` };
       this.setModelProps({ rooms: { ...(cur.rooms || {}), [owner.id]: { ...(cur.rooms || {})[owner.id], area: pk.areaId } } });
       this.refreshOverlay();
       return;
@@ -894,7 +904,7 @@ export class EditMode {
     this._setDragTarget(d, obj);
     // preview: a ring on the surface, its face tinted, "Attach: <object>" over a model object
     const target = obj && layer.objectAt(obj.id);
-    const label = obj ? 'Attach: ' + ((target && target.obj && target.obj.label) || obj.id) : null;
+    const label = obj ? 'Attach: ' + (target && target.obj ? this.card.objectLabel(target.obj) : obj.id) : null;
     this.view.setSurfacePreview({ point: hit.point, normal: hit.normal, tri: hit.tri, label });
     this.view.moveMarker(d.id, pin.x, pin.y, pin.z, floorId);
   }
@@ -1099,7 +1109,7 @@ export class EditMode {
       }
       out += `<section class="box"><h3>${esc(m.name)}</h3>
         <p class="dim">${esc(m.entityId)}${m.areaId ? ' · ' + esc(areaName(this.hass, m.areaId)) : ''}</p>
-        <p>${attached ? `Attached to ${esc((target && target.obj.label) || attached)}${target ? '' : ' (not in the model)'}` : pinned ? 'Pinned' : 'Auto placed'}</p>
+        <p>${attached ? `Attached to ${esc(target ? this.card.objectLabel(target.obj) : attached)}${target ? '' : ' (not in the model)'}` : pinned ? 'Pinned' : 'Auto placed'}</p>
         ${pos ? `<label>Height above floor (m) <input type="number" step="0.05" min="0" data-field="marker-z" value="${fmt(pos.z)}"></label>` : ''}
         <div class="row">
           ${attached ? '<button data-act="detach">Detach</button>' : ''}
@@ -1464,16 +1474,17 @@ export class EditMode {
     const idx = this.card.viewIndex();
     const mb = this.card._mb;
     if (!idx || !mb) return null;
-    if (this._treeCache && this._treeCache.idx === idx) return this._treeCache.tree;
+    const objs = this.layout && this.layout.objects; // custom object labels (Objects tab)
+    if (this._treeCache && this._treeCache.idx === idx && this._treeCache.objs === objs) return this._treeCache.tree;
     const labels = {};
     for (const l of mb.manifest.levels) labels['level:' + l.id] = l.label;
     for (const r of mb.manifest.rooms) labels[r.kind + ':' + r.id] = r.label;
-    for (const o of mb.manifest.objects || []) if (o.label) labels['object:' + o.id] = o.label;
+    for (const o of mb.manifest.objects || []) labels['object:' + o.id] = this.card.objectLabel(o);
     const tree = viewTree(idx, labels);
     const rowOf = new Map(); // node position -> selector of the row listing it
     for (const r of [...tree.tree, ...tree.groups]) for (const i of r.nodes) if (!rowOf.has(i)) rowOf.set(i, r.sel);
     tree.rowOf = rowOf;
-    this._treeCache = { idx, tree };
+    this._treeCache = { idx, objs, tree };
     return tree;
   }
 

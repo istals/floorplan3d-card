@@ -14,7 +14,7 @@ import { outdoorShown, sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoo
 import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
-import { cloudLight, cloudCount, coverageChanged, cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir } from './weather.js';
+import { cloudLight, cloudCount, coverageChanged, cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir, cloudFade, cloudNear } from './weather.js';
 import {
   castsShadow, shadowInfo, isCoplanarOverlay, coplanarWinners, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
 } from './render-rules.js';
@@ -35,7 +35,7 @@ const SHADOW_MESH_M = 30; // untagged models: meshes up to this size make the su
 const SHADOW_MARGIN_M = 4;
 const OCCLUSION_DELAY_MS = 150; // camera still this long -> occlusion pass
 const OCCLUSION_MAX = 300; // markers per pass
-const CLOUD_FRAME_MS = 100; // cloud drift: at most 10 frames per second
+const CLOUD_FRAME_MS = 333; // cloud drift: at most 3 frames per second
 const CLOUD_NIGHT = new THREE.Color(0x4a5468); // clouds at night: dim grey-blue
 const CLOUD_DAY = new THREE.Color(0xffffff);
 const SKY_FRAME_MARGIN_M = 1; // top view: margin around a visible sun / moon disc
@@ -309,6 +309,7 @@ export class FloorplanView {
     this.sky = { night: 0, sunDir: null, sun: 1 };
     // weather: coverage % applied (null before the first), clouds option, drift time (s), last drift frame
     this.weather = { applied: null, show: true, t: 0, frameAt: 0, shown: 0 };
+    this.onScreen = true; // the card is on screen (IntersectionObserver in the card); drift only then
     this._cloudSprites = null; // created on first coverage > 0, reused
     this._cloudMats = null; // one SpriteMaterial per texture variant
 
@@ -1136,7 +1137,7 @@ export class FloorplanView {
     if (this.skySprites.moon) this.skySprites.moon.material.opacity = L.moon;
     if (this._cloudMats) {
       for (const m of this._cloudMats) {
-        m.opacity = 0.4 + 0.55 * c;
+        m.opacity = (0.4 + 0.55 * c) * (this._cloudFadeK ?? 1);
         m.color.copy(CLOUD_DAY).lerp(CLOUD_NIGHT, t);
       }
     }
@@ -1160,16 +1161,20 @@ export class FloorplanView {
   }
 
   // Clouds on the dome around the visible sun (else the moon), drifting with weather.t.
+  // 3D only (top view looks down on the dome); they fade out in a high orbit (50..65 deg camera
+  // elevation, one opacity for all: uniforms only), and a cloud the camera is inside is hidden.
   _placeClouds(on) {
     const w = this.weather, d = this._dome;
-    const n = on && w.show ? cloudCount(w.applied || 0) : 0;
+    const n = on && w.show && this.mode !== 'top' ? cloudCount(w.applied || 0) : 0;
     if (n && !this._cloudSprites) this._makeClouds();
     w.shown = n;
     if (!this._cloudSprites) return;
     const { sun, moon } = this.skyBodies;
     const body = sun && sun.dir[1] > SUN_MIN_Y ? sun : moon && moon.dir[1] > 0 ? moon : null;
     const anchor = body ? azElFromDir(body.dir) : { az: 200, el: 35 };
-    const slots = cloudSlots();
+    const slots = cloudSlots(), cam = this.camera.position.toArray();
+    const fade = n ? cloudFade(cam, d.centre.toArray()) : 1;
+    if (fade !== this._cloudFadeK) { this._cloudFadeK = fade; this._cloudLook(); }
     this._cloudSprites.forEach((s, i) => {
       s.visible = i < n;
       if (!s.visible) return;
@@ -1177,6 +1182,7 @@ export class FloorplanView {
       s.position.copy(d.centre).addScaledVector(new THREE.Vector3(...dirFromAzEl(p.az, p.el)), d.radius * 0.985);
       const size = slots[i].size * d.radius;
       s.scale.set(size, size * 0.5, 1);
+      if (!fade || cloudNear(cam, s.position.toArray(), size)) s.visible = false;
     });
   }
 
@@ -2578,17 +2584,39 @@ export class FloorplanView {
     this._scheduleOcclusion(0);
   }
 
-  // Cloud drift while clouds show and the page is visible: at most one frame per CLOUD_FRAME_MS.
+  // Cloud drift: at most one frame per CLOUD_FRAME_MS, only while clouds show (3D, coverage > 0), the
+  // card is on screen, the page visible and a cloud is inside the camera frustum.
   _driftClouds() {
     const w = this.weather;
-    if (!w.shown || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) { w.frameAt = 0; return; }
+    if (!w.shown || !this.onScreen || this.mode === 'top' || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) { w.frameAt = 0; return; }
     const now = performance.now();
     if (!w.frameAt) { w.frameAt = now; return; }
     if (now - w.frameAt < CLOUD_FRAME_MS) return;
-    w.t += Math.min(0.5, (now - w.frameAt) / 1000);
+    const dt = Math.min(1, (now - w.frameAt) / 1000);
     w.frameAt = now;
+    if (!this._cloudsInView()) return; // time stands still off-frame: nothing to draw
+    w.t += dt;
     this.stats.cloudFrames++;
     this.dirty = true;
+  }
+
+  _cloudsInView() {
+    const cam = this.camera, f = this._cloudFrustum || (this._cloudFrustum = new THREE.Frustum());
+    const m = this._cloudMat || (this._cloudMat = new THREE.Matrix4());
+    cam.updateMatrixWorld();
+    f.setFromProjectionMatrix(m.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const sph = this._cloudSphere || (this._cloudSphere = new THREE.Sphere());
+    return (this._cloudSprites || []).some((s) => {
+      if (!s.visible) return false;
+      sph.center.copy(s.position);
+      sph.radius = s.scale.x / 2;
+      return f.intersectsSphere(sph);
+    });
+  }
+
+  setOnScreen(on) {
+    this.onScreen = !!on;
+    if (on) this.dirty = true;
   }
 
   stop() {

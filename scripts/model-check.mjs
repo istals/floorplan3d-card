@@ -455,7 +455,7 @@ try {
   const f1 = (await sky()).frames, secs = (Date.now() - t0) / 1000;
   const pos1 = await page.evaluate(`${card}._view._cloudSprites[4].position.toArray()`);
   const created = await page.evaluate('window.__newPrograms.length');
-  check('clouds drift for 10 s: no new shader programs, <= 10 frames/s, they moved', created === 0 && f1 > f0 && (f1 - f0) / secs <= 10.5 && pos0.some((x, i) => Math.abs(x - pos1[i]) > 0.01),
+  check('clouds drift for 10 s: no new shader programs, <= 3 frames/s, they moved', created === 0 && f1 > f0 && (f1 - f0) / secs <= 3.3 && pos0.some((x, i) => Math.abs(x - pos1[i]) > 0.01),
     `created ${created}, ${((f1 - f0) / secs).toFixed(1)} fps`);
   await page.screenshot({ path: path.join(root, 'screenshots', 'weather-cloudy.png') });
   await page.evaluate(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })`);
@@ -464,6 +464,30 @@ try {
   await sleep(1500);
   check('tab hidden: no drift frames', (await sky()).frames === h0);
   await page.evaluate('delete document.visibilityState');
+  await page.evaluate(`${card}._view.setOnScreen(false)`);
+  await sleep(300);
+  const o0 = (await sky()).frames;
+  await sleep(1500);
+  check('card off screen: no drift frames', (await sky()).frames === o0);
+  await page.evaluate(`${card}._view.setOnScreen(true)`);
+  await wx(100, 'cloudy');
+  await page.evaluate(`${card}._setMode('top')`);
+  await settle(page, card);
+  await sleep(500);
+  const top0 = (await sky()).frames;
+  await sleep(1200);
+  const top = await sky();
+  check('top view at 100 %: no cloud sprite visible, no drift frames', top.clouds === 0 && top.frames === top0, JSON.stringify(top));
+  await page.screenshot({ path: path.join(root, 'screenshots', 'weather-top.png') });
+  await page.evaluate(`${card}._setMode('3d')`);
+  await settle(page, card);
+  const camSaved = await page.evaluate(`JSON.stringify(${card}._view.getCamera())`);
+  const high = await page.evaluate(`(() => { const v = ${card}._view, d = v._dome; v.setCamera({ position: [d.centre.x + 1, d.centre.y + d.radius * 4, d.centre.z + 1], target: [d.centre.x, d.centre.y, d.centre.z] }, { instant: true });
+    v._placeSkyBodies(); return v._cloudSprites.filter((x) => x.visible).length; })()`);
+  check('high orbit looking down (camera > 65 deg over the house): clouds hidden', high === 0, String(high));
+  await page.evaluate(`${card}._view.setCamera(${camSaved}, { instant: true })`);
+  await sleep(200);
+  await wx(60);
   await page.evaluate('window.__setDemoSun(-20, 0)');
   await sleep(300);
   const night = await page.evaluate(`(() => { const v = ${card}._view, m = v._cloudMats[0].color; return { clouds: v._cloudSprites.filter((x) => x.visible).length, r: m.r, b: m.b }; })()`);

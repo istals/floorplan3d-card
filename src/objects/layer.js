@@ -92,12 +92,13 @@ export class ObjectLayer {
     for (const [id, p] of this.parts) {
       const h = p.part.hints;
       if (!p.part.pool || !h || h.beam !== 'spot' || !p.part.anchor) continue;
-      spots.push({ id, group: p.obj.group, pos: p.part.anchor.toArray(), target: h.target, distance: h.distance });
+      spots.push({ id, group: p.obj.group, pos: p.part.anchor.toArray(), target: h.target, distance: h.distance,
+        up: h.up || aimsUp(p.obj), targetOk: !!(p.obj.hints && p.obj.hints.target_ok === true) });
     }
     this.badTargets = badTargets(spots);
     for (const s of spots) {
       const p = this.parts.get(s.id);
-      p.part.aim = new THREE.Vector3(...aimPoint(s.pos, s.target, { bad: this.badTargets.has(s.id), up: p.part.hints.up || aimsUp(p.obj) }));
+      p.part.aim = new THREE.Vector3(...aimPoint(s.pos, s.target, { bad: this.badTargets.has(s.id), up: s.up }));
     }
   }
 

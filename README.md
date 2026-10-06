@@ -96,7 +96,8 @@ The options below can be set in the visual editor or in YAML.
 Click **Edit** on the card (admins only). The panel has tabs Rooms, Devices, Objects (with a
 model that has objects), Mower, Views, Model and Data.
 Every slider has a number field next to it: type a value and press Enter (clamped to the slider's
-range and rounded to its step), or use the arrow keys.
+range and rounded to its step; a decimal comma works too), or use the arrow keys (saved 400 ms after
+the last step).
 
 ![Edit mode](docs/images/edit-rooms.png)
 
@@ -318,8 +319,9 @@ has no marker: the object is the control.
   the first `weather.*` entity; `weather: none` ignores it): its `cloud_coverage` attribute, else the
   condition (sunny / clear-night 0 %, partlycloudy 40 %, cloudy 85 %, fog / rain / snow / lightning /
   hail 100 %, windy 30 %, exceptional 50 %). Up to 12 soft clouds sit on the sky dome (the first
-  ones around the sun, so a partly cloudy sky half-covers it) and drift slowly (at most 10 frames per
-  second, only while the card is visible); at night they are dim grey-blue and cover the moon too. Under
+  ones around the sun, so a partly cloudy sky half-covers it) and drift slowly (at most 3 frames per
+  second, only in 3D while the card is on screen, the tab visible and a cloud in view). Top view has
+  no clouds, and they fade out as the camera orbits high over the house (50–65° up); at night they are dim grey-blue and cover the moon too. Under
   coverage c the sun is × (1 − 0.75 c), its shadow fainter (intensity 1 → 0.35), the daytime sky fill
   × (1 + 0.35 c), the sun disc × (1 − 0.8 c) and the moon and moonlight × (1 − 0.7 c); lamps are not
   affected. Changes under 5 points are ignored. `clouds: false` hides the clouds only. (The shadow
@@ -336,12 +338,13 @@ has no marker: the object is the control.
   climate unit shows its temperature and glows warm or cool while heating or cooling.
 - **Spots and uplights:** `hints.beam: "spot"` is a spot aimed at `hints.target`; `beam: "up"` is a
   spot (24°, penumbra 0.6) aimed straight up from the lamp; `beam: "down"` stays a point light. A
-  target farther from the lamp than `hints.distance` (8 m without one), or shared by two or more lamps
-  of one group, is ignored: the spot then aims straight up (beam up, or an id / label with
+  target farther from the lamp than `hints.distance` (8 m without one) is ignored, and so is a target
+  shared by two or more lamps of one group when it also looks wrong (the origin `[0, 0, 0]`, or more
+  than 60° off vertical for an uplight); `hints.target_ok: true` keeps a target as it is. An ignored target: the spot then aims straight up (beam up, or an id / label with
   "uplight", "up_light", "uplighter") or straight down. `npm run check-model` and the Model tab warn
   "spot target looks wrong (shared / too far): <ids>".
 - **Labels:** every Objects tab row has a Label field (empty: the model's label); it names the object
-  in the Objects tab and its popup. A group can have a label too (Groups section), shown in popups
+  in the Objects tab, its popup, the Attach preview and panel and the Views tree. A group can have a label too (Groups section), shown in popups
   on the group controller row.
 - **Edit mode:** bind objects in the Objects tab; in the Devices tab a dragged marker sticks to the
   model's surfaces and attaches to an object it is dropped on (Alt: free drag, Detach to undo).

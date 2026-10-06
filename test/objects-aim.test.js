@@ -14,15 +14,31 @@ describe('badTargets', () => {
     ]);
     expect([...b]).toEqual([['a', 'far'], ['c', 'far']]);
   });
-  it('ignores a target shared by 2+ spots of one group', () => {
+  it('a shared target is flagged only when it is also suspicious: off the uplights\' cone (> 60 deg from vertical) or the origin', () => {
     const b = badTargets([
-      { id: 'u1', group: 'up', pos: [0, 0, 0], target: [1, 1, 1] },
-      { id: 'u2', group: 'up', pos: [1, 0, 0], target: [1, 1, 1.0000000001] },
-      { id: 'u3', group: 'up', pos: [2, 0, 0], target: [2, 2, 0] },
-      { id: 'x', group: 'other', pos: [0, 0, 0], target: [1, 1, 1] },
-      { id: 'y', pos: [0, 0, 0], target: [1, 1, 1] },
+      { id: 'u1', group: 'up', up: true, pos: [0, 0, 0], target: [5, 1, 0] },
+      { id: 'u2', group: 'up', up: true, pos: [1, 0, 0], target: [5, 1, 0.0000000001] },
+      { id: 'o1', group: 'zero', pos: [1, 0, 0], target: [0, 0, 0] },
+      { id: 'o2', group: 'zero', pos: [2, 0, 0], target: [0, 0, 0] },
+      { id: 'x', group: 'other', pos: [0, 0, 0], target: [5, 1, 0] },
+      { id: 'y', pos: [0, 0, 0], target: [5, 1, 0] },
     ]);
-    expect(Object.fromEntries(b)).toEqual({ u1: 'shared', u2: 'shared' });
+    expect(Object.fromEntries(b)).toEqual({ u1: 'shared', u2: 'shared', o1: 'shared', o2: 'shared' });
+  });
+  it('two uplights aiming at one sculpture 3 m above, within their cones, are kept', () => {
+    const b = badTargets([
+      { id: 'u1', group: 'garden', up: true, pos: [0, 0, 0], target: [1, 3, 0] },
+      { id: 'u2', group: 'garden', up: true, pos: [2, 0, 0], target: [1, 3, 0] },
+    ]);
+    expect(b.size).toBe(0);
+  });
+  it('hints.target_ok opts out of every rule', () => {
+    const b = badTargets([
+      { id: 'f', pos: [0, 0, 0], target: [0, 0, 30], targetOk: true },
+      { id: 'u1', group: 'up', up: true, pos: [0, 0, 0], target: [5, 1, 0], targetOk: true },
+      { id: 'u2', group: 'up', up: true, pos: [1, 0, 0], target: [5, 1, 0] },
+    ]);
+    expect(Object.fromEntries(b)).toEqual({ u2: 'shared' });
   });
   it('no target, nothing to check', () => {
     expect(badTargets([{ id: 'a', pos: [0, 0, 0], target: null }, null]).size).toBe(0);

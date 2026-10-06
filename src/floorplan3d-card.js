@@ -576,6 +576,11 @@ class Floorplan3dCard extends HTMLElement {
     this._skyTimer = setInterval(() => this._applySky(false), MOON_EVERY_MS); // the moon moves without hass updates
     this._ro = new ResizeObserver(() => this._resize());
     this._ro.observe(this._stage);
+    // clouds drift only while the card is on screen
+    if (this._io) this._io.disconnect();
+    this._io = typeof IntersectionObserver !== 'undefined'
+      ? new IntersectionObserver((es) => { const e = es[es.length - 1]; if (e && this._view) this._view.setOnScreen(e.isIntersecting); }) : null;
+    if (this._io) this._io.observe(this);
     // the map / image timers stopped on disconnect: re-arm them (refresh states and mower on the next update)
     this._cameraTimerSec = null;
     this._imageTimerSec = null;
@@ -592,6 +597,7 @@ class Floorplan3dCard extends HTMLElement {
     if (this._popup) this._popup.close(); // window listeners
     if (this._editing && this._edit) this._edit.detach(); // window listeners (keys, pick menu)
     if (this._ro) this._ro.disconnect();
+    if (this._io) { this._io.disconnect(); this._io = null; }
     clearInterval(this._skyTimer);
     this._skyTimer = null;
     clearTimeout(this._stuckTimer);

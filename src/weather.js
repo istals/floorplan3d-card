@@ -96,3 +96,18 @@ export function cloudAzEl(slot, anchor, t) {
   const el = slot.near ? (a.el < 8 ? 10 : Math.min(70, a.el)) + slot.dEl : slot.el + (baseEl - 35) * 0.2;
   return { az: (((az + swing) % 360) + 360) % 360, el: Math.max(6, Math.min(75, el)) };
 }
+
+// Clouds fade out as the camera orbits high over the house: full up to 50 deg of camera elevation
+// (seen from the dome centre), gone from 65 deg (the camera looks down on their flat backs).
+export const CLOUD_FADE_FROM_DEG = 50;
+export const CLOUD_FADE_DEG = 15;
+export function cloudFade(cam, centre) {
+  const d = [cam[0] - centre[0], cam[1] - centre[1], cam[2] - centre[2]];
+  const len = Math.hypot(d[0], d[1], d[2]);
+  if (!len) return 0;
+  const el = Math.asin(d[1] / len) * 180 / Math.PI;
+  return Math.max(0, Math.min(1, (CLOUD_FADE_FROM_DEG + CLOUD_FADE_DEG - el) / CLOUD_FADE_DEG));
+}
+
+// A cloud the camera is (nearly) inside: hidden.
+export const cloudNear = (cam, cloud, size) => Math.hypot(cloud[0] - cam[0], cloud[1] - cam[1], cloud[2] - cam[2]) < size;

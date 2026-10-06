@@ -246,9 +246,16 @@ try {
   await ev(`(() => { const n = ${num('ov-width')}; n.value = ''; n.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await sleep(150);
   check('invalid value reverts to the slider', (await layout()).mower.overlay.width === 200 && (await ev(`${num('ov-width')}.value`)) === '200');
+  await ev(`(() => { const n = ${num('ov-width')}; n.focus(); n.select(); })()`);
+  await page.keyboard.type('12,5');
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  check('a decimal comma is accepted', (await layout()).mower.overlay.width === 12.5 && (await ev(`${num('ov-width')}.inputMode`)) === 'decimal', String((await layout()).mower.overlay.width));
   await ev(`${num('ov-rotation')}.focus()`);
   await page.keyboard.press('ArrowUp');
-  await sleep(150);
+  await sleep(100);
+  check('arrow key: not saved before 400 ms', (await layout()).mower.overlay.rotation === 30);
+  await sleep(500);
   check('arrow key steps the value (and the slider)', (await layout()).mower.overlay.rotation === 30.5 && (await ev(`${card}.shadowRoot.querySelector("[data-field=ov-rotation]").value`)) === '30.5'
     && (await ev(`${card}.shadowRoot.activeElement === ${num('ov-rotation')}`)), String((await layout()).mower.overlay.rotation));
   await ev(`(() => { const n = ${num('ov-width')}; n.value = '${w0}'; n.dispatchEvent(new Event('change', { bubbles: true })); n.blur(); })()`);
