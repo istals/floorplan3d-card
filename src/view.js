@@ -14,6 +14,7 @@ import { outdoorShown, sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoo
 import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
+import { cloudLight, cloudCount, coverageChanged, cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir } from './weather.js';
 import {
   castsShadow, shadowInfo, isCoplanarOverlay, coplanarWinners, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
 } from './render-rules.js';
@@ -34,6 +35,9 @@ const SHADOW_MESH_M = 30; // untagged models: meshes up to this size make the su
 const SHADOW_MARGIN_M = 4;
 const OCCLUSION_DELAY_MS = 150; // camera still this long -> occlusion pass
 const OCCLUSION_MAX = 300; // markers per pass
+const CLOUD_FRAME_MS = 100; // cloud drift: at most 10 frames per second
+const CLOUD_NIGHT = new THREE.Color(0x4a5468); // clouds at night: dim grey-blue
+const CLOUD_DAY = new THREE.Color(0xffffff);
 const SKY_FRAME_MARGIN_M = 1; // top view: margin around a visible sun / moon disc
 const OCCLUSION_SLICE_MS = 8; // a pass yields (setTimeout) after this long
 const PICK_LINE_M = 0.02; // raycast threshold for lines / points (three's default is 1 m)
@@ -219,6 +223,32 @@ function getSunTexture() {
   return sunTexture;
 }
 
+// Cloud sprite textures (3 variants, 2:1): overlapping soft white blobs, created once per page.
+const cloudTextures = [];
+function getCloudTexture(variant) {
+  if (cloudTextures[variant]) return cloudTextures[variant];
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 64;
+  const g = c.getContext('2d');
+  if (g) {
+    let seed = variant * 9301 + 49297;
+    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    for (let i = 0; i < 14; i++) {
+      const x = 24 + rnd() * 80, y = 34 + (rnd() - 0.6) * 16, r = 10 + rnd() * 16;
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, 'rgba(255,255,255,0.7)');
+      grad.addColorStop(0.55, 'rgba(250,252,255,0.4)');
+      grad.addColorStop(1, 'rgba(245,248,255,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 128, 64);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  cloudTextures[variant] = tex;
+  return tex;
+}
+
 // Moon disc (90 % of the canvas): lit part by illumination, lit on the right when `waxing`
 // (see moonLitRight: waxing seen from the northern hemisphere), the dark part faint.
 export function drawMoon(g, size, illumination, waxing) {
@@ -277,6 +307,10 @@ export class FloorplanView {
     this._dome = null; // { centre: Vector3 (house centre on the ground), radius }
     this.daylight = true;
     this.sky = { night: 0, sunDir: null, sun: 1 };
+    // weather: coverage % applied (null before the first), clouds option, drift time (s), last drift frame
+    this.weather = { applied: null, show: true, t: 0, frameAt: 0, shown: 0 };
+    this._cloudSprites = null; // created on first coverage > 0, reused
+    this._cloudMats = null; // one SpriteMaterial per texture variant
 
     this.staticGroup = new THREE.Group();
     this.markerGroup = new THREE.Group();
@@ -325,7 +359,7 @@ export class FloorplanView {
     this._occIds = null; // marker ids waiting for a partial pass (live mower)
     this._occSig = null; // inputs of the last occlusion pass (shown markers, model visibility, cut, section)
     this._shadowSig = null; // inputs of the last shadow map render (model visibility, cut, section)
-    this.stats = { occPasses: 0, occPartial: 0, occDone: 0, shadow: 0, frames: 0, shadowLights: 0 }; // counters for the headless checks (occDone: full passes finished; shadowLights: per-light map redraws requested)
+    this.stats = { occPasses: 0, occPartial: 0, occDone: 0, shadow: 0, frames: 0, shadowLights: 0, cloudFrames: 0 }; // counters for the headless checks (occDone: full passes finished; shadowLights: per-light map redraws requested)
     this._depth = null;
 
     this.floors = [];
@@ -978,10 +1012,15 @@ export class FloorplanView {
     const t = Math.max(0, Math.min(1, this.sky.night)), hemi = this.hemi, sun = this.sun;
     hemi.color.setHex(0xc4d6ff);
     hemi.groundColor.setHex(0x2a2520);
-    hemi.intensity = 0.9 + (0.14 - 0.9) * t;
+    const L = cloudLight(this.weather.applied || 0, t);
+    hemi.intensity = (0.9 + (0.14 - 0.9) * t) * L.hemi;
     sun.color.setHex(0xfff0dc);
-    sun.intensity = 2.6 * (1 - t) * (this.sky.sun ?? 1);
+    sun.intensity = 2.6 * (1 - t) * (this.sky.sun ?? 1) * L.sun;
+    // softer, fainter sun shadow under clouds: uniforms only (radius has no effect with PCFSoftShadowMap)
+    sun.shadow.radius = L.shadowRadius;
+    sun.shadow.intensity = L.shadowIntensity;
     this._applyMoonLight();
+    this._cloudLook();
     const day = new THREE.Color(0x2a2d30), night = new THREE.Color(0x0e0f10);
     this.renderer.setClearColor(day.lerp(night, t), 1);
   }
@@ -1003,6 +1042,7 @@ export class FloorplanView {
       }
       this._paintMoon(this.skyBodies.moon);
     }
+    this._cloudLook(); // a new disc gets its cloud opacity
     if (north) this._skyNorth = north;
     if (this._skyOn && !this.skyRing) this._makeSkyRing();
     if (this.model) this._applyMoonLight();
@@ -1066,13 +1106,78 @@ export class FloorplanView {
 
   _applyMoonLight() {
     const l = this.moonLight, moon = this.skyBodies.moon;
-    l.intensity = this.model ? moonLight(this.sky.night, moon) : 0;
+    l.intensity = this.model ? moonLight(this.sky.night, moon) * cloudLight(this.weather.applied || 0).moon : 0;
     if (l.intensity > 0 && this._shadowBox) {
       const { centre, radius } = this._shadowBox;
       l.target.position.copy(centre);
       l.position.copy(centre).addScaledVector(new THREE.Vector3(...moon.dir), radius * 2.5);
       l.target.updateMatrixWorld();
     }
+  }
+
+  // Weather: { coverage 0..100, clouds: option clouds }. Applied only when the coverage moved >= 5 points
+  // (or reached 0 / 100) or the option changed: light values, disc opacities, cloud sprites. Returns true when applied.
+  setWeather({ coverage = 0, clouds = true } = {}) {
+    const w = this.weather, show = clouds !== false, c = Math.max(0, Math.min(100, Number(coverage) || 0));
+    if (!coverageChanged(w.applied, c) && show === w.show) return false;
+    w.applied = c;
+    w.show = show;
+    if (this.model) this._applyLights();
+    else this._cloudLook();
+    this._placeSkyBodies();
+    this.dirty = true;
+    return true;
+  }
+
+  // Disc and cloud opacity / tint for the coverage and night (uniforms only, no shader change).
+  _cloudLook() {
+    const c = (this.weather.applied || 0) / 100, t = Math.max(0, Math.min(1, this.sky.night || 0)), L = cloudLight(c * 100, t);
+    if (this.skySprites.sun) this.skySprites.sun.material.opacity = L.sunDisc;
+    if (this.skySprites.moon) this.skySprites.moon.material.opacity = L.moon;
+    if (this._cloudMats) {
+      for (const m of this._cloudMats) {
+        m.opacity = 0.4 + 0.55 * c;
+        m.color.copy(CLOUD_DAY).lerp(CLOUD_NIGHT, t);
+      }
+    }
+  }
+
+  _makeClouds() {
+    this._cloudMats = [0, 1, 2].map((v) => new THREE.SpriteMaterial({ map: getCloudTexture(v), transparent: true, depthWrite: false, toneMapped: false, fog: false }));
+    this._cloudSprites = cloudSlots().map((slot) => {
+      const s = new THREE.Sprite(this._cloudMats[slot.variant]);
+      s.castShadow = s.receiveShadow = false;
+      s.frustumCulled = false;
+      s.visible = false;
+      s.renderOrder = 1; // over the sun / moon discs
+      s.userData.helper = true;
+      s.userData.cloud = true;
+      s.raycast = () => {};
+      this.skyGroup.add(s);
+      return s;
+    });
+    this._cloudLook();
+  }
+
+  // Clouds on the dome around the visible sun (else the moon), drifting with weather.t.
+  _placeClouds(on) {
+    const w = this.weather, d = this._dome;
+    const n = on && w.show ? cloudCount(w.applied || 0) : 0;
+    if (n && !this._cloudSprites) this._makeClouds();
+    w.shown = n;
+    if (!this._cloudSprites) return;
+    const { sun, moon } = this.skyBodies;
+    const body = sun && sun.dir[1] > SUN_MIN_Y ? sun : moon && moon.dir[1] > 0 ? moon : null;
+    const anchor = body ? azElFromDir(body.dir) : { az: 200, el: 35 };
+    const slots = cloudSlots();
+    this._cloudSprites.forEach((s, i) => {
+      s.visible = i < n;
+      if (!s.visible) return;
+      const p = cloudAzEl(slots[i], anchor, w.t);
+      s.position.copy(d.centre).addScaledVector(new THREE.Vector3(...dirFromAzEl(p.az, p.el)), d.radius * 0.985);
+      const size = slots[i].size * d.radius;
+      s.scale.set(size, size * 0.5, 1);
+    });
   }
 
   // Sun / moon on the dome (house centre + dir x radius) as world-size discs, hidden below the horizon
@@ -1089,6 +1194,7 @@ export class FloorplanView {
     };
     put(this.skySprites.sun, this.skyBodies.sun, SUN_MIN_Y, SUN_DISC_M * 2); // disc = half the sprite
     put(this.skySprites.moon, this.skyBodies.moon, 0, MOON_DISC_M / 0.9); // disc = 90 % of the sprite
+    this._placeClouds(on);
     const ring = this.skyRing;
     if (!ring) return;
     ring.visible = on;
@@ -2457,6 +2563,7 @@ export class FloorplanView {
         this.pivotMarker.visible = !this.sectionClip; // no rotation-centre cross over the section camera
         this.dirty = true;
       }
+      this._driftClouds();
       if (!this.dirty) return;
       this.dirty = false;
       this.stats.frames++;
@@ -2471,7 +2578,21 @@ export class FloorplanView {
     this._scheduleOcclusion(0);
   }
 
+  // Cloud drift while clouds show and the page is visible: at most one frame per CLOUD_FRAME_MS.
+  _driftClouds() {
+    const w = this.weather;
+    if (!w.shown || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) { w.frameAt = 0; return; }
+    const now = performance.now();
+    if (!w.frameAt) { w.frameAt = now; return; }
+    if (now - w.frameAt < CLOUD_FRAME_MS) return;
+    w.t += Math.min(0.5, (now - w.frameAt) / 1000);
+    w.frameAt = now;
+    this.stats.cloudFrames++;
+    this.dirty = true;
+  }
+
   stop() {
+    this.weather.frameAt = 0;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
     this._cancelOcclusion(); // a detached card runs no passes
@@ -2517,6 +2638,9 @@ export class FloorplanView {
       s.material.dispose();
     }
     this.skySprites = { sun: null, moon: null };
+    if (this._cloudMats) for (const m of this._cloudMats) m.dispose(); // the textures are shared per page
+    this._cloudMats = null;
+    this._cloudSprites = null;
     if (this.skyRing) {
       this.skyRing.traverse((o) => { if (o.material && o.material.map) o.material.map.dispose(); });
       this._clearGroup(this.skyRing);

@@ -22,6 +22,7 @@ import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapP
 import { ObjectLayer } from './objects/layer.js';
 import { bindObjects, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
+import { weatherEntity, cloudCoverage } from './weather.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveActions, actionCall, TapSequencer } from './actions.js';
@@ -388,6 +389,8 @@ class Floorplan3dCard extends HTMLElement {
     else if (this._view) {
       this._view.setOcclusion(this._config.occlusion !== false);
       if (this._view.model) this._applySky(true); // sky_bodies
+      this._weatherId = undefined; // option weather may have changed
+      this._applyWeather();
       this._applyZoomTo();
       this._loadModel();
       this._updateObjects(); // lights: auto | off
@@ -445,7 +448,7 @@ class Floorplan3dCard extends HTMLElement {
       this._notice.hidden = !err;
       // a new model resets the views; the first view applied frames it (see _resolveViewList)
       this._stage.classList.toggle('has-model', !!this._view.model);
-      if (this._view.model) this._applySky(true);
+      if (this._view.model) { this._applySky(true); this._applyWeather(); }
       else { this._daylight = true; this._view.setDaylight(true); } // no model: the toggle is hidden, so always day
       this._syncToolbar();
       this._schedule(); // the manifest arrived: rebuild
@@ -550,6 +553,7 @@ class Floorplan3dCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (this._view && this._view.model && this._skyMode === 'auto') this._applySky(false);
+    this._applyWeather();
     if (!this._layout && !this._loading) this._load();
     this._schedule();
   }
@@ -2186,6 +2190,26 @@ class Floorplan3dCard extends HTMLElement {
     }
     this._moonAt = now;
     v.setSkyBodies({ sun: sunBody, moon: moonBody, north: sunVector(0, 0, north, rot), on: this._config.sky_bodies !== false });
+  }
+
+  // Cloud coverage of the weather entity (option weather, default the first weather.* entity) to the view;
+  // the view re-applies only when it moved >= 5 points. The default entity is looked up again only when
+  // it disappears (at most every 30 s while there is none).
+  _applyWeather() {
+    const v = this._view, states = this._hass && this._hass.states;
+    if (!v || !states) return;
+    const c = this._config || {};
+    let id = this._weatherId;
+    if (typeof c.weather === 'string' || c.weather === false) id = weatherEntity(c, states);
+    else if (!id || !states[id]) {
+      const now = this._now();
+      if (id === undefined || id || now - (this._weatherScanAt || 0) >= 30000) {
+        this._weatherScanAt = now;
+        id = weatherEntity(c, states);
+      }
+    }
+    this._weatherId = id;
+    v.setWeather({ coverage: id ? cloudCoverage(states[id]) : 0, clouds: c.clouds !== false });
   }
 
   // Current time; tests set window.__demoNow (Date or ms).

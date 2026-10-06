@@ -1,7 +1,7 @@
 // Visual editor for the card options (Lovelace "Show visual editor"), built on HA's ha-form.
 // Rooms, devices, mower and model are edited on the card itself (its Edit button).
 
-const DEFAULTS = { layout_key: 'default', height: '520px', group_by: 'device', wall_height: 1.0, view: '3d', room_labels: 'size', zoom_to: 'center', occlusion: true, lights: 'auto', merge: true, sky_bodies: true };
+const DEFAULTS = { layout_key: 'default', height: '520px', group_by: 'device', wall_height: 1.0, view: '3d', room_labels: 'size', zoom_to: 'center', occlusion: true, lights: 'auto', merge: true, sky_bodies: true, clouds: true };
 
 export const SCHEMA = [
   { name: 'height', selector: { text: {} } },
@@ -19,6 +19,8 @@ export const SCHEMA = [
   { name: 'occlusion', selector: { boolean: {} } },
   { name: 'merge', selector: { boolean: {} } },
   { name: 'sky_bodies', selector: { boolean: {} } },
+  { name: 'clouds', selector: { boolean: {} } },
+  { name: 'weather', selector: { entity: { domain: 'weather' } } },
   { name: 'layout_key', selector: { text: {} } },
   {
     type: 'expandable', name: '', title: 'Model from a URL (instead of uploading in the card)', schema: [
@@ -42,6 +44,8 @@ const LABELS = {
   occlusion: 'Dim markers behind walls',
   merge: 'Merge model parts (faster)',
   sky_bodies: 'Sun and moon in the sky',
+  clouds: 'Clouds in the sky',
+  weather: 'Weather entity',
   group_by: 'Markers',
   room_labels: 'Room labels',
   zoom_to: 'Zoom towards',
@@ -59,6 +63,8 @@ const HELPERS = {
   occlusion: 'With a 3D model: markers hidden by a wall from the current angle are shown faint',
   merge: 'With a 3D model: static parts of a room / layer with the same material are drawn as one (fewer draw calls). Turn off to keep every part separate.',
   sky_bodies: 'With a 3D model: show the sun and the moon (position and phase from your Home Assistant location)',
+  clouds: 'With a 3D model: clouds from the weather entity\'s cloud coverage (the light follows the weather either way)',
+  weather: 'Empty: the first weather entity. In YAML, weather: none ignores the weather.',
   floor: 'Empty: the first floor that has rooms',
   zoom_to: 'Centre: zoom and rotate around the view\'s rotation centre (Edit → Views)',
   lights: 'With a 3D model: lamps light the house (auto) or only glow (off)',

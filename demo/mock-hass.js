@@ -140,6 +140,9 @@ device('demo_climate', 'Living climate unit', 'living_room', [['climate.demo_liv
   { current_temperature: 21.5, temperature: 22, hvac_action: 'heating', hvac_modes: ['off', 'heat', 'cool', 'auto'] }]]);
 device('demo_charger', 'EV charger', 'garden', [['sensor.demo_charger', 'charging', { power: 7.4, energy: 12.6 }]]);
 void temp;
+// weather (no device, no marker): clouds and light follow cloud_coverage; ?clouds=60 starts cloudy
+const demoClouds = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('clouds')) || 0;
+states['weather.demo'] = { entity_id: 'weather.demo', state: demoClouds ? 'partlycloudy' : 'sunny', attributes: { friendly_name: 'Demo weather', cloud_coverage: demoClouds } };
 
 // In-memory stand-in for the integration's /api/floorplan3d/model/<key> endpoint.
 const models = new Map();
@@ -213,6 +216,11 @@ export function createMockHass({ onChange }) {
   // headless checks: window.__setDemoSun(elevation, azimuth) adds / updates sun.sun
   window.__setDemoSun = (elevation, azimuth) => update({
     'sun.sun': { entity_id: 'sun.sun', state: elevation > 0 ? 'above_horizon' : 'below_horizon', attributes: { elevation, azimuth } },
+  });
+
+  // headless checks: window.__setDemoWeather(coverage, condition) sets weather.demo (coverage null: condition only)
+  window.__setDemoWeather = (coverage, condition = 'partlycloudy') => update({
+    'weather.demo': { entity_id: 'weather.demo', state: condition, attributes: { friendly_name: 'Demo weather', ...(coverage === null || coverage === undefined ? {} : { cloud_coverage: coverage }) } },
   });
 
   return current;
