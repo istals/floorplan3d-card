@@ -770,6 +770,23 @@ try {
   await sleep(300);
   check('un-hide drops the entry', await page.evaluate(`!${card}._bindings.get('lamp_hall').hidden && !(${card}._layout.objects || {}).lamp_hall`));
   check('Test button back on the bound row', await hasTest());
+  // label: rename the lamp -> the row and the popup title show it; clearing returns to the model label
+  const setLabel = (v) => page.evaluate(`(() => { const i = ${sr}.querySelector('[data-field=obj-label][data-id=lamp_hall]'); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  const lbl = () => page.evaluate(`(() => { const li = ${sr}.querySelector('li.obj[data-obj=lamp_hall]'); const i = li.querySelector('[data-field=obj-label]');
+    return { name: li.querySelector('.name').textContent, ph: i.placeholder, cfg: ((${card}._layout.objects || {}).lamp_hall || {}).label || null }; })()`);
+  await setLabel('  Hall pendant ');
+  await sleep(300);
+  let lb = await lbl();
+  check('Label input renames the object (stored, row name)', lb.cfg === 'Hall pendant' && lb.name === 'Hall pendant' && lb.ph === 'Hall ceiling lamp', JSON.stringify(lb));
+  await page.evaluate(`${card}._openObjectPopup('lamp_hall')`); // what a hold on the lamp opens
+  await sleep(200);
+  pp = await pop();
+  check('renamed lamp: the popup title shows the new label', !!pp && pp.title === 'Hall pendant', JSON.stringify(pp));
+  await page.evaluate(`${card}._popup.close()`);
+  await setLabel('');
+  await sleep(300);
+  lb = await lbl();
+  check('clearing the label returns to the model label', lb.cfg === null && lb.name === 'Hall ceiling lamp', JSON.stringify(lb));
   await page.screenshot({ path: path.join(root, 'screenshots', 'objects-tab.png') });
   // leaving the tab turns object taps off again
   await page.evaluate(`[...${sr}.querySelectorAll('.tabs button')].find((b) => b.textContent.trim() === 'Devices').click()`);
@@ -1002,11 +1019,12 @@ try {
   const BOUND = {
     lamp_living: 'light.demo_living', lamp_hall: 'light.demo_hall', lamp_kitchen: 'light.demo_kitchen', kitchen_strip: 'light.demo_strip',
     facade_1: 'light.demo_facade', facade_2: 'light.demo_facade', facade_3: 'light.demo_facade', terrace_spot: 'light.demo_terrace',
+    wall_uplight_1: 'light.demo_facade', wall_uplight_2: 'light.demo_facade',
     climate_living: 'climate.demo_living', mower: 'lawn_mower.demo', dock: 'lawn_mower.demo', ev_charger: 'sensor.demo_charger',
   };
   const binds = await page.evaluate(`Object.fromEntries([...${card}._bindings].map(([id, b]) => [id, b.entity]))`);
-  check('demo objects: all 12 bind automatically from suggest.entity',
-    Object.keys(binds).length === 12 && Object.entries(BOUND).every(([id, e]) => binds[id] === e), JSON.stringify(binds));
+  check('demo objects: all 14 bind automatically from suggest.entity',
+    Object.keys(binds).length === 14 && Object.entries(BOUND).every(([id, e]) => binds[id] === e), JSON.stringify(binds));
   const markerEnts = await page.evaluate(`${card}._markers.map((m) => m.entityId)`);
   const leaked = Object.values(BOUND).filter((e) => markerEnts.includes(e));
   check('demo objects: bound entities have no markers of their own', leaked.length === 0, leaked.join());
@@ -1017,7 +1035,7 @@ try {
     const near = (id) => { const a = l.anchorOf(id); return a ? lit.filter((x) => x.position.distanceTo(a) < 0.05).map((x) => +x.intensity.toFixed(3)) : null; };
     const glow = (id) => { const o = l.objectAt(id), g = o && o.part.glow; if (!g) return -1; const m = [].concat(g.material)[0]; return +(m.emissiveIntensity * Math.max(m.emissive.r, m.emissive.g, m.emissive.b)).toFixed(3); };
     const ids = ${JSON.stringify(ids)};
-    const spot = l.pool.spots.find((x) => x.intensity > 0);
+    const ts = l.anchorOf('terrace_spot'), spot = l.pool.spots.find((x) => x.intensity > 0 && ts && x.position.distanceTo(ts) < 0.05);
     return { lit: lit.length, shadows: lit.filter((x) => x.castShadow).length, slots: [...l._slots.keys()],
       near: Object.fromEntries(ids.map((id) => [id, near(id)])), glow: Object.fromEntries(ids.map((id) => [id, glow(id)])),
       spotTarget: spot ? spot.target.position.toArray() : null,
@@ -1176,7 +1194,7 @@ try {
     await sleep(80);
   }
   const rows = await page.evaluate(`[...${sr}.querySelectorAll('li.obj')].map((li) => ({ id: li.dataset.obj, badge: (li.querySelector('.badge') || {}).textContent || '', test: !!li.querySelector('[data-act=obj-test]') }))`);
-  check('Objects tab: 12 rows, all "auto", none "entity not found"', rows.length === 12 && rows.every((r) => r.badge === 'auto'), JSON.stringify(rows));
+  check('Objects tab: 14 rows, all "auto", none "entity not found"', rows.length === 14 && rows.every((r) => r.badge === 'auto'), JSON.stringify(rows));
   check('Objects tab: lamps have a Test button', ['lamp_living', 'facade_1', 'terrace_spot'].every((id) => (rows.find((r) => r.id === id) || {}).test));
   const grp = () => page.evaluate(`(() => { const g = ${sr}.querySelector('label.grp[data-grp=facade]'); return g && { warn: !!g.querySelector('.badge.warn'), val: g.querySelector('input').value,
     saved: JSON.stringify((${card}._layout.groups || {}).facade || null), eff: JSON.stringify(${card}._groups.facade || null) }; })()`);

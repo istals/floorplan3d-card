@@ -190,6 +190,21 @@ describe('setObject / setGroup', () => {
     expect(setGroup(l, 'g', { entity: '' }).groups).toEqual({});
     expect(l.groups.g.entity).toBe('light.g');
   });
+  it('setObject label: trimmed, empty clears it (back to the model label), other fields kept', () => {
+    const l = { objects: { a: { entity: 'light.a' } } };
+    expect(setObject(l, 'a', { label: '  Sofa lamp ' }).objects.a).toEqual({ entity: 'light.a', label: 'Sofa lamp' });
+    const named = setObject(l, 'a', { label: 'Sofa lamp' });
+    expect(setObject(named, 'a', { label: '' }).objects.a).toEqual({ entity: 'light.a' });
+    expect(setObject(named, 'a', { label: '   ' }).objects.a).toEqual({ entity: 'light.a' });
+    expect(setObject({ objects: { b: { label: 'X' } } }, 'b', { label: '' }).objects).toEqual({});
+  });
+  it('setGroup label: stored with or without a controller, empty clears it', () => {
+    const l = { groups: { g: { entity: 'switch.g' } } };
+    expect(setGroup(l, 'g', { label: ' Facade ' }).groups.g).toEqual({ entity: 'switch.g', label: 'Facade' });
+    expect(setGroup({}, 'g', { label: 'Facade' }).groups.g).toEqual({ label: 'Facade' });
+    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { label: '' }).groups).toEqual({});
+    expect(setGroup({ groups: { g: { label: 'Facade' } } }, 'g', { entity: 'none' }).groups.g).toEqual({ label: 'Facade' });
+  });
   it('setGroup: "none" (any case, padded) removes the controller, never stored literally', () => {
     const l = { groups: { g: { entity: 'light.g' } } };
     expect(setGroup(l, 'g', { entity: 'none' }).groups).toEqual({});

@@ -103,9 +103,11 @@ export function popupRows(obj, chain, states = {}, groups = {}, popup = null) {
       if (value !== null && value !== undefined) rows.push({ kind, entity: main, label, value });
     }
   }
-  if (ctrl && ctrl !== main) rows.push({ kind: 'chain', entity: ctrl, label: nameOf(states, ctrl), value: !bad(states[ctrl]) && states[ctrl].state === 'on' });
+  // the controller row: the group's label (layout.groups[name].label) when set, else the entity's name
+  const ctrlName = ctrl ? (g && typeof g.label === 'string' && g.label) || nameOf(states, ctrl) : null;
+  if (ctrl && ctrl !== main) rows.push({ kind: 'chain', entity: ctrl, label: ctrlName, value: !bad(states[ctrl]) && states[ctrl].state === 'on' });
   let reason = null;
-  if (ctrl && !bad(states[ctrl]) && states[ctrl].state !== 'on') reason = `${nameOf(states, ctrl)} is off`;
+  if (ctrl && !bad(states[ctrl]) && states[ctrl].state !== 'on') reason = `${ctrlName} is off`;
   else if (ownBad) reason = `${nameOf(states, own)} is unavailable`;
   else if (!chain.lit && chain.reason) {
     reason = chain.reason;

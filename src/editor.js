@@ -289,8 +289,9 @@ export function migrateLegacyPins(layout, boundFloors) {
 // (back to automatic binding); `hidden: false` drops the flag. An entry with nothing left is removed.
 export function setObject(layout, id, patch) {
   const cur = { ...((layout.objects || {})[id] || {}) };
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === undefined || (k === 'hidden' && !v)) delete cur[k];
+  for (const [k, raw] of Object.entries(patch)) {
+    const v = k === 'label' && typeof raw === 'string' ? raw.trim() : raw;
+    if (v === undefined || (k === 'hidden' && !v) || (k === 'label' && !v)) delete cur[k]; // no label: the model's
     else cur[k] = v;
   }
   const objects = { ...(layout.objects || {}) };
@@ -309,12 +310,14 @@ export function setObjectUi(layout, id, which, action) {
   return setObject(layout, id, { ui: Object.keys(ui).length ? ui : undefined });
 }
 
-// layout.groups[name] = { entity }: the optional controller of a fixture group. No entity (empty or
-// "none"): no entry.
+// layout.groups[name] = { entity, label }: the optional controller of a fixture group and its display
+// label (popup chain rows). No entity (empty or "none") / empty label: not stored; nothing left: no entry.
 export function setGroup(layout, name, patch) {
   const cur = { ...((layout.groups || {})[name] || {}), ...patch };
   if (typeof cur.entity === 'string') cur.entity = cur.entity.trim();
   if (!cur.entity || typeof cur.entity !== 'string' || cur.entity.toLowerCase() === 'none') delete cur.entity;
+  if (typeof cur.label === 'string') cur.label = cur.label.trim();
+  if (!cur.label || typeof cur.label !== 'string') delete cur.label;
   const groups = { ...(layout.groups || {}) };
   if (Object.keys(cur).length) groups[name] = cur;
   else delete groups[name];

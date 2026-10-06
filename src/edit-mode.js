@@ -1163,9 +1163,10 @@ export class EditMode {
       // Test only where a tap could toggle something (not hidden, own entity or a known group controller)
       const testable = !b.hidden && !!actionTarget(o, b, this.card._groups || {});
       return `<li class="obj${sel ? ' sel' : ''}${b.hidden ? ' hid' : ''}" data-obj="${esc(o.id)}">
-        <div class="orow"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon><span class="name">${esc(o.label || o.id)}</span>${badge}
+        <div class="orow"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon><span class="name">${esc(this.card.objectLabel(o))}</span>${badge}
           ${testable ? `<button data-act="obj-test" data-id="${esc(o.id)}" title="Toggle it like a tap in the view">Test</button>` : ''}
           <label class="check"><input type="checkbox" data-field="obj-hidden" data-id="${esc(o.id)}" ${b.hidden ? 'checked' : ''}> Hide</label></div>
+        <input class="olabel" data-field="obj-label" data-id="${esc(o.id)}" value="${esc(saved.label || '')}" placeholder="${esc(o.label || o.id)}" title="Label (empty: the model's)" aria-label="Label">
         <input list="fp-obj-${t}" data-field="obj-entity" data-id="${esc(o.id)}" value="${esc(value)}" placeholder="${esc(ph)}" title="Empty: automatic; type none to leave it unbound">
         ${o.group ? `<div class="dim">Group ${esc(o.group)}</div>` : ''}${this._objActionsHtml(o, saved.ui)}</li>`;
     };
@@ -1198,10 +1199,11 @@ export class EditMode {
       out += `<div class="sub">Groups</div><p class="hint">A group controller must be on too: a fixture is lit only while its own entity and the controller are both on.</p>
         <datalist id="fp-grp-ents">${gl.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
       out += groups.map((g) => {
-        const e = (lg[g] && lg[g].entity) || '';
+        const e = (lg[g] && lg[g].entity) || '', gl2 = (lg[g] && lg[g].label) || '';
         const missing = e && !states[e] ? ' <span class="badge warn">entity not found</span>' : '';
-        return `<label class="grp" data-grp="${esc(g)}">${esc(g)}${missing} <input list="fp-grp-ents" data-field="grp-entity" data-id="${esc(g)}"
-        value="${esc(e)}" placeholder="no controller" title="Empty or none: no controller"></label>`;
+        return `<label class="grp" data-grp="${esc(g)}">${esc(gl2 || g)}${missing} <input list="fp-grp-ents" data-field="grp-entity" data-id="${esc(g)}"
+        value="${esc(e)}" placeholder="no controller" title="Empty or none: no controller">
+        <input class="glabel" data-field="grp-label" data-id="${esc(g)}" value="${esc(gl2)}" placeholder="label: ${esc(g)}" title="Label in popups (empty: the controller's name)"></label>`;
       }).join('');
     }
     return out;
@@ -2290,6 +2292,12 @@ export class EditMode {
       this.render();
     } else if (f === 'obj-hidden') {
       this.commit(E.setObject(this.layout, el.dataset.id, { hidden: el.checked }));
+      this.render();
+    } else if (f === 'obj-label') {
+      this.commit(E.setObject(this.layout, el.dataset.id, { label: el.value }));
+      this.render();
+    } else if (f === 'grp-label') {
+      this.commit(E.setGroup(this.layout, el.dataset.id, { label: el.value }));
       this.render();
     } else if (f === 'grp-entity') {
       this.commit(E.setGroup(this.layout, el.dataset.id, { entity: el.value.trim() }));

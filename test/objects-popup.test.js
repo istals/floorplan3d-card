@@ -80,6 +80,15 @@ describe('popupRows', () => {
     expect(rows[3].label).toBe('Group switch is off');
   });
 
+  it('grouped fixture: the group label names the chain row and the reason', () => {
+    const states = { 'light.a': st('on', { supported_color_modes: ['onoff'] }), 'switch.g': st('off', { friendly_name: 'Group switch' }) };
+    const groups = { hall: { entity: 'switch.g', label: 'Hall circuit' } };
+    const obj = { id: 'l1', type: 'light', group: 'hall' };
+    const rows = popupRows(obj, chainState(obj, { entity: 'light.a' }, groups, states), states, groups);
+    expect(rows.find((r) => r.kind === 'chain').label).toBe('Hall circuit');
+    expect(rows.find((r) => r.kind === 'reason').label).toBe('Hall circuit is off');
+  });
+
   it('grouped fixture lit: chain row, no reason', () => {
     const states = { 'light.a': st('on', { supported_color_modes: ['onoff'] }), 'switch.g': st('on') };
     const groups = { hall: { entity: 'switch.g' } };

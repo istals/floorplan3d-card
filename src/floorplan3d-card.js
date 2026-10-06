@@ -679,7 +679,7 @@ class Floorplan3dCard extends HTMLElement {
           const wt = this._warningText();
           if (wt) extra.unshift({ kind: 'info', label: wt.label, value: wt.value });
         }
-        return { obj: o.obj, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra };
+        return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra };
       },
     });
     this._view.onRender = () => this._popup.position();
@@ -1801,7 +1801,7 @@ class Floorplan3dCard extends HTMLElement {
 
   _openObjectPopup(id, o = this._objects.objectAt(id)) {
     const a = o && this._objects.anchors().find((x) => x.id === id);
-    if (a) this._popup.open(o.obj, a.world);
+    if (a) this._popup.open({ ...o.obj, label: this.objectLabel(o.obj) }, a.world);
   }
 
   _runMarkerAction(m, which) {
@@ -2210,6 +2210,13 @@ class Floorplan3dCard extends HTMLElement {
     }
     this._weatherId = id;
     v.setWeather({ coverage: id ? cloudCoverage(states[id]) : 0, clouds: c.clouds !== false });
+  }
+
+  // An object's label: layout.objects[id].label (Objects tab), else the model's.
+  objectLabel(obj) {
+    if (!obj) return '';
+    const saved = this._layout && this._layout.objects && this._layout.objects[obj.id];
+    return (saved && typeof saved.label === 'string' && saved.label) || obj.label || obj.id;
   }
 
   // Current time; tests set window.__demoNow (Date or ms).
