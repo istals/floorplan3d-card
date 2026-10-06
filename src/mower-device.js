@@ -55,6 +55,12 @@ export function findErrorEntity(hass, mowerEntity) {
   return firstMatch(hass, entities, /error ?code/, 'sensor');
 }
 
+// The "Mower status" sensor (Docked / Charging / Working ...) of the mower's device.
+export function findStatusEntity(hass, mowerEntity) {
+  const { entities } = mowerDevice(hass, mowerEntity);
+  return firstMatch(hass, entities, /mower status|robot status/, 'sensor');
+}
+
 export function findProgress(hass, mowerEntity) {
   const { entities } = mowerDevice(hass, mowerEntity);
   return entities.find((eid) => {

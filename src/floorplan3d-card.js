@@ -20,11 +20,13 @@ import { readSource, mowerTransform, overlayUrl } from './mower.js';
 import { badgeOptions, badgeInfo } from './badges.js';
 import { applyBadges } from './badge-dom.js';
 import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from './mower-warning.js';
-import { downGray, bestShift } from './mower-auto.js';
+import './mower-auto.js'; // registers the auto-mode kernel with the map worker
 import { iconMoments, momentHeading, momentsOf, smoothHeading, makeTemplate, matchTemplate, grayOf, norm360 } from './mower-heading.js';
-import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progressValue, connectivity, rain, deviceRows } from './mower-device.js';
-import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint } from './mower-image.js';
+import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progressValue, connectivity, rain, deviceRows, findStatusEntity } from './mower-device.js';
+import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, planToPixel, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint, mapWorkSize, FETCH_TIMEOUT_MS } from './mower-image.js';
+import { isDocked, dockWord, trackWindow, fullSearch, layerDue, throttleStep, effectiveRefresh, LONG_TASK_MS, mowerStatusText, rememberPosition, lastPosition } from './mower-track.js';
 import { ObjectLayer } from './objects/layer.js';
+import { DebugOverlay } from './debug-overlay.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
@@ -55,7 +57,6 @@ const TRAIL_STEP_M = 0.15;
 const TRAIL_MAX = 3000;
 const MOWER_Z = 0.15;
 const MATCH_MIN = 0.5; // mower picture match score (NCC) trusted for position and heading
-const AUTO_MISMATCH = Symbol('static map mismatch');
 const MODEL_API = '/api/floorplan3d/model';
 const nodeShown = (n) => { for (let x = n; x; x = x.parent) if (!x.visible) return false; return true; };
 
@@ -165,6 +166,9 @@ const STYLE = `
   .fp-pop-row.link { min-height: 26px; }
   .fp-pop-row:not(.link) + .fp-pop-row.link { border-top: 1px solid var(--divider-color, rgba(0,0,0,.12)); margin-top: 4px; padding-top: 4px; }
   .fp-pop-link { border: none; background: none; padding: 2px 0; font: inherit; color: var(--primary-color); cursor: pointer; }
+  .fp-debug { position: absolute; left: 8px; bottom: 8px; z-index: 4; pointer-events: none; white-space: pre; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--primary-text-color, #212121); background: color-mix(in srgb, var(--card-background-color, #fff) 82%, transparent);
+    border: 1px solid var(--divider-color, rgba(0,0,0,.12)); border-radius: 6px; padding: 4px 6px; }
   .fp-toast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 4; width: max-content; max-width: calc(100% - 32px); box-sizing: border-box;
     padding: 6px 12px; border-radius: 8px; font-size: 12px; background: var(--card-background-color, #fff); color: var(--primary-text-color);
     border: 1px solid var(--warning-color, #ff9800); box-shadow: 0 2px 8px rgba(0,0,0,.25); pointer-events: none; }
@@ -461,7 +465,38 @@ class Floorplan3dCard extends HTMLElement {
       this._applyZoomTo();
       this._loadModel();
       this._updateObjects(); // lights: auto | off
+      this._syncDebug();
     }
+  }
+
+  // debug: true -> the performance overlay
+  _syncDebug() {
+    const on = !!(this._config && this._config.debug) && !!this._view && this.isConnected;
+    if (on && !this._debug) this._debug = new DebugOverlay(this._stage, this._view, this);
+    else if (!on && this._debug) { this._debug.dispose(); this._debug = null; }
+  }
+
+  // Main-thread long tasks (> 50 ms) of the last minute, where the browser reports them: the adaptive
+  // map throttle and the debug overlay. -> [{ start, ms }] | null (not supported)
+  _observeLongTasks() {
+    if (this._ltObs || typeof PerformanceObserver !== 'function') return;
+    const types = PerformanceObserver.supportedEntryTypes || [];
+    if (!types.includes('longtask')) return;
+    this._longs = this._longs || [];
+    try {
+      this._ltObs = new PerformanceObserver((list) => {
+        const now = performance.now();
+        for (const e of list.getEntries()) this._longs.push({ start: e.startTime, ms: e.duration });
+        while (this._longs.length && now - this._longs[0].start > 60000) this._longs.shift();
+      });
+      this._ltObs.observe({ type: 'longtask' });
+    } catch (e) {
+      this._ltObs = null;
+    }
+  }
+
+  longTasks() {
+    return this._ltObs ? this._longs || [] : null;
   }
 
   // model: from YAML (model: url) if set, else the one uploaded to the integration (layout.model)
@@ -643,6 +678,8 @@ class Floorplan3dCard extends HTMLElement {
     this._io = typeof IntersectionObserver !== 'undefined'
       ? new IntersectionObserver((es) => { const e = es[es.length - 1]; if (e && this._view) this._view.setOnScreen(e.isIntersecting); }) : null;
     if (this._io) this._io.observe(this);
+    this._syncDebug();
+    this._observeLongTasks();
     // the map / image timers stopped on disconnect: re-arm them (refresh states and mower on the next update)
     this._cameraTimerSec = null;
     this._imageTimerSec = null;
@@ -669,6 +706,9 @@ class Floorplan3dCard extends HTMLElement {
     this._setImageTimer(0);
     clearTimeout(this._mapReprocTimer);
     if (this._mapProc) this._mapProc.dispose(); // its worker
+    this._extUrl = null; // fetched again on reconnect
+    if (this._debug) { this._debug.dispose(); this._debug = null; }
+    if (this._ltObs) { this._ltObs.disconnect(); this._ltObs = null; }
     clearTimeout(this._surfJob);
     this._surfJob = null;
   }
@@ -734,6 +774,8 @@ class Floorplan3dCard extends HTMLElement {
     this._editBtn.addEventListener('click', () => this._toggleEdit());
     this._view = new FloorplanView(this._stage);
     this._view.onMapImage = (img, w, h) => this._onMapImage(img, w, h);
+    // auto mode: settings or the mower picture changed -> the current picture again, searched in full
+    this._view.onMapReprocess = () => { this._forceFull = true; this._extUrl = null; if (this._layout && this._layout.mower) this._refreshMapOverlay(); };
     this._objects = new ObjectLayer(this._view);
     this._view.onObjectsInvalidate = () => this._updateObjects(); // view, section or placement changed
     this._popup = new ObjectPopup(this._stage, {
@@ -933,8 +975,28 @@ class Floorplan3dCard extends HTMLElement {
       reading = readSource(this._hass.states[cfg.entity], cfg);
       p = reading && this._mowerFn ? this._mowerFn(reading) : null;
     }
+    // docked: at the dock object, turned as it is; not found: the last known position (else the dock),
+    // never some default spot
+    const dk = this._dockedNow();
+    const dock = this._objects ? this._objects.dockPose() : null;
+    const key = this._config.layout_key;
+    let fixed = null;
+    this._mowerAt = p ? 'live' : null;
+    if (dk.docked && dock) {
+      p = [dock.x, dock.y];
+      fixed = dock;
+      this._mowerAt = 'dock';
+    } else if (!p) {
+      const last = lastPosition(key);
+      if (last && last.entity === cfg.entity) { p = [last.x, last.y]; fixed = { heading: last.heading }; this._mowerAt = 'last'; } else if (dock) { p = [dock.x, dock.y]; fixed = dock; this._mowerAt = 'dock-start'; }
+    }
     this._mowerLive = p ? { x: p[0], y: p[1], floorId, reading } : (reading ? { reading } : null);
-    this._poseMowerObject(p, floorId);
+    this._poseMowerObject(p, floorId, fixed);
+    if (p && this._mowerAt !== 'dock-start') {
+      const ib = this._imageBlob && this._imageBlob.matched ? this._imageBlob : null, was = lastPosition(key);
+      rememberPosition(key, { x: p[0], y: p[1], heading: this._mowerHeading ?? null, entity: cfg.entity,
+        count: ib ? ib.count : was && was.count, imgW: ib ? ib.imgW : was && was.imgW });
+    }
     this._refreshAttached(); // markers attached to the mower ride along
     const id = this._mowerMarkerId;
     if (p && id) {
@@ -1110,6 +1172,38 @@ class Floorplan3dCard extends HTMLElement {
     this._iconHead = { angle: this._headSt.angle, source };
   }
 
+  // The mower's docked state: lawn_mower docked / charging or its "Mower status" sensor. -> { docked, word }
+  _dockedNow() {
+    const h = this._hass, mse = this._mowerStateEntity();
+    const ms = mse && h && h.states[mse];
+    const se = mse && findStatusEntity(h, mse), ss = se && h.states[se];
+    const a = ms && ms.state, b = ss && ss.state;
+    return { docked: isDocked(a, b), word: dockWord(a, b) };
+  }
+
+  // Mower tab status: { kind: dock | tracked | last | mismatch | searching | none, word, score, lostMs } or null.
+  mowerStatus() {
+    const cfg = this._layout && this._layout.mower;
+    if (!cfg || !cfg.entity || !this._hass) return null;
+    const at = this._mowerAt;
+    if (at === 'dock') return { kind: 'dock', word: this._dockedNow().word };
+    if (cfg.source === 'image' && this.mowerAuto(cfg) && this._autoMismatch && !colorList(cfg.image).length) return { kind: 'mismatch' };
+    const lost = () => (this._trk && Number.isFinite(this._trk.seenAt) ? Date.now() - this._trk.seenAt : null);
+    if (cfg.source === 'image') {
+      const r = this._imageResult, b = this._imageBlob;
+      if (at === 'last' || (r && r.missing && b) || (b && b.misses)) return { kind: 'last', lostMs: lost() };
+      if (r && !r.missing && !r.error && b) return { kind: 'tracked', score: Number.isFinite(r.match) ? r.match : null };
+      if (at === 'dock-start') return { kind: 'last', lostMs: null };
+      return { kind: 'searching' };
+    }
+    if (at === 'last' || at === 'dock-start') return { kind: 'last', lostMs: null };
+    return null;
+  }
+
+  mowerStatusText() {
+    return mowerStatusText(this.mowerStatus());
+  }
+
   // Heading shown in the Mower tab: { deg (compass bearing on the plan), source } or null.
   mowerHeading() {
     if (this._mowerHeading === undefined || this._mowerHeading === null) return null;
@@ -1117,109 +1211,272 @@ class Floorplan3dCard extends HTMLElement {
     return { deg: Math.round(norm360(90 - deg)), source: this._headingSource || 'movement' };
   }
 
-  // Static map pixels at the working size (cached per picture and size; one fetch at a time).
-  // -> { key, data, natW, natH } | null
-  async _staticPixels(eid, w, h) {
+  // ---------- auto mode: the live map processed off the main thread ----------
+  // Each refresh: fetch -> createImageBitmap (decoded off the main thread) -> transferred to the map
+  // worker, which draws and reads it, compares it with the static map, searches the mower in a window
+  // around its last position (the whole picture when lost, after docking / undocking, every 60 s) and
+  // redraws the layer (mowed / no-mow) every 60 s or on a progress change, changed 64 px tiles only.
+  // The page draws the changed tiles into one canvas (one texture upload per batch).
+  _pumpMap() {
+    if (this._mapPump) { this._mapPumpAgain = true; return; }
+    this._mapPump = (async () => {
+      try {
+        do {
+          this._mapPumpAgain = false;
+          await this._mapFrame(this._extUrl);
+        } while (this._mapPumpAgain && this.isConnected);
+      } catch (e) {
+        console.warn('floorplan3d: could not process the mower map', e);
+      } finally {
+        this._mapPump = null;
+      }
+    })();
+  }
+
+  async _fetchBlob(url) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.blob();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // The static map (cached blob and size per picture). -> { key (per working size), blob, natW, natH }
+  async _staticMap(eid) {
     const st = this._hass.states[eid];
     const url = st && overlayUrl(this._hass, eid, 0);
     if (!url) return null;
-    const key = `${eid}|${(st.attributes || {}).entity_picture || ''}|${st.state}|${w}x${h}`;
+    const key = `${eid}|${(st.attributes || {}).entity_picture || ''}|${st.state}`;
     if (this._static && this._static.key === key) return this._static;
-    if (this._staticLoad && this._staticLoad.key === key) return this._staticLoad.promise;
-    const promise = (async () => {
-      const res = await fetch(url, { credentials: 'same-origin' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const bmp = await createImageBitmap(await res.blob());
-      const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      const g = c.getContext('2d', { willReadFrequently: true });
-      g.drawImage(bmp, 0, 0, w, h);
-      const natW = bmp.width, natH = bmp.height;
-      if (bmp.close) bmp.close();
-      this._static = { key, data: g.getImageData(0, 0, w, h).data, natW, natH, shift: null };
-      return this._static;
-    })();
-    this._staticLoad = { key, promise };
-    try { return await promise; } finally { if (this._staticLoad && this._staticLoad.key === key) this._staticLoad = null; }
+    const blob = await this._fetchBlob(url);
+    const bmp = await createImageBitmap(blob);
+    this._static = { key, blob, natW: bmp.width, natH: bmp.height };
+    if (bmp.close) bmp.close();
+    return this._static;
   }
 
-  // Auto mode: the live map against the static map -> the drawn picture (unchanged transparent,
-  // mowed light, no-mow shaded, icons hidden), mowed share, stripes, and (source image) the mower:
-  // the icon blob that best matches the mower picture, else its shape; the dock ignored. The pixel
-  // work runs in the map worker. A static map that does not match (size / aspect off by > 2 %, or
-  // more than 30 % changed) -> AUTO_MISMATCH: this picture goes the colour-pick way.
-  async _autoMap(image, W, H, cfg, auto) {
-    let t0 = performance.now(), main = 0;
+  async _mapFrame(url) {
+    const cfg = this._layout && this._layout.mower;
+    const auto = cfg && this.mowerAuto(cfg);
+    if (!url || !auto || !this.isConnected || !this._view) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') { this._extUrl = null; return; } // again when visible
+    const t0 = performance.now();
+    const perf = { decode: 0, worker: 0, apply: 0, main: 0, max: 0, sections: [] };
+    let mark = t0;
+    const end = () => { const n = performance.now(), d = n - mark; perf.main += d; perf.max = Math.max(perf.max, d); perf.sections.push([mark, n]); };
+    const resume = () => { mark = performance.now(); };
+    let blob, live, stat;
+    try {
+      end();
+      blob = await this._fetchBlob(url);
+      resume();
+      end();
+      live = await createImageBitmap(blob);
+      resume();
+      end();
+      stat = await this._staticMap(auto.static);
+      resume();
+    } catch (e) {
+      if (live && live.close) live.close();
+      console.warn('floorplan3d: could not read the mower map', e);
+      if (cfg.source === 'image') this._imageResult = { error: "Can't read the map image." };
+      return;
+    }
+    perf.decode = performance.now() - t0;
+    const W = live.width, H = live.height;
+    if (!stat || !W || !H) { if (live.close) live.close(); return; }
+    const { width: w, height: h } = mapWorkSize(W, H);
+    if (Math.abs(stat.natW / stat.natH - W / H) > 0.02 * (W / H)) { // another picture: colour picks
+      this._setAutoMismatch(true);
+      end();
+      await this._mismatchPass(live, W, H);
+      return;
+    }
     const proc = (this._mapProc = this._mapProc || new MapProcessor());
-    const px = proc.read(image, W, H);
-    const w = px.width, h = px.height;
-    main += performance.now() - t0;
-    let stat;
-    try { stat = await this._staticPixels(auto.static, w, h); } catch (e) {
-      console.warn('floorplan3d: could not read the static map', e);
-      stat = null;
+    const now = Date.now();
+    const statKey = `${stat.key}|${w}x${h}`;
+    const ctx = this._frameContext(cfg, W, H, w, h, now);
+    let statArg = null;
+    if (!proc.hasStatic(statKey)) {
+      end();
+      try { statArg = { key: statKey, bitmap: await createImageBitmap(stat.blob) }; } catch (e) { if (live.close) live.close(); return; }
+      resume();
     }
-    if (!stat) return null;
-    t0 = performance.now();
-    if (Math.abs(stat.natW / stat.natH - W / H) > 0.02 * (W / H)) { this._setAutoMismatch(true); return AUTO_MISMATCH; }
-    if (!stat.shift) { // small offset between the two pictures, once per static picture / size
-      const f = Math.max(1, Math.round(w / 256));
-      const a = downGray(stat.data, w, h, f), b = downGray(px.data, w, h, f);
-      const sh = bestShift(a.g, b.g, a.w, a.h, 4);
-      stat.shift = { dx: sh.dx * f, dy: sh.dy * f };
-    }
-    const k = px.imgW / w, prev = this._imageBlob;
-    const detect = cfg.source === 'image';
-    const t = detect ? this._mowerTemplate() : null;
-    const ctx = {
-      shift: stat.shift, detect,
-      prev: prev && prev.imgW === px.imgW ? [prev.px / k, prev.py / k] : null,
-      // the icon size is known once the picture matched (a fallback blob may be anything)
-      expected: prev && prev.count && this._imageResult && this._imageResult.match ? prev.count / (k * k) : null,
-      prevGrey: this._autoGrey || null,
-      dockAt: this._dockPx ? [this._dockPx.px / k, this._dockPx.py / k] : null,
-      maxBlob: Math.max(400, w * h * 0.02),
-    };
-    main += performance.now() - t0;
+    const tpl = ctx.detect ? this._mowerTemplate() : null;
+    const tw = performance.now();
+    end();
     let r;
     try {
-      r = await proc.auto(px, { key: stat.key, data: stat.data }, t ? { key: this._tpl.key, t } : null, ctx);
+      r = await proc.frame(live, statArg, w, h, tpl ? { key: this._tpl.key, t: tpl } : null, { ...ctx, statKey });
     } catch (e) {
-      console.warn('floorplan3d: could not process the mower map', e);
-      return undefined;
+      if (!(e && (e.disposed || e.restart))) console.warn('floorplan3d: could not process the mower map', e);
+      if (e && e.restart) this._extUrl = null; // the static map goes along next time
+      return;
     }
-    t0 = performance.now();
-    if (r.mismatch) { this._setAutoMismatch(true); return AUTO_MISMATCH; }
-    this._setAutoMismatch(false);
-    this._autoGrey = r.grey;
-    if (detect) {
-      const key = `auto|${t ? 1 : 0}`; // again once the mower picture has loaded
-      const last = this._mapDetect;
-      if (!(last && last.image === image && last.key === key)) {
-        this._autoApply(r, px);
-        this._mapDetect = { image, key, found: this._imageBlob };
-        if (!this._mowerRefreshQueued) {
-          this._mowerRefreshQueued = true;
-          queueMicrotask(() => {
-            this._mowerRefreshQueued = false;
-            if (!this._view || !this._layout || !this._layout.mower) return;
-            this._refreshMower(false);
-            if (this._editing && this._edit) this._edit.onStates();
-          });
-        }
+    resume();
+    perf.worker = performance.now() - tw;
+    if (!this._layout || this._layout.mower !== cfg || !this._view) return; // settings changed meanwhile
+    const ta = performance.now();
+    this._applyFrame(r, cfg, { W, H, w, h, now, ctx, blob });
+    perf.apply = performance.now() - ta;
+    end();
+    perf.main += r.main || 0; // the pass itself when it ran here (no worker)
+    perf.max = Math.max(perf.max, r.main || 0);
+    perf.pass = r.ms;
+    this._recordMapPerf(perf);
+  }
+
+  _trackState() {
+    return (this._trk = this._trk || { docked: null, leaving: false, lastFull: undefined, layerAt: undefined, progress: undefined, lastAt: undefined, seenAt: undefined });
+  }
+
+  // framePass context from the tracking state: search window, full search, layer due, dock.
+  _frameContext(cfg, W, H, w, h, now) {
+    const trk = this._trackState();
+    const k = W / w;
+    const dk = this._dockedNow();
+    const dockChanged = trk.docked !== null && trk.docked !== dk.docked;
+    if (trk.docked !== null && trk.docked && !dk.docked) { trk.leaving = true; trk.leavingSince = now; }
+    if (trk.docked === null && !dk.docked && !this._imageBlob && !lastPosition(this._config.layout_key)) { trk.leaving = true; trk.leavingSince = now; } // unknown: from the dock
+    if (dk.docked) trk.leaving = false;
+    if (trk.leaving && now - trk.leavingSince > 5 * 60000) trk.leaving = false;
+    trk.docked = dk.docked;
+    // with a mower picture, wait for it (a shape guess before it loads may lock onto anything)
+    const picture = this.mowerAuto(cfg, true);
+    const tplWait = !!(picture && picture.picture) && !this._mowerTemplate() && !(this._tpl && this._tpl.t === null && this._tplLoading !== this._tpl.key);
+    const detect = cfg.source === 'image' && !dk.docked && !tplWait;
+    const tplKey = this._tpl && this._tpl.t ? this._tpl.key : null;
+    const tplChanged = trk.tplKey !== tplKey;
+    trk.tplKey = tplKey;
+    const b = this._imageBlob;
+    let prev = b && b.imgW === W ? [b.px / k, b.py / k] : null;
+    const last = lastPosition(this._config.layout_key);
+    const expected = b && b.count && b.matched ? b.count / (k * k) : last && last.count && last.imgW === W ? last.count / (k * k) : null;
+    let dockAt = this._dockPx ? [this._dockPx.px / k, this._dockPx.py / k] : null;
+    if (!dockAt && cfg.overlay) {
+      const d = this._objects && this._objects.dockPose();
+      if (d) { const q = planToPixel(d.x, d.y, W, H, cfg.overlay); dockAt = [q.px / k, q.py / k]; }
+    }
+    if (trk.leaving && dockAt && (!prev || dockChanged)) prev = dockAt.slice();
+    const missed = !!(this._imageResult && this._imageResult.missing);
+    const full = fullSearch({ tracked: !!prev, missed, dockChanged: dockChanged || tplChanged || !!this._forceFull, now, lastFull: trk.lastFull });
+    this._forceFull = false;
+    const ppm = w / Math.max(0.1, Number(cfg.overlay && cfg.overlay.width) || 20);
+    const win = !full && prev ? trackWindow({ px: prev[0], py: prev[1], size: Math.sqrt(expected || (b && b.count ? b.count / (k * k) : 64)) },
+      { dt: trk.lastAt ? (now - trk.lastAt) / 1000 : this._mapRefreshSec(), ppm, w, h }) : null;
+    const prog = findProgress(this._hass, this._mowerStateEntity());
+    const pv = prog ? progressValue(this._hass, prog) : null;
+    const layer = layerDue({ now, lastAt: trk.layerAt, progress: pv, lastProgress: trk.progress });
+    return {
+      detect, full: full || !win, window: win, layer, prev, expected, leaving: trk.leaving && detect,
+      prevGrey: this._autoGrey || null, dockAt, maxBlob: Math.max(400, w * h * 0.02), progress: pv,
+    };
+  }
+
+  // A refresh's result into the picture and the tracking state (main thread: small, no pixel reads).
+  _applyFrame(r, cfg, { W, H, w, h, now, ctx, blob }) {
+    const trk = this._trk;
+    trk.lastAt = now;
+    if (r.full) trk.lastFull = now;
+    if (ctx.layer) { trk.layerAt = now; trk.progress = ctx.progress; }
+    // changed tiles into the canvas, one texture upload
+    const c = (this._autoCanvas = this._autoCanvas || document.createElement('canvas'));
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    if (r.patches) {
+      const g = c.getContext('2d', { willReadFrequently: true }); // CPU-side: tiles written, uploaded once
+      let o = 0;
+      for (const [x0, y0, x1, y1] of r.patches.rects) {
+        const tw = x1 - x0, th = y1 - y0, len = tw * th * 4;
+        g.putImageData(new ImageData(new Uint8ClampedArray(r.patches.data.buffer, r.patches.data.byteOffset + o, len), tw, th), x0, y0);
+        o += len;
       }
     }
-    const c = (this._autoCanvas = this._autoCanvas || document.createElement('canvas'));
-    if (c.width !== w) c.width = w;
-    if (c.height !== h) c.height = h;
-    c.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(r.data, w, h), 0, 0);
+    if (r.mismatch) {
+      this._setAutoMismatch(true);
+      this._mismatchBlob = blob; // the colour picks run on it
+      this._mismatchPassFromBlob(blob);
+      return;
+    }
+    this._setAutoMismatch(false);
+    const showsOther = this._view.mapPlane && this._view.mapPlane.material.map && this._view.mapPlane.material.map.image !== c;
+    const ld = this._view.mapPlane && this._view.mapPlane.userData.loaded;
+    if (r.patches || showsOther || !ld || (this._editing && !ld.image)) { // edit mode: the raw picture for the pickers
+      if (this._editing) createImageBitmap(blob).then((img) => { if (this._view) this._view.setMapCanvas(c, W, H, { image: img }); }, () => this._view.setMapCanvas(c, W, H));
+      else this._view.setMapCanvas(c, W, H);
+    }
     const was = this._mapStats;
     this._mapStats = { zone: null, angle: r.angle, share: r.share, auto: true };
-    if (!was || was.angle !== this._mapStats.angle || was.share !== this._mapStats.share) this._mapStatsChanged();
-    main += performance.now() - t0;
-    this._autoMainMs = main; // main-thread time of this pass (headless checks)
-    return { canvas: c, width: w, height: h };
+    if (!was || was.angle !== r.angle || was.share !== r.share) this._mapStatsChanged();
+    if (!ctx.detect) { // docked (or the position comes from elsewhere): the picture only
+      if (cfg.source === 'image') this._queueMowerRefresh();
+      return;
+    }
+    this._lastFrame = { full: r.full, window: ctx.window, same: r.same, leaving: ctx.leaving }; // headless checks
+    if (r.same) return; // nothing changed since the last detection
+    if (r.grey !== undefined) this._autoGrey = r.grey;
+    const before = this._imageBlob;
+    this._autoApply(r, { imgW: W, imgH: H, width: w });
+    const b = this._imageBlob;
+    if (r.pose) trk.seenAt = now;
+    // moved away from the dock: an ordinary track again
+    if (trk.leaving && r.pose && ctx.dockAt && Math.hypot(r.pose.px - ctx.dockAt[0], r.pose.py - ctx.dockAt[1]) > 2.5 * Math.sqrt(r.pose.count || 64)) trk.leaving = false;
+    if (!before || !b || before.px !== b.px || before.py !== b.py || before.misses !== b.misses) this._queueMowerRefresh();
+    else if (this._editing && this._edit) this._edit.onStates();
+  }
+
+  _queueMowerRefresh() {
+    if (this._mowerRefreshQueued) return;
+    this._mowerRefreshQueued = true;
+    queueMicrotask(() => {
+      this._mowerRefreshQueued = false;
+      if (!this._view || !this._layout || !this._layout.mower) return;
+      this._refreshMower(false);
+      if (this._editing && this._edit) this._edit.onStates();
+    });
+  }
+
+  // The static map does not match this picture: the colour picks (or the picture as loaded) on it.
+  async _mismatchPassFromBlob(blob) {
+    try { const bmp = await createImageBitmap(blob); const W = bmp.width, H = bmp.height; await this._mismatchPass(bmp, W, H); } catch (e) { /* next refresh */ }
+  }
+
+  async _mismatchPass(bmp, W, H) {
+    let r;
+    try { r = await this._onMapImage(bmp, W, H); } catch (e) { r = undefined; }
+    if (!this._view) return;
+    const plane = this._view.mapPlane;
+    if (r && r.canvas) this._view.setMapCanvas(r.canvas, W, H, { image: this._editing ? bmp : null });
+    else if (r === null) { // as loaded
+      const { width: w, height: h } = mapWorkSize(W, H);
+      const c = (this._rawCanvas = this._rawCanvas || document.createElement('canvas'));
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      const g = c.getContext('2d', { willReadFrequently: true }); // CPU-side: tiles written, uploaded once
+      g.clearRect(0, 0, w, h);
+      g.drawImage(bmp, 0, 0, w, h);
+      this._view.setMapCanvas(c, W, H, { image: this._editing ? bmp : null });
+    }
+    if (!this._editing && bmp.close && !(plane && plane.userData.loaded && plane.userData.loaded.image === bmp)) bmp.close();
+  }
+
+  _mapRefreshSec() {
+    const o = this._layout && this._layout.mower && this._layout.mower.overlay;
+    return Math.max(1, Number(o && o.refresh) || 10);
+  }
+
+  // Timing of a refresh (debug overlay, adaptive throttle, headless checks).
+  _recordMapPerf(perf) {
+    const p = (this._perf = this._perf || { last: null });
+    p.last = { main: perf.main, max: perf.max, decode: perf.decode, worker: perf.worker, apply: perf.apply, pass: perf.pass, at: performance.now() };
+    // a long task of the page during one of this refresh's own sections counts as the map's
+    const longTask = perf.max > LONG_TASK_MS || (this._longs || []).some((e) => perf.sections.some(([a, b]) => e.start < b && e.start + e.ms > a));
+    const base = this._mapRefreshSec();
+    const was = this._throttle ? this._throttle.factor : 1;
+    this._throttle = throttleStep(this._throttle, { now: Date.now(), longTask, base });
+    if (this._throttle.factor !== was) this._refreshMapOverlay(); // the camera timer at the new interval
   }
 
   _setAutoMismatch(on) {
@@ -1238,10 +1495,10 @@ class Floorplan3dCard extends HTMLElement {
       if (this._imageBlob) this._imageBlob = { ...this._imageBlob, misses: (this._imageBlob.misses || 0) + 1 };
       return;
     }
-    this._imageBlob = { px: pose.px * k, py: pose.py * k, count: pose.count * k * k, misses: 0, imgW: px.imgW, imgH: px.imgH, sampleW: px.width, colors: [] };
+    this._imageBlob = { px: pose.px * k, py: pose.py * k, count: pose.count * k * k, misses: 0, imgW: px.imgW, imgH: px.imgH, sampleW: px.width, colors: [], matched: pose.score != null };
     this._imageResult = { count: pose.count, match: pose.score };
     this._setIconHeading(pose.angle, pose.source);
-    this._dockPx = r.dock ? { px: r.dock[0] * k, py: r.dock[1] * k } : null;
+    if (r.dock !== undefined) this._dockPx = r.dock ? { px: r.dock[0] * k, py: r.dock[1] * k } : null; // full searches only
   }
 
   _setImageTimer(seconds) {
@@ -1291,6 +1548,7 @@ class Floorplan3dCard extends HTMLElement {
     if (step.found) {
       // refined centre and the icon's heading: its picture (when set) or its shape
       const pose = this._iconPose(img, b, cols, ic.tolerance ?? 40);
+      this._trackState().seenAt = Date.now();
       this._imageBlob = { px: pose.x * k, py: pose.y * k, count: b.count * k * k, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, colors: cols };
       this._setIconHeading(pose.angle, pose.source);
       return { result: { count: b.count, match: pose.score }, found: this._imageBlob };
@@ -1338,13 +1596,17 @@ class Floorplan3dCard extends HTMLElement {
 
   // A bound mower object follows the live position; heading from the last real movement (> 5 cm;
   // image source: > max(0.25 m, 3 map pixels), so detection noise never turns it).
-  _poseMowerObject(p, floorId) {
+  // fixed: { heading } of the dock / the last known pose (no heading from movement or the icon).
+  _poseMowerObject(p, floorId, fixed = null) {
     const layer = this._objects;
     if (!layer || !layer.mowerBound()) { this._mowerHeadFrom = null; layer && layer.setMowerPose(null); return; }
     if (!p) return;
     const from = this._mowerHeadFrom;
     const icon = this._layout.mower && this._layout.mower.source === 'image' ? this._iconHead : null;
-    if (icon) { // read from the icon itself
+    if (fixed) {
+      if (Number.isFinite(fixed.heading)) { this._mowerHeading = fixed.heading; this._headingSource = this._mowerAt === 'last' ? this._headingSource : 'dock'; }
+      this._mowerHeadFrom = [p[0], p[1]];
+    } else if (icon) { // read from the icon itself
       this._mowerHeading = (icon.angle * Math.PI) / 180;
       this._headingSource = icon.source;
       this._mowerHeadFrom = [p[0], p[1]];
@@ -1383,11 +1645,7 @@ class Floorplan3dCard extends HTMLElement {
     const cfg = this._layout && this._layout.mower;
     const o = cfg && cfg.overlay;
     if (!o || !W || !H) return null;
-    const auto = this.mowerAuto(cfg);
-    if (auto) {
-      const r = await this._autoMap(image, W, H, cfg, auto);
-      if (r !== AUTO_MISMATCH) return r;
-    } else this._setAutoMismatch(false);
+    if (!this.mowerAuto(cfg)) this._setAutoMismatch(false); // auto mode: _mapFrame (this runs on a mismatch)
     // colour picks (also when the static map does not match this picture)
     const driven = this._mapDriven(cfg) && colorList(cfg.image).length > 0;
     const pre = this._mapSettings(o, null);
@@ -1524,15 +1782,23 @@ class Floorplan3dCard extends HTMLElement {
       return;
     }
     const camera = o.entity.startsWith('camera.');
-    this._setCameraTimer(camera ? Math.max(1, Number(o.refresh) || 10) : 0);
+    const external = !!this.mowerAuto(cfg); // auto mode: decoded and processed off the main thread
+    // the adaptive throttle stretches the interval of auto mode (long tasks from the map)
+    this._setCameraTimer(camera ? (external ? effectiveRefresh(this._mapRefreshSec(), this._throttle) : Math.max(1, Number(o.refresh) || 10)) : 0);
     // image entities change their state when the picture changes; cameras are polled
     const bust = camera ? this._cameraTick || 1 : st.last_updated || st.state;
+    const url = overlayUrl(this._hass, o.entity, bust);
     this._view.setMapOverlay({
-      url: overlayUrl(this._hass, o.entity, bust),
+      url: external ? `fp-auto:${o.entity}` : url, external,
       x: o.x, y: o.y, rotation: o.rotation, width: o.width, opacity: o.opacity,
       floorId: this._mowerFloor(), heightOffset: o.height_offset || 0,
       hidden: !!o.edit_only && !this._editing, // detection keeps reading the loaded image
     });
+    if (!external) this._extUrl = null;
+    else if (url !== this._extUrl) {
+      this._extUrl = url;
+      this._pumpMap();
+    }
     // processing settings (and the alignment, which moves the zone clip) changed: process the
     // loaded picture again
     // the alignment only matters to a zone clip (it moves the clip over the picture)

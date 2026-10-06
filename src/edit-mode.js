@@ -631,7 +631,8 @@ export class EditMode {
     const live = this.card._mowerLive;
     const raw = r.raw.map((v) => (m.source === 'xy' ? fmt(v) : v.toFixed(6))).join(', ');
     const plan = live && live.floorId ? `on plan (${fmt(live.x)}, ${fmt(live.y)})` : 'not on the plan yet: add a calibration point';
-    return `Reading ${raw}<br>${plan}`;
+    const ms = this.card.mowerStatus();
+    return `${ms && ms.kind === 'dock' ? `<span class="mower-status">${esc(this.card.mowerStatusText())}</span><br>` : ''}Reading ${raw}<br>${plan}`;
   }
 
   _mowerImageHtml() {
@@ -639,7 +640,7 @@ export class EditMode {
     const ic = m.image || {};
     if (!m.overlay || !m.overlay.entity) return 'Add the map overlay below and align it with the plan: that alignment is the calibration.';
     const hd = this.card.mowerHeading();
-    const head = hd ? `<br>Heading ${hd.deg}° (${{ picture: 'mower picture', icon: 'icon', movement: 'movement' }[hd.source] || hd.source})` : '';
+    const head = hd ? `<br>Heading ${hd.deg}° (${{ picture: 'mower picture', icon: 'icon', movement: 'movement', dock: 'dock' }[hd.source] || hd.source})` : '';
     if (!colorList(ic).length && !this.card.mowerAuto(m)) return 'Pick the mower icon colour on the map (below).';
     return this._mowerImageFound() + head;
   }
@@ -648,6 +649,16 @@ export class EditMode {
     const r = this.card._imageResult;
     const live = this.card._mowerLive;
     if (r && r.error) return `<span style="color: var(--error-color, #db4437)">${esc(r.error)}</span>`;
+    const st = this.card.mowerStatus();
+    const line = st ? `<span class="mower-status">${esc(this.card.mowerStatusText())}</span>` : '';
+    const at = live && live.floorId ? ` at ${fmt(live.x)}, ${fmt(live.y)}` : '';
+    if (st && st.kind === 'dock') return line + at;
+    if (this.card.mowerAuto(this.mower())) return line + (st && (st.kind === 'tracked' || st.kind === 'last') ? at : '');
+    if (line && st.kind !== 'searching') return `${line}<br>${this._mowerColourFound(r, live)}`;
+    return this._mowerColourFound(r, live);
+  }
+
+  _mowerColourFound(r, live) {
     if (r && r.missing) return 'Mower icon not found' + (live && live.floorId ? ` (last seen at ${fmt(live.x)}, ${fmt(live.y)})` : '') + '.';
     if (r && live && live.floorId) return `Found at ${fmt(live.x)}, ${fmt(live.y)} (${r.count} px${r.match ? `, picture match ${r.match.toFixed(2)}` : ''})`;
     return 'Looking for the mower icon…';

@@ -21,6 +21,7 @@ export const SCHEMA = [
   { name: 'sky_bodies', selector: { boolean: {} } },
   { name: 'clouds', selector: { boolean: {} } },
   { name: 'weather', selector: { entity: { domain: 'weather' } } },
+  { name: 'debug', selector: { boolean: {} } },
   { name: 'layout_key', selector: { text: {} } },
   {
     type: 'expandable', name: '', title: 'Model from a URL (instead of uploading in the card)', schema: [
@@ -46,6 +47,7 @@ const LABELS = {
   sky_bodies: 'Sun and moon in the sky',
   clouds: 'Clouds in the sky',
   weather: 'Weather entity',
+  debug: 'Performance overlay (debug)',
   group_by: 'Markers',
   room_labels: 'Room labels',
   zoom_to: 'Zoom towards',

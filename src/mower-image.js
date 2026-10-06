@@ -601,8 +601,40 @@ function auto(m) {
   delete r.data;
   self.postMessage(Object.assign({ id: m.id, out, live: m.live }, r), [out, m.live]);
 }
+// live map refreshes: the decoded pictures (ImageBitmap) drawn and read here, never on the page
+let fs = { key: null, data: null, shift: null, w: 0, h: 0 }, fstate = A ? A.frameState() : null, fcv = null;
+function pixelsOf(bmp, w, h) {
+  if (!fcv) fcv = new OffscreenCanvas(w, h);
+  if (fcv.width !== w) fcv.width = w;
+  if (fcv.height !== h) fcv.height = h;
+  const g = fcv.getContext('2d', { willReadFrequently: true });
+  g.clearRect(0, 0, w, h);
+  g.drawImage(bmp, 0, 0, w, h);
+  if (bmp.close) bmp.close();
+  return g.getImageData(0, 0, w, h).data;
+}
+function frame(m) {
+  const t0 = performance.now();
+  if (m.stat) fs = { key: m.statKey, data: pixelsOf(m.stat, m.w, m.h), shift: null, w: m.w, h: m.h };
+  if (m.tplKey !== tpl.key) tpl = { key: m.tplKey, t: m.template, cache: new Map() };
+  if (fs.key !== m.statKey || fs.w !== m.w || fs.h !== m.h) { if (m.live && m.live.close) m.live.close(); throw new Error('static map missing'); }
+  const live = pixelsOf(m.live, m.w, m.h);
+  if (!fs.shift) { // small offset between the two pictures, once per static picture / size
+    const f = Math.max(1, Math.round(m.w / 256));
+    const a = A.downGray(fs.data, m.w, m.h, f), b = A.downGray(live, m.w, m.h, f);
+    const sh = A.bestShift(a.g, b.g, a.w, a.h, 4);
+    fs.shift = { dx: sh.dx * f, dy: sh.dy * f };
+  }
+  const r = A.framePass(fs.data, live, m.w, m.h, Object.assign({}, m.ctx, { shift: fs.shift, statKey: fs.key, template: tpl.t, cache: tpl.cache }), fstate);
+  const tr = r.patches ? [r.patches.data.buffer] : [];
+  self.postMessage(Object.assign({ id: m.id, ms: performance.now() - t0 }, r), tr);
+}
 self.onmessage = (e) => {
   const m = e.data;
+  if (m.type === 'frame') {
+    try { frame(m); } catch (err) { self.postMessage({ id: m.id, error: String(err) }); }
+    return;
+  }
   if (m.type === 'auto') {
     try { auto(m); } catch (err) { self.postMessage({ id: m.id, error: String(err), live: m.live }, [m.live]); }
     return;
@@ -746,6 +778,7 @@ export class MapProcessor {
     if (this._worker) this._worker.terminate();
     this._worker = null;
     this._workerDead = true;
+    this._sentFrameStat = null;
     this._waiting.clear();
   }
 
@@ -821,11 +854,97 @@ export class MapProcessor {
     });
   }
 
+  // One live map refresh (mower-auto.js framePass): live / stat are decoded pictures (ImageBitmap,
+  // transferred: the worker draws and reads them, the page never reads pixels); stat only when its key
+  // changed. w, h: working size. template: { key, t } | null; ctx: framePass context. Without a worker:
+  // the same pass here. -> Promise of its result + { ms (pass time), main (ms on this thread) }
+  frame(live, stat, w, h, template, ctx) {
+    const run = this._queue.then(() => this._frame(live, stat, w, h, template, ctx));
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _frame(live, stat, w, h, template, ctx) {
+    const wk = AUTO && AUTO.frame ? this._getWorker() : null;
+    if (wk) {
+      try {
+        return await this._frameViaWorker(wk, live, stat, w, h, template, ctx);
+      } catch (e) {
+        if (e && e.disposed) throw e;
+        if (e && e.restart) { this._sentFrameStat = null; throw e; }
+        console.warn('floorplan3d: map worker failed, processing on the main thread', e);
+        this._killWorker();
+        throw e; // the pictures went to the worker: this refresh is skipped, the next one runs here
+      }
+    }
+    await yieldOnce();
+    const t0 = performance.now();
+    const read = (bmp) => {
+      if (!this.work) this.work = makeCanvas(w, h);
+      if (this.work.width !== w) this.work.width = w;
+      if (this.work.height !== h) this.work.height = h;
+      const g = this.work.getContext('2d', { willReadFrequently: true });
+      g.clearRect(0, 0, w, h);
+      g.drawImage(bmp, 0, 0, w, h);
+      if (bmp.close) bmp.close();
+      return g.getImageData(0, 0, w, h).data;
+    };
+    if (stat) this._fstat = { key: stat.key, data: read(stat.bitmap), shift: null, w, h };
+    const fst = this._fstat;
+    if (!fst || fst.key !== (stat ? stat.key : ctx.statKey) || fst.w !== w || fst.h !== h) { if (live.close) live.close(); throw Object.assign(new Error('static map missing'), { restart: true }); }
+    const px = read(live);
+    if (!fst.shift) {
+      const f = Math.max(1, Math.round(w / 256));
+      const a = AUTO.downGray(fst.data, w, h, f), b = AUTO.downGray(px, w, h, f);
+      const sh = AUTO.bestShift(a.g, b.g, a.w, a.h, 4);
+      fst.shift = { dx: sh.dx * f, dy: sh.dy * f };
+    }
+    if (!this._fstate) this._fstate = AUTO.frameState();
+    if (!this._autoCache || this._autoCache.key !== (template && template.key)) this._autoCache = { key: template && template.key, cache: new Map() };
+    const r = AUTO.frame(fst.data, px, w, h, { ...ctx, shift: fst.shift, statKey: fst.key, template: template && template.t, cache: this._autoCache.cache }, this._fstate);
+    const ms = performance.now() - t0;
+    return { ...r, ms, main: ms };
+  }
+
+  _frameViaWorker(wk, live, stat, w, h, template, ctx) {
+    const id = ++this._seq;
+    const msg = { type: 'frame', id, live, w, h, ctx, statKey: stat ? stat.key : this._sentFrameStat, tplKey: template ? template.key : null, template: null };
+    const tr = [live];
+    if (stat) { msg.stat = stat.bitmap; tr.push(stat.bitmap); }
+    if (this._sentTpl !== msg.tplKey) msg.template = template ? template.t : null;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this._waiting.delete(id); reject(new Error('timeout')); }, WORKER_TIMEOUT_MS);
+      this._waiting.set(id, (m) => {
+        clearTimeout(timer);
+        this._waiting.delete(id);
+        if (m.disposed) reject(Object.assign(new Error('disposed'), { disposed: true }));
+        else if (m.error) {
+          this._sentTpl = undefined;
+          // the static map is not there (another size, a new worker): send it again next time
+          reject(Object.assign(new Error(m.error), { restart: /static map missing/.test(m.error) }));
+          this._sentFrameStat = null;
+        } else resolve({ ...m, main: 0 });
+      });
+      wk.postMessage(msg, tr);
+      if (stat) this._sentFrameStat = stat.key;
+      this._sentTpl = msg.tplKey;
+    });
+  }
+
+  // Does the processor (its worker, else this thread) hold the static picture of this key?
+  hasStatic(key) {
+    if (this._worker) return this._sentFrameStat === key;
+    return !!this._fstat && this._fstat.key === key;
+  }
+
   // Terminates the worker and settles pending runs (their timeouts cleared) without marking the worker
   // dead, so a later run (after a reconnect) starts a fresh one.
   dispose() {
     if (this._worker) this._worker.terminate();
     this._worker = null;
+    this._sentFrameStat = null;
+    this._sentStat = null;
+    this._sentTpl = undefined;
     for (const w of [...this._waiting.values()]) w({ disposed: true });
     this._waiting.clear();
   }

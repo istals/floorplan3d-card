@@ -18,8 +18,8 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - name: Headless browser checks (demo, edit mode, model)
-        run: node scripts/screenshot.mjs && node scripts/edit-check.mjs && (node scripts/model-check.mjs || (echo "model-check retry (slow shared runner timing)" && node scripts/model-check.mjs))
+      - name: Headless browser checks (demo, edit mode, model, mower map benchmark)
+        run: node scripts/screenshot.mjs && node scripts/edit-check.mjs && (node scripts/model-check.mjs || (echo "model-check retry (slow shared runner timing)" && node scripts/model-check.mjs)) && node scripts/perf-check.mjs
         env:
           CHROME_PATH: /usr/bin/google-chrome
       - uses: actions/upload-artifact@v4

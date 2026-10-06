@@ -84,6 +84,21 @@ function robotPicture() {
   g.fillRect(8, 18, 4, 18);
   return (ROBOT.pic = c);
 }
+// ?robotmap=1600 (benchmark): both robot maps drawn S x S pixels (the 450 x 850 lawn scaled and centred).
+const ROBOT_SIZE = (() => { try { return Number(new URLSearchParams(location.search).get('robotmap')) || 0; } catch (e) { return 0; } })();
+function robotCanvas() {
+  const c = document.createElement('canvas');
+  c.width = ROBOT_SIZE || 450;
+  c.height = ROBOT_SIZE || 850;
+  const g = c.getContext('2d');
+  if (ROBOT_SIZE) {
+    const s = ROBOT_SIZE / 850;
+    g.fillStyle = '#1d1f21';
+    g.fillRect(0, 0, ROBOT_SIZE, ROBOT_SIZE);
+    g.setTransform(s, 0, 0, s, (ROBOT_SIZE - 450 * s) / 2, 0);
+  }
+  return { c, g };
+}
 function robotStatic(g) {
   g.fillStyle = '#1d1f21';
   g.fillRect(0, 0, 450, 850);
@@ -100,12 +115,10 @@ function robotOverlay(g) {
   g.lineWidth = 3;
   g.strokeRect(25, 25, 400, 800);
 }
-function robotMap(live, t) {
-  if (typeof document === 'undefined') return '';
-  const c = document.createElement('canvas');
-  c.width = 450;
-  c.height = 850;
-  const g = c.getContext('2d');
+// at: { x, y, t } draws the mower at that map pixel instead of on its circle (e.g. on the dock);
+// mowed: how many stripes are mowed (more over time in the benchmark).
+function robotDraw(live, t, at = null, mowed = 12) {
+  const { c, g } = robotCanvas();
   robotStatic(g);
   if (live) {
     g.save();
@@ -115,21 +128,25 @@ function robotMap(live, t) {
     g.translate(225, 425);
     g.rotate((-30 * Math.PI) / 180);
     g.fillStyle = '#79c46a';
-    for (let y = -700; y < 0; y += 60) g.fillRect(-700, y, 1400, 30); // the north half mowed
+    for (let y = -700, i = 0; y < 0 && i < mowed; y += 60, i++) g.fillRect(-700, y, 1400, 30); // the north half mowed
     g.restore();
   }
   robotOverlay(g);
   if (live) {
     g.fillStyle = '#b4b4b4'; // dock
     g.fillRect(370, 765, 42, 42);
-    const x = 225 + 150 * Math.cos(t), y = 425 - 150 * Math.sin(t);
+    const x = at ? at.x : 225 + 150 * Math.cos(t), y = at ? at.y : 425 - 150 * Math.sin(t);
     g.save();
     g.translate(x, y);
-    g.rotate(-t); // top of the picture along the heading t + 90° (counter-clockwise, image up)
+    g.rotate(-(at ? at.t : t)); // top of the picture along the heading t + 90° (counter-clockwise, image up)
     g.drawImage(robotPicture(), -14.4, -19.2, 28.8, 38.4);
     g.restore();
   }
-  return c.toDataURL('image/png');
+  return c;
+}
+function robotMap(live, t, at = null) {
+  if (typeof document === 'undefined') return '';
+  return robotDraw(live, t, at).toDataURL('image/png');
 }
 const pretty = (id) => id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const areas = Object.fromEntries(Object.entries(areaFloor).map(([id, f]) => [id, { area_id: id, name: pretty(id), floor_id: f }]));
@@ -323,11 +340,31 @@ export function createMockHass({ onChange }) {
 
   // the second robot: window.__setRobot(t) puts it at angle t (radians) on its circle (heading t + 90°)
   let rt = 0;
+  const setRobotPicture = (url) => {
+    const c = current.states['camera.robo_live_map'];
+    update({ 'camera.robo_live_map': { ...c, state: 'idle', last_updated: new Date().toISOString(), attributes: { ...c.attributes, entity_picture: url } } });
+  };
   window.__setRobot = (t) => {
     rt = t;
-    const c = current.states['camera.robo_live_map'];
-    update({ 'camera.robo_live_map': { ...c, state: 'idle', last_updated: new Date().toISOString(), attributes: { ...c.attributes, entity_picture: robotMap(true, rt) } } });
+    setRobotPicture(robotMap(true, rt));
   };
+  // headless checks: the mower drawn at a map pixel (x, y of the 450 x 850 map), turned by t
+  window.__setRobotAt = (x, y, t = 0) => setRobotPicture(robotMap(true, 0, { x, y, t }));
+  // benchmark: frames rendered ahead as blob URLs (encoding a big PNG is not the card's time), then
+  // shown one by one. -> Promise of the frame count
+  const frames = [], blobs = [];
+  window.__robotFrames = async (n, t0 = 0, dt = 0.02) => {
+    for (let i = 0; i < n; i++) {
+      const c = robotDraw(true, t0 + i * dt, null, 6 + Math.floor((i * 6) / n));
+      const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+      blobs.push(b);
+      frames.push(URL.createObjectURL(b));
+    }
+    return frames.length;
+  };
+  window.__setRobotFrame = (i) => setRobotPicture(frames[i % frames.length]);
+  // the same picture under a new URL (a camera refresh where nothing changed)
+  window.__setRobotSame = (i) => setRobotPicture(URL.createObjectURL(blobs[i % blobs.length]));
   // headless checks: window.__setDemoStates({ entity_id: state | { state, attributes } })
   window.__setDemoStates = (changes) => update(Object.fromEntries(Object.entries(changes).map(([eid, v]) => {
     const s = current.states[eid] || { entity_id: eid, attributes: {} };

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compareMaps, bestShift, downGray, autoShare, dockBlob, CLS, pickMower, isDock, autoProcess } from '../src/mower-auto.js';
+import { compareMaps, bestShift, downGray, autoShare, dockBlob, CLS, pickMower, isDock, autoProcess, framePass, frameState } from '../src/mower-auto.js';
+import { trackWindow } from '../src/mower-track.js';
 import { makeTemplate, matchTemplate, grayOf, angleDiff } from '../src/mower-heading.js';
 
 const BGC = [28, 28, 30], LAWN = [60, 125, 58], MOWED = [118, 190, 104], NOMOW = [140, 140, 140], LINE = [210, 50, 50], DOCK = [176, 176, 176];
@@ -151,5 +152,94 @@ describe('auto mode: static map mismatch guard', () => {
     for (let i = 0; i < w * h; i++) { stat.set([30, 150, 40, 255], i * 4); live.set([30, 150, 40, 255], i * 4); }
     for (let y = 10; y < 60; y++) for (let x = 10; x < 60; x++) live.set([200, 60, 180, 255], (y * w + x) * 4); // 25 % of the picture
     expect(compareMaps(stat, live, w, h, { dx: 0, dy: 0 }, { maxBlob: 500 }).blobs).toEqual([]);
+  });
+});
+
+describe('auto mode: one refresh with a search window and changed tiles', () => {
+  const pic = mowerPicture();
+  const t = makeTemplate(pic.a, pic.w, pic.h);
+  const stat = staticMap();
+  const base = { shift: { dx: 0, dy: 0 }, detect: true, template: t, statKey: 's' };
+
+  it('first pass: everything drawn as one patch, the same pixels as the full comparison', () => {
+    const live = liveMap(pic, t, 81.4, 70.6, 20, 0.8);
+    const S = frameState();
+    const r = framePass(stat, live, W, H, { ...base, layer: true, full: true }, S);
+    expect(r.patches.rects).toEqual([[0, 0, W, H]]);
+    expect(Array.from(r.patches.data)).toEqual(Array.from(compareMaps(stat, live, W, H).data));
+    expect(r.share).toBeCloseTo(autoShare(compareMaps(stat, live, W, H)), 6);
+    expect(r.full).toBe(true);
+    expect(Math.hypot(r.pose.px - 81.4, r.pose.py - 70.6)).toBeLessThanOrEqual(1);
+    expect(r.dock && Math.hypot(r.dock[0] - 130, r.dock[1] - 172.5)).toBeLessThan(1);
+  });
+
+  it('a window around the last position finds the moved mower without a full search', () => {
+    const S = frameState();
+    framePass(stat, liveMap(pic, t, 81.4, 70.6, 20, 0.8), W, H, { ...base, layer: true, full: true }, S);
+    const win = trackWindow({ px: 81.4, py: 70.6, size: 16 }, { dt: 2, ppm: 5, w: W, h: H });
+    const r = framePass(stat, liveMap(pic, t, 86, 74, 30, 0.8), W, H, { ...base, window: win, prev: [81.4, 70.6], expected: 190 }, S);
+    expect(r.full).toBe(false);
+    expect(Math.hypot(r.pose.px - 86, r.pose.py - 74)).toBeLessThanOrEqual(1);
+    expect(r.patches).toBe(null); // the layer is not due
+    expect(r.dock).toBe(undefined); // not looked at in a window
+  });
+
+  it('not in the window: the whole picture is searched', () => {
+    const S = frameState();
+    framePass(stat, liveMap(pic, t, 81.4, 70.6, 20, 0.8), W, H, { ...base, layer: true, full: true }, S);
+    const win = { x0: 0, y0: 100, x1: 40, y1: 140 };
+    const r = framePass(stat, liveMap(pic, t, 83, 72, 25, 0.8), W, H, { ...base, window: win, prev: [20, 120] }, S);
+    expect(r.full).toBe(true);
+    expect(Math.hypot(r.pose.px - 83, r.pose.py - 72)).toBeLessThanOrEqual(1);
+  });
+
+  it('an icon cut off by the window edge is no answer: the whole picture is searched', () => {
+    const S = frameState();
+    framePass(stat, liveMap(pic, t, 81.4, 70.6, 20, 0.8), W, H, { ...base, layer: true, full: true }, S);
+    const win = { x0: 40, y0: 40, x1: 82, y1: 100 }; // ends at the icon's centre
+    const r = framePass(stat, liveMap(pic, t, 84, 72, 25, 0.8), W, H, { ...base, window: win, prev: [70, 70], expected: 190 }, S);
+    expect(r.full).toBe(true);
+    expect(r.pose.source).toBe('picture');
+    expect(Math.hypot(r.pose.px - 84, r.pose.py - 72)).toBeLessThanOrEqual(1);
+  });
+
+  it('only changed tiles are redrawn; an unchanged picture is the same answer', () => {
+    const S = frameState();
+    const a = liveMap(pic, t, 81.4, 70.6, 20, 0.8);
+    framePass(stat, a, W, H, { ...base, layer: true, full: true }, S);
+    const same = framePass(stat, a.slice(), W, H, { ...base, layer: true }, S);
+    expect(same.patches).toBe(null);
+    expect(same.same).toBe(true);
+    expect(Math.hypot(same.pose.px - 81.4, same.pose.py - 70.6)).toBeLessThanOrEqual(1);
+    const b = a.slice();
+    for (let y = 140; y < 150; y++) for (let x = 100; x < 110; x++) b.set([...MOWED, 255], (y * W + x) * 4); // tile (1, 2)
+    const r = framePass(stat, b, W, H, { ...base, layer: true }, S);
+    expect(r.patches.rects).toEqual([[64, 128, 128, 192]]);
+    // the patch equals that region of the full comparison
+    const full = compareMaps(stat, b, W, H).data;
+    let o = 0, diff = 0;
+    for (let y = 128; y < 192; y++) for (let x = 64; x < 128; x++, o += 4) for (let c = 0; c < 4; c++) if (r.patches.data[o + c] !== full[(y * W + x) * 4 + c]) diff++;
+    expect(diff).toBe(0);
+  });
+
+  it('just undocked, still over the dock icon: found by its picture, not dropped as the dock', () => {
+    const live = liveMap(pic, t, 126, 166, 90, 0.8); // over the dock (120..140 x 165..180)
+    const S = frameState();
+    const ctx = { ...base, layer: true, full: true, prev: [130, 172], expected: 190, dockAt: [130, 172.5], prevGrey: [[130, 172.5]] };
+    const dropped = framePass(stat, live, W, H, ctx, S);
+    expect(dropped.pose).toBe(null); // the merged blob is the dock: no other changed area instead
+    const r = framePass(stat, live, W, H, { ...ctx, leaving: true }, frameState());
+    expect(r.pose).not.toBe(null);
+    expect(Math.hypot(r.pose.px - 126, r.pose.py - 166)).toBeLessThanOrEqual(2);
+    expect(r.pose.source).toBe('picture');
+  });
+
+  it('a picture that matches nothing: no other blob instead (no jump to some changed area)', () => {
+    const live = staticMap();
+    for (let y = 90; y < 110; y++) for (let x = 60; x < 80; x++) live.set([200, 60, 180, 255], (y * W + x) * 4); // a magenta square
+    const r = framePass(stat, live, W, H, { ...base, layer: true, full: true }, frameState());
+    expect(r.pose).toBe(null);
+    const r2 = framePass(stat, live, W, H, { ...base, template: null, layer: true, full: true }, frameState());
+    expect(r2.pose).not.toBe(null); // no picture: the shape is all there is
   });
 });

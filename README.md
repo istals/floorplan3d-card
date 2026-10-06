@@ -79,7 +79,8 @@ The options below can be set in the visual editor or in YAML.
 | `view` | `3d` | Start in `3d` or `top` view. |
 | `floor` | first floor with rooms | Floor id (or view id) to show first, or `all`. |
 | `view_id` | | View to show first (with a model: a view id such as `ground`). Wins over `floor`. |
-| `room_labels` | `size` | Room labels: `size` (name and size, e.g. `Office · 4.5 × 5.0 m`, or `m²` for other shapes), `name`, or `none`. |
+| `room_labels` | `size` | Room labels: `size` (name and size, e.g. `Office · 4.5 × 5.0 m`, or `m²` for other shapes), `name`, or `none`. Also set in Edit → Rooms (stored with the layout); the YAML option wins. |
+| `debug` | `false` | Small performance overlay (bottom-left): FPS, frame ms, the longest main-thread task of the last minute, the stages of the last mower map refresh (decode / worker / apply), shadow-map updates and renders a minute, the map refresh interval. |
 | `zoom_to` | `center` | Zoom pivot: `center` zooms (and rotates) around the view's rotation centre, `cursor` zooms towards the mouse pointer. A view can override it (see Camera). |
 | `views` | | Per-view overrides by view id (see Views). |
 | `model` | | URL of a `.glb` model, e.g. `/local/house.glb`. |
@@ -204,7 +205,15 @@ For a Sunseeker (wireless models):
 3. **Auto mode** turns on by itself when the same device has a static *Map* image
    (`image.<mower>_map`): the live map is compared with it each refresh, and the mower is found by its
    product picture (`image.<mower>_mower_image`). Both entities can be set by hand; **Use colour
-   picks instead** switches back to the colour picks.
+   picks instead** switches back to the colour picks. The live map is decoded and processed in a
+   worker: each refresh searches a window around the last position (the whole map when lost, after
+   docking / undocking, every 60 s), and the drawn layer (mowed stripes, no-mow) is redrawn every
+   60 s or when the progress sensor changes, changed tiles only. If the card finds the map processing
+   causing long main-thread tasks, it doubles the refresh interval (up to 60 s) until things are quiet.
+   While the mower is **docked or charging** (lawn_mower state, or a *Mower status* sensor) it stands
+   at the model's dock object, turned as the dock (front = its +Z or `hints.front`); after undocking it
+   is tracked from there. When it is not found, it stays at its last known position. The status line
+   of the Mower tab says which: *At dock*, *Tracked on map (score 0.82)*, *Last known position*.
 4. **Align by points** until the map sits on the lawn.
 5. The error code sensor of the device is used automatically (see the warning below).
 

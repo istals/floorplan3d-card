@@ -13,10 +13,12 @@ class DemoIcon extends HTMLElement {
 }
 if (!customElements.get('ha-icon')) customElements.define('ha-icon', DemoIcon);
 
+const params = new URLSearchParams(location.search);
+// ?cards=1: the light-theme card only (benchmarks)
+if (params.get('cards') === '1') document.querySelectorAll('.theme.dark').forEach((s) => s.remove());
 const cards = [...document.querySelectorAll('floorplan3d-card')];
 const themes = new Map(cards.map((c) => [c, { darkMode: !!c.closest('.dark') }]));
 const push = (hass) => { for (const c of cards) c.hass = { ...hass, themes: themes.get(c) }; };
-const params = new URLSearchParams(location.search);
 for (const c of cards) {
   const model = params.get('model');
   c.setConfig({
@@ -27,6 +29,7 @@ for (const c of cards) {
     actions: { 'lawn_mower.demo': { double_tap_action: { action: 'more-info', entity: 'camera.garden' } } },
     ...(params.get('merge') === '0' ? { merge: false } : {}), // ?merge=0: every model part its own mesh
     ...(params.get('logos') === '1' ? { badges: { integration: true } } : {}), // ?logos=1: integration logos on
+    ...(params.get('debug') === '1' ? { debug: true } : {}), // ?debug=1: the performance overlay
   });
 }
 

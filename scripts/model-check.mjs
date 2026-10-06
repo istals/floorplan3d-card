@@ -2486,7 +2486,7 @@ try {
     for (let i = 0; i < 4; i++) {
       await ev(`window.__setRobot(${1 + i * 0.05})`);
       await sleep(900);
-      out.push(await ev(`(() => { const c = ${card}; return (c._autoMainMs || 0) + (c._mapProc.lastMainMs || 0); })()`));
+      out.push(await ev(`(() => { const p = ${card}._perf && ${card}._perf.last; return p ? p.main : 0; })()`));
     }
     return out.sort((a, b) => a - b)[1];
   };
@@ -2517,6 +2517,63 @@ try {
   await ev(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=mower-auto-off]'); el.click(); })()`);
   await sleep(2500);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-auto.png') });
+  await ev('window.__demoMowerPaused = false');
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
+// 2k. docked: the mower at the dock object (its orientation), no detection; undocking tracks from the
+// dock (the icon over the dock icon is not dropped as the dock); the Mower tab status line
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 700 });
+try {
+  const { page } = s;
+  const ev = (expr) => page.evaluate(expr);
+  const until = (expr, label, timeout = 10000) => page.waitForFunction(expr, { timeout }).then(() => true, () => { console.log(`     (timed out waiting for ${label})`); return false; });
+  await until(`!!${card}._view.model`, 'the model', 20000);
+  await ev('window.__demoMowerPaused = true');
+  // mowing first (the map's dock icon and the icon size are learned), then home to the dock
+  await ev(`window.__setRobotAt(300, 600, 0.3)`);
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' }, dock: { entity: 'lawn_mower.robo' } },
+    mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [], trail: true,
+    overlay: { entity: 'camera.robo_live_map', x: 16.5, y: 1.5, rotation: 0, width: 9, opacity: 0.6, refresh: 2 } } }); })()`);
+  const near = (x, y, r = 4) => `(() => { const b = ${card}._imageBlob; return !!b && Math.hypot(b.px - ${x}, b.py - ${y}) < ${r}; })()`;
+  check('mowing: found by its picture', await until(`${near(300, 600)} && ${card}._imageBlob.matched`, 'the mowing mower', 20000), JSON.stringify(await ev(`${card}._imageBlob`)));
+  check('the map dock icon learned', await until(`(() => { const d = ${card}._dockPx; return !!d && Math.hypot(d.px - 391, d.py - 786) < 6; })()`, 'the dock icon'), JSON.stringify(await ev(`${card}._dockPx`)));
+  await ev(`window.__setDemoStates({ 'lawn_mower.robo': 'docked', 'sensor.robo_mower_status': 'Charging' })`);
+  await ev(`window.__setRobotAt(391, 786, 0)`); // the mower icon over the dock icon
+  const atDock = `(() => { const c = ${card}, d = c._objects.dockPose(), p = c._objects._pose; return !!d && !!p && Math.hypot(p.x - d.x, p.y - d.y) < 1e-6 && Math.abs(p.heading - d.heading) < 1e-6; })()`;
+  check('docked: the mower stands at the dock object, turned as the dock', await until(atDock, 'the mower at the dock'), JSON.stringify(await ev(`(() => { const c = ${card}; return { dock: c._objects.dockPose(), pose: c._objects._pose }; })()`)));
+  await sleep(2500);
+  check('docked: still at the dock after map refreshes (not the map centre)', await ev(atDock));
+  check('status line: At dock (charging)', (await ev(`${card}.mowerStatusText()`)) === 'At dock (charging)', await ev(`${card}.mowerStatusText()`));
+  check('docked: no detection while docked', await ev(`!${card}._lastFrame || !${card}._trk.docked || ${card}._imageBlob.px === 300 || Math.hypot(${card}._imageBlob.px - 300, ${card}._imageBlob.py - 600) < 4`));
+  // undock: the icon still over the dock icon, then driving away
+  await ev(`window.__setDemoStates({ 'lawn_mower.robo': 'mowing', 'sensor.robo_mower_status': 'Working' })`);
+  await ev(`window.__setRobotAt(392, 782, 0.1)`);
+  check('undocking: found over the dock icon (not dropped as the dock)', await until(near(392, 782, 5), 'the mower over the dock', 15000), JSON.stringify({ b: await ev(`${card}._imageBlob`), r: await ev(`${card}._imageResult`), trk: await ev(`${card}._trk`) }));
+  await ev(`window.__setRobotAt(380, 735, 0.4)`);
+  check('driving away: tracked', await until(near(380, 735), 'the mower leaving', 15000), JSON.stringify(await ev(`${card}._imageBlob`)));
+  await ev(`window.__setRobotAt(360, 690, 0.6)`);
+  check('further: tracked, no longer leaving the dock', await until(`${near(360, 690)} && !${card}._trk.leaving`, 'the mower away from the dock', 15000), JSON.stringify(await ev(`${card}._trk`)));
+  check('status line: Tracked on map (score …)', /^Tracked on map \(score 0\.\d\d\)$/.test(await ev(`${card}.mowerStatusText()`)), await ev(`${card}.mowerStatusText()`));
+  // tracking window: the next refreshes do not search the whole picture
+  const fullAt = await ev(`${card}._trk.lastFull`);
+  await ev(`window.__setRobotAt(350, 670, 0.6)`);
+  await until(near(350, 670), 'the next position', 15000);
+  check('tracking window: no full search for a small move', (await ev(`${card}._trk.lastFull`)) === fullAt, JSON.stringify(await ev(`${card}._lastFrame`)));
+  check('the map never read on the page (worker)', await ev(`!!${card}._mapProc._worker`));
+  const tab = await (async () => {
+    await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
+    await until(`${card}._editing`, 'edit mode');
+    await ev(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Mower').click()`);
+    await until(`${card}._edit.tab === 'mower'`, 'the Mower tab');
+    return ev(`${card}.shadowRoot.querySelector('.panel').textContent.replace(/\\s+/g, ' ')`);
+  })();
+  check('Mower tab: the status line', /Tracked on map \(score 0\.\d\d\)/.test(tab), tab.slice(0, 300));
+  await ev(`window.__setDemoStates({ 'lawn_mower.robo': 'docked' })`);
+  check('docked again: back at the dock', await until(atDock, 'the mower back at the dock'));
+  check('Mower tab: At dock (docked)', await until(`${card}.shadowRoot.querySelector('.panel').textContent.includes('At dock (docked)')`, 'the dock status'));
   await ev('window.__demoMowerPaused = false');
   allErrors.push(...s.errors);
 } finally {

@@ -13,6 +13,7 @@
     "screenshot": "node scripts/screenshot.mjs",
     "check:edit": "node scripts/edit-check.mjs",
     "check:model": "node scripts/model-check.mjs",
+    "check:perf": "node scripts/perf-check.mjs",
     "check-model": "node tools/check-model.mjs",
     "check": "npm run build && node scripts/screenshot.mjs && node scripts/edit-check.mjs && node scripts/model-check.mjs",
     "deploy": "node scripts/deploy.mjs",

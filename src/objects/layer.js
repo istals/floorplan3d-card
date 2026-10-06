@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { chainState, lightBudget } from './logic.js';
 import { typeOf } from './types.js';
 import { badTargets, aimPoint, aimsUp } from './aim.js';
+import { dockFrontAxis, dockPose } from '../mower-track.js';
 
 const POINTS = 8, SPOTS = 4, SHADOWS = 4;
 const DEG = Math.PI / 180;
@@ -119,6 +120,29 @@ export class ObjectLayer {
       if (p.obj.type === 'mower' && b && b.entity && !b.hidden) return { id, p, entity: b.entity };
     }
     return null;
+  }
+
+  // The dock object's pose on the plan: { x, y, heading } (anchor, front = its +Z or hints.front) or null.
+  // A dock bound to the mower's entity wins over another one; hidden docks are ignored.
+  dockPose() {
+    if (!this.model) return null;
+    const mw = this._mower();
+    let best = null;
+    for (const [id, p] of this.parts) {
+      if (p.obj.type !== 'dock' || !p.obj.node) continue;
+      const b = this.bindings.get(id);
+      if (b && b.hidden) continue;
+      const score = mw && b && b.entity === mw.entity ? 2 : 1;
+      if (!best || score > best.score) best = { p, score };
+    }
+    if (!best) return null;
+    const { p } = best, root = this.model.root;
+    root.updateWorldMatrix(true, false);
+    p.obj.node.updateWorldMatrix(true, false);
+    const q = p.obj.node.getWorldQuaternion(new THREE.Quaternion());
+    const dir = new THREE.Vector3(...dockFrontAxis(p.obj.hints)).applyQuaternion(q);
+    const a = root.localToWorld(p.part.anchor.clone());
+    return dockPose(a, dir);
   }
 
   mowerId() {

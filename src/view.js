@@ -1432,6 +1432,8 @@ export class FloorplanView {
     const aspect = plane.userData.aspect || 1;
     const w = o.width || 20;
     plane.scale.set(w, 1, w * aspect);
+    plane.userData.external = !!o.external;
+    if (o.external) plane.userData.url = o.url; // the card draws the picture (setMapCanvas)
     if (plane.userData.url !== o.url) {
       plane.userData.url = o.url;
       // swap textures only once the new image has loaded, so camera refreshes don't flicker
@@ -1510,8 +1512,28 @@ export class FloorplanView {
     this.dirty = true;
   }
 
+  // External map (auto mode: the card decodes and processes the live map off the main thread): the
+  // processed canvas (w x h) drawn for a picture of natW x natH; changed regions are already drawn into
+  // it, so the one reused CanvasTexture is flagged once per batch. loaded: { image (raw picture for the
+  // edit-mode pickers) | null, url }.
+  setMapCanvas(canvas, natW, natH, loaded = null) {
+    const plane = this.mapPlane;
+    if (!plane || !plane.userData.external) return;
+    const aspect = natH / natW;
+    if (plane.userData.aspect !== aspect) {
+      plane.userData.aspect = aspect;
+      plane.scale.z = plane.scale.x * aspect;
+    }
+    const was = plane.userData.loaded;
+    if (was && was.image && was.image !== (loaded && loaded.image) && was.image.close) was.image.close();
+    plane.userData.loaded = { url: plane.userData.url, image: (loaded && loaded.image) || null, width: natW, height: natH, at: Date.now() };
+    this._setMapTexture(plane, { canvas, width: canvas.width, height: canvas.height });
+    this.stats.mapUploads = (this.stats.mapUploads || 0) + 1;
+  }
+
   // Run the map processing again on the loaded picture (settings changed, no new image).
   reprocessMap() {
+    if (this.mapPlane && this.mapPlane.userData.external) { if (this.onMapReprocess) this.onMapReprocess(); return; }
     if (this.mapPlane && this.mapPlane.userData.loaded) this._applyMapImage(this.mapPlane);
   }
 
@@ -2601,8 +2623,9 @@ export class FloorplanView {
 
   start() {
     if (this._raf) return;
-    const loop = () => {
+    const loop = (ts) => {
       this._raf = requestAnimationFrame(loop);
+      if (this.onTick) this.onTick(ts); // debug overlay: frame gaps
       if (this._tween) this._stepTween(performance.now());
       if (this.controls.update()) this.dirty = true; // damping still moving
       if (this.pivotMarker && !this.pivotMarker.position.equals(this.controls.target)) {
@@ -2617,12 +2640,14 @@ export class FloorplanView {
       if (!this.dirty) return;
       this.dirty = false;
       this.stats.frames++;
+      const t0 = this.onFrameTime ? performance.now() : 0;
       this._updateDepth();
       this._placeSkyBodies();
       this.labelRenderer.domElement.classList.toggle('compact', this.pixelsPerMetre() < COMPACT_PPM);
       this.renderer.render(this.scene, this.camera);
       this.labelRenderer.render(this.scene, this.camera);
       if (this.onRender) this.onRender(); // e.g. the object popup follows its anchor
+      if (this.onFrameTime) this.onFrameTime(performance.now() - t0);
     };
     this._raf = requestAnimationFrame(loop);
     this._scheduleOcclusion(0);
