@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDemo, root, brandRequests } from './lib/demo-browser.mjs';
+import { planToPixel } from '../src/mower-image.js';
 
 const shots = path.join(root, 'screenshots');
 fs.mkdirSync(shots, { recursive: true });
@@ -284,16 +285,36 @@ try {
     const p = c._mowerMarkerId && c._positions.get(c._mowerMarkerId);
     return !c._mowerMarkerId || (!!p && Math.hypot(p.x - l.x, p.y - l.y) < 1e-9); })()`;
   check('image source hides Add point', !(await ev(`[...${card}.shadowRoot.querySelectorAll('.panel button')].some((b) => b.textContent.trim() === 'Add point')`)));
-  check('pick mower colour armed', (await panelClick('Pick mower colour')) && (await ev(`${card}._edit.colorPick`)) === true);
+  const pickerOpen = () => page.waitForFunction(`!!${card}._edit.picker && !!${card}.shadowRoot.querySelector('.fp-picker')`, { timeout: 8000 }).then(() => true, () => false);
+  check('pick mower colour opens the 2D picker', (await panelClick('Pick mower colour')) && await pickerOpen());
   await page.keyboard.press('Escape');
-  await sleep(100);
-  check('Esc cancels colour pick', (await ev(`${card}._edit.colorPick`)) === false);
+  await sleep(150);
+  check('Esc closes the picker', !(await ev(`!!${card}._edit.picker || !!${card}.shadowRoot.querySelector('.fp-picker')`)));
   await panelClick('Pick mower colour');
+  await pickerOpen();
   let q = await mowerAt();
-  await click(q[0], q[1]);
-  await page.waitForFunction(`!!(${card}._layout.mower.image && ${card}._layout.mower.image.color)`, { timeout: 10000 }).catch(() => {});
-  const col = (await layout()).mower.image && (await layout()).mower.image.color;
-  check('mower colour picked from the map image', !!col && col[0] > 200 && col[1] < 120 && col[2] < 120, JSON.stringify(col));
+  const ovl = (await layout()).mower.overlay;
+  const pix = planToPixel(q[0], q[1], 450, 850, ovl);
+  const pickPx = async (px, py) => {
+    const cp = await ev(`${card}._edit.picker.clientOf(${px}, ${py})`);
+    await page.mouse.move(cp[0], cp[1]);
+    await page.mouse.click(cp[0], cp[1]);
+    await sleep(250);
+  };
+  await pickPx(pix.px, pix.py);
+  await page.waitForFunction(`!!(${card}._layout.mower.image && (${card}._layout.mower.image.colors || []).length)`, { timeout: 10000 }).catch(() => {});
+  const col = (await layout()).mower.image && (await layout()).mower.image.colors[0];
+  check('mower colour picked in the picker (the dot, not the background)', !!col && col[0] > 200 && col[1] < 120 && col[2] < 120, JSON.stringify({ col, pix }));
+  check('picker stays open with the colour chip, loupe shown', await ev(`!!${card}._edit.picker && ${card}.shadowRoot.querySelectorAll('.fp-picker .fp-pk-chips .cchip').length === 1
+    && getComputedStyle(${card}.shadowRoot.querySelector('.fp-pk-loupe')).display === 'block'`));
+  await ev(`(() => { const c = ${card}.shadowRoot.querySelector('.fp-picker [data-pk=matches]'); c.click(); })()`);
+  await sleep(200);
+  const mc = await ev(`${card}._edit.picker.matchCount`);
+  check('Show matches highlights the dot only', mc > 100 && mc < 600, String(mc));
+  await page.screenshot({ path: path.join(shots, 'edit-picker.png') });
+  await ev(`${card}.shadowRoot.querySelector('.fp-picker [data-pk=done]').click()`);
+  await sleep(150);
+  check('Done closes the picker', !(await ev(`!!${card}.shadowRoot.querySelector('.fp-picker')`)));
   check('mower found on the map image', await page.waitForFunction(liveNear(q), { timeout: 15000 }).then(() => true, () => false),
     JSON.stringify({ want: q, live: await ev(`${card}._mowerLive`) }));
   await ev('window.__demoMowerPaused = false');
@@ -306,6 +327,27 @@ try {
     JSON.stringify({ moved, want: q2, live: await ev(`${card}._mowerLive`) }));
   check('mower tab shows the detection', /Found at [\d.-]+, [\d.-]+ \(\d+ px\)/.test(await ev(`${card}.shadowRoot.querySelector(".mower-live").textContent`)),
     await ev(`${card}.shadowRoot.querySelector(".mower-live").textContent`));
+  // two background shades (lawn and the darker margin): both keyed transparent
+  await panelClick('Pick background colour');
+  await pickerOpen();
+  const shade = (rgb) => ev(`(() => { const p = ${card}._edit.picker, d = p.data, w = p.w, h = p.h, same = (x, y) => { const k = (y * w + x) * 4; return Math.abs(d[k] - ${rgb[0]}) < 3 && Math.abs(d[k + 1] - ${rgb[1]}) < 3 && Math.abs(d[k + 2] - ${rgb[2]}) < 3; };
+    for (let y = 2; y < h - 2; y += 3) for (let x = 2; x < w - 2; x += 3) { let ok = true; for (let j = -1; j <= 1 && ok; j++) for (let i = -1; i <= 1 && ok; i++) ok = same(x + i, y + j); if (ok) return [x / p.k, y / p.k]; }
+    return null; })()`);
+  const lawnPx = await shade([47, 93, 44]), marginPx = await shade([40, 79, 38]);
+  await pickPx(lawnPx[0] + 0.5, lawnPx[1] + 0.5);
+  await pickPx(marginPx[0] + 0.5, marginPx[1] + 0.5);
+  const bgs = (await layout()).mower.overlay.bg_colors || [];
+  check('two background picks stored', bgs.length === 2, JSON.stringify(bgs));
+  await ev(`${card}.shadowRoot.querySelector('.fp-picker [data-pk=done]').click()`);
+  const keyed = await page.waitForFunction(`(() => { const t = ${card}._view.mapPlane.material.map; if (!t || !t.isCanvasTexture) return false;
+    const cv = t.image, g = cv.getContext('2d'), a = (p) => g.getImageData(Math.floor(p[0] * cv.width / 450), Math.floor(p[1] * cv.height / 850), 1, 1).data[3];
+    return a(${JSON.stringify(lawnPx)}) === 0 && a(${JSON.stringify(marginPx)}) === 0; })()`, { timeout: 10000 }).then(() => true, () => false);
+  check('both background shades transparent', keyed, JSON.stringify({ lawnPx, marginPx }));
+  check('colour chips in the panel with remove buttons', await ev(`${card}.shadowRoot.querySelectorAll('.panel [data-act=color-del][data-kind=bg]').length === 2`));
+  await ev(`${card}.shadowRoot.querySelector('.panel [data-act=color-del][data-kind=bg][data-i="1"]').click()`);
+  await sleep(150);
+  check('× removes a colour', ((await layout()).mower.overlay.bg_colors || []).length === 1);
+
   // setup checklist: all required rows done collapses to "Setup complete"; a row scrolls to and flashes its control
   await ev(`${card}._edit.render()`);
   await sleep(200);

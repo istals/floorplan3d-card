@@ -22,6 +22,12 @@ describe('mower setup checklist', () => {
     expect(r.complete).toBe(true);
     expect(setupChecklist(m, states, false).complete).toBe(false);
   });
+  it('auto mode: static map and mower picture rows, no colour rows', () => {
+    const m = { source: 'image', entity: 'lawn_mower.m', overlay: { entity: 'image.map', x: 3 } };
+    const r = setupChecklist(m, states, true, { static: 'image.static', picture: null });
+    expect(r.rows.map((x) => x.id)).toEqual(['entity', 'map', 'aligned', 'static', 'picture', 'found']);
+    expect(r.complete).toBe(true);
+  });
   it('missing entities are not ok', () => {
     expect(ok(setupChecklist({ entity: 'lawn_mower.x', overlay: { entity: 'image.y' } }, states))).toMatchObject({ entity: false, map: false });
   });

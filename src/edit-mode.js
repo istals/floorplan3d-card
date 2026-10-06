@@ -8,7 +8,8 @@ import { pointInPolygon, signedArea } from './placement.js';
 import { buildMarkers, areaName } from './registry.js';
 import { readSource, calibrationError, overlayUrl } from './mower.js';
 import { setupChecklist } from './mower-setup.js';
-import { readImagePixels, imagePixels, planToPixel, medianColor, fitOverlay } from './mower-image.js';
+import { MapPicker } from './map-picker.js';
+import { readImagePixels, imagePixels, medianColor, colorList, addColorPatch, removeColorPatch, MAX_COLORS, fitOverlay } from './mower-image.js';
 import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
 import { levelsFromFloorMap } from './bindings.js';
@@ -176,6 +177,7 @@ export class EditMode {
 
   exit() {
     window.removeEventListener('keydown', this._onKey);
+    this.closePicker();
     this._endWindowDrag();
     this.drawing = null;
     this.picking = null;
@@ -259,13 +261,14 @@ export class EditMode {
       return;
     }
     if (this.colorPick) {
-      const p = this._mapPoint(e);
-      if (!p) return;
+      // the clicked map pixel: the ray hits the overlay plane, its uv is the image position
+      const hit = this.view.mapHit(e.clientX, e.clientY);
+      if (!hit) { this.message = { text: 'Click on the map image.', error: true }; this.render(); return; }
       const kind = this.colorPick;
       this.colorPick = false;
       this._syncStageClasses();
-      if (kind === true) this._pickMowerColor(p[0], p[1]);
-      else this._pickMapColor(kind, p[0], p[1]);
+      if (kind === true) this._pickMowerColor(hit.u, 1 - hit.v);
+      else this._pickMapColor(kind, hit.u, 1 - hit.v);
       return;
     }
     if (this.calibrating) {
@@ -596,7 +599,8 @@ export class EditMode {
 
   // Setup checklist at the top of the Mower tab; each row scrolls to its control.
   _setupHtml(keepOpen) {
-    const { rows, complete } = setupChecklist(this.mower(), this.hass.states, this._mowerFound());
+    const m = this.mower(), auto = this.card.mowerAuto(m);
+    const { rows, complete } = setupChecklist(m, this.hass.states, this._mowerFound(), auto);
     const open = !complete || (keepOpen && this._setupOpen);
     const li = rows.map((r) => `<li><button class="link setup-row ${r.ok ? 'ok' : r.optional ? 'opt' : 'todo'}" data-act="setup-go" data-target="${esc(r.target)}">
       <span class="mark">${r.ok ? '✓' : r.optional ? '–' : '✗'}</span> ${esc(r.label)}${r.optional && !r.ok ? ' <span class="dim">optional</span>' : ''}</button></li>`).join('');
@@ -609,7 +613,7 @@ export class EditMode {
     const mi = this.card.mapInfo ? this.card.mapInfo() : {};
     const parts = [];
     if (mi.stripes) parts.push(`Stripes: ${esc(mi.stripes)}`);
-    if (mi.mowed) parts.push(`Mowed: ${esc(mi.mowed)}`);
+    if (mi.mowed) parts.push(`Mowed: ${esc(mi.mowed)}${mi.mowedSource ? ` (${esc(mi.mowedSource)})` : ''}`);
     return parts.length ? `<br><span class="map-info">${parts.join(' · ')}</span>` : '';
   }
 
@@ -633,17 +637,114 @@ export class EditMode {
     const m = this.mower();
     const ic = m.image || {};
     if (!m.overlay || !m.overlay.entity) return 'Add the map overlay below and align it with the plan: that alignment is the calibration.';
-    if (!ic.color) return 'Pick the mower icon colour on the map (below).';
+    const hd = this.card.mowerHeading();
+    const head = hd ? `<br>Heading ${hd.deg}° (${{ picture: 'mower picture', icon: 'icon', movement: 'movement' }[hd.source] || hd.source})` : '';
+    if (!colorList(ic).length && !this.card.mowerAuto(m)) return 'Pick the mower icon colour on the map (below).';
+    return this._mowerImageFound() + head;
+  }
+
+  _mowerImageFound() {
     const r = this.card._imageResult;
     const live = this.card._mowerLive;
     if (r && r.error) return `<span style="color: var(--error-color, #db4437)">${esc(r.error)}</span>`;
     if (r && r.missing) return 'Mower icon not found' + (live && live.floorId ? ` (last seen at ${fmt(live.x)}, ${fmt(live.y)})` : '') + '.';
-    if (r && live && live.floorId) return `Found at ${fmt(live.x)}, ${fmt(live.y)} (${r.count} px)`;
+    if (r && live && live.floorId) return `Found at ${fmt(live.x)}, ${fmt(live.y)} (${r.count} px${r.match ? `, picture match ${r.match.toFixed(2)}` : ''})`;
     return 'Looking for the mower icon…';
+  }
+
+  // ---------- 2D picker on the original map image ----------
+  closePicker() {
+    const p = this.picker;
+    this.picker = null;
+    if (p) p.close('closed');
+  }
+
+  // The map picture as loaded (raw, not processed) for a category: the overlay's picture, or for the
+  // icon a separate image entity (fetched). -> CanvasImageSource or null.
+  async _pickerImage(kind) {
+    const m = this.mower(), o = m.overlay || {}, ic = m.image || {};
+    if (kind === 'icon' && ic.entity && ic.entity !== o.entity) {
+      const url = overlayUrl(this.hass, ic.entity, Date.now());
+      if (!url || typeof createImageBitmap !== 'function') return null;
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return createImageBitmap(await res.blob());
+    }
+    const ld = this.view.mapPlane && this.view.mapPlane.userData.loaded;
+    return ld && ld.image ? ld.image : null;
+  }
+
+  _pickerFallback(kind) {
+    // no picture to show: pick on the map in 3D (the clicked overlay pixel)
+    this.colorPick = kind === 'icon' ? true : kind;
+    if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
+    this._syncStageClasses();
+    this.render();
+  }
+
+  // Colour picks for a category ('icon', 'bg', 'mowed', 'nomow'); stays open for more shades.
+  async openColorPicker(kind) {
+    this.closePicker();
+    this.colorPick = false;
+    let image = null;
+    try { image = await this._pickerImage(kind); } catch (e) { console.warn('floorplan3d: could not read the mower map image', e); }
+    if (!image) { this._pickerFallback(kind); return; }
+    const names = { icon: 'mower icon', bg: 'background', mowed: 'mowed stripe', nomow: 'no-mow area' };
+    const icon = kind === 'icon';
+    const cur = () => (icon ? this.mower().image || {} : this.mower().overlay || {});
+    try {
+      this.picker = new MapPicker(this.card._stage, {
+        image, mode: 'color', kind,
+        title: `Click the ${names[kind]} colour (up to ${MAX_COLORS})`,
+        colors: () => colorList(cur(), icon ? null : kind),
+        tolerance: () => Number(icon ? cur().tolerance ?? 40 : cur()[`${kind}_tolerance`] ?? 30),
+        onColor: (rgb, q) => {
+          if (colorList(cur(), icon ? null : kind).length >= MAX_COLORS) { this.message = { text: `At most ${MAX_COLORS} colours: remove one first.`, error: true }; this.render(); return; }
+          this.message = null;
+          if (icon) this.addMowerColor(rgb, q, { imgW: q.imgW, imgH: q.imgH, width: q.imgW });
+          else this.addMapColor(kind, rgb);
+        },
+        onRemove: (i) => {
+          if (icon) { const ic = cur(); this.setMower({ image: { ...ic, ...removeColorPatch(ic, null, i) } }); } else this.setOverlay(removeColorPatch(cur(), kind, i));
+        },
+        onClose: () => { this.picker = null; this.render(); },
+      });
+    } catch (e) {
+      console.warn('floorplan3d: could not open the map picker', e);
+      this._pickerFallback(kind);
+      return;
+    }
+    this.render();
+  }
+
+  // Align by points: the image point in the 2D picker, then the model point in 3D.
+  _alignPicker() {
+    const a = this.aligning;
+    if (!a || a.pending) return;
+    this.closePicker();
+    const ld = this.view.mapPlane && this.view.mapPlane.userData.loaded;
+    if (!ld || !ld.image) return; // 3D fallback: click the map on the plan
+    try {
+      this.picker = new MapPicker(this.card._stage, {
+        image: ld.image, mode: 'point',
+        title: `Point ${a.pairs.length + 1}: click a spot on the map image you can find on the model`,
+        onPoint: ({ px, py }) => {
+          if (this.aligning !== a) return;
+          a.pending = { px, py };
+          this.message = null;
+          this.render();
+        },
+        onClose: () => { this.picker = null; this.render(); },
+      });
+    } catch (e) {
+      console.warn('floorplan3d: could not open the map picker', e);
+    }
+    this.render();
   }
 
   // Stop aligning and put the overlay back where it was when "Align by points" started.
   _cancelAlign() {
+    this.closePicker();
     const a = this.aligning;
     this.aligning = null;
     if (a && a.start && a.pairs.length >= 2 && this.mower().overlay) this.setOverlay({ ...a.start }, false);
@@ -659,10 +760,9 @@ export class EditMode {
     if (!o || !img) { this.aligning = null; this.message = { text: 'Wait for the map image to load.', error: true }; this._syncStageClasses(); this.render(); return; }
     const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
     if (!a.pending) {
-      const p = this._mapPoint(e);
-      if (!p) return;
-      const q = planToPixel(p[0], p[1], W, H, o);
-      if (q.px < 0 || q.py < 0 || q.px > W || q.py > H) { this.message = { text: 'That point is outside the map image.', error: true }; this.render(); return; }
+      const hit = this.view.mapHit(e.clientX, e.clientY);
+      if (!hit) { this.message = { text: 'Click on the map image.', error: true }; this.render(); return; }
+      const q = { px: hit.u * W, py: (1 - hit.v) * H };
       this.message = null;
       a.pending = { px: q.px, py: q.py };
       this.render();
@@ -678,10 +778,24 @@ export class EditMode {
       const r = (v, k) => Math.round(v * k) / k;
       this.setOverlay({ x: r(fit.x, 1000), y: r(fit.y, 1000), rotation: r(fit.rotation, 100), width: r(fit.width, 1000) });
     } else this.render();
+    this._alignPicker(); // the next image point
   }
 
-  // Colour under a plan point in the map image: median of the 5x5 pixels around it.
-  async _pickMowerColor(x, y) {
+  // Add a mower icon colour (up to MAX_COLORS); q: the clicked image pixel, where tracking starts
+  // (at the clicked icon, not the largest blob of its colours). img: { imgW, imgH, width }.
+  addMowerColor(color, q, img) {
+    const ic = this.mower().image || {};
+    const image = { tolerance: 40, min_pixels: 4, ...ic, ...addColorPatch(ic, null, color) };
+    if (q && img) this.card._imageBlob = { px: q.px, py: q.py, count: null, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, colors: colorList(image) };
+    this.setMower({ image });
+  }
+
+  addMapColor(kind, color, rerender = true) {
+    this.setOverlay(addColorPatch(this.mower().overlay || {}, kind, color), rerender);
+  }
+
+  // Colour at an image position (fractions 0..1 from the top left) of the RAW map image: median of 5x5 pixels.
+  async _pickMowerColor(fx, fy) {
     const m = this.mower();
     const o = m.overlay;
     const ic = m.image || {};
@@ -689,20 +803,19 @@ export class EditMode {
     const url = entity && overlayUrl(this.hass, entity, Date.now());
     if (!url || !o) { this.message = { text: 'Set the map overlay first.', error: true }; this.render(); return; }
     try {
-      const img = await readImagePixels(url);
-      const q = planToPixel(x, y, img.imgW, img.imgH, o);
-      const k = img.width / img.imgW;
-      const px = Math.floor(q.px * k), py = Math.floor(q.py * k);
+      // the picture on the plane when it is the same entity (what was clicked), else a fresh read
+      const ld = this.view.mapPlane && this.view.mapPlane.userData.loaded;
+      const same = ld && ld.image && (!ic.entity || ic.entity === o.entity);
+      const img = same ? imagePixels(ld.image, ld.image.naturalWidth || ld.image.width, ld.image.naturalHeight || ld.image.height) : await readImagePixels(url);
+      const q = { px: fx * img.imgW, py: fy * img.imgH };
+      const px = Math.floor(fx * img.width), py = Math.floor(fy * img.height);
       if (px < 0 || py < 0 || px >= img.width || py >= img.height) {
         this.message = { text: 'That point is outside the map image.', error: true };
         this.render();
         return;
       }
-      const color = medianColor(img.data, img.width, img.height, px, py);
       this.message = null;
-      // start tracking at the clicked icon (not the largest blob of its colour)
-      this.card._imageBlob = { px: q.px, py: q.py, count: null, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, color };
-      this.setMower({ image: { tolerance: 40, min_pixels: 4, ...ic, color } });
+      this.addMowerColor(medianColor(img.data, img.width, img.height, px, py), q, img);
     } catch (e) {
       console.warn('floorplan3d: could not read the mower map image', e);
       this.message = { text: "Can't read the map image.", error: true };
@@ -710,20 +823,18 @@ export class EditMode {
     }
   }
 
-  // Map colour (background / mowed / no-mow) under a plan point: median of the 5x5 pixels of the
-  // loaded overlay picture there.
-  _pickMapColor(kind, x, y) {
+  // Map colour (background / mowed / no-mow) at an image position (fractions from the top left):
+  // median of the 5x5 pixels of the loaded overlay picture as loaded (not the processed one).
+  _pickMapColor(kind, fx, fy) {
     const o = this.mower().overlay;
     const img = this.view.mapPlane && this.view.mapPlane.userData.loaded && this.view.mapPlane.userData.loaded.image;
     if (!o || !img) { this.message = { text: 'Wait for the map image to load.', error: true }; this.render(); return; }
     try {
       const px = imagePixels(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
-      const q = planToPixel(x, y, px.imgW, px.imgH, o);
-      const k = px.width / px.imgW;
-      const i = Math.floor(q.px * k), j = Math.floor(q.py * k);
+      const i = Math.floor(fx * px.width), j = Math.floor(fy * px.height);
       if (i < 0 || j < 0 || i >= px.width || j >= px.height) { this.message = { text: 'That point is outside the map image.', error: true }; this.render(); return; }
       this.message = null;
-      this.setOverlay({ [`${kind}_color`]: medianColor(px.data, px.width, px.height, i, j) });
+      this.addMapColor(kind, medianColor(px.data, px.width, px.height, i, j));
     } catch (e) {
       console.warn('floorplan3d: could not read the mower map image', e);
       this.message = { text: "Can't read the map image.", error: true };
@@ -1361,7 +1472,7 @@ export class EditMode {
       <label>Source <select data-field="mower-source">
         <option value="gps" ${m.source !== 'xy' && m.source !== 'image' ? 'selected' : ''}>GPS (latitude / longitude)</option>
         <option value="xy" ${m.source === 'xy' ? 'selected' : ''}>Map x / y attributes</option>
-        <option value="image" ${m.source === 'image' ? 'selected' : ''}>Live map image (mower icon colour)</option></select></label>
+        <option value="image" ${m.source === 'image' ? 'selected' : ''}>Live map image (mower found on the map)</option></select></label>
       ${m.source === 'xy' ? `<div class="row"><label>x attribute <input data-field="mower-xattr" value="${esc(m.x_attr || 'x')}"></label>
         <label>y attribute <input data-field="mower-yattr" value="${esc(m.y_attr || 'y')}"></label></div>` : ''}
       <label>Floor <select data-field="mower-floor">${floorOpts}</select></label>
@@ -1379,28 +1490,92 @@ export class EditMode {
     else if (this.card._trail && this.card._trail.length) out += '<div class="row"><button data-act="trail-clear">Clear trail</button></div>';
     out += this._overlayHtml(m, picIds, datalist);
     if (m.source === 'image') out += this._mowerImageSection(m);
+    else out += this._autoSection(m);
     out += '<div class="row"><button data-act="mower-remove" class="danger">Remove mower</button></div>';
+    return out;
+  }
+
+  // Colour chips (swatch, rgb, × removes) of one category: 'icon' or bg / mowed / nomow.
+  _chipsHtml(cols, kind) {
+    if (!cols.length) return '';
+    return `<div class="chips colors">${cols.map((c, i) => `<span class="cchip" title="rgb(${c.join(', ')})"><span class="swatch" style="background:rgb(${c.join(',')})"></span>${c.join(', ')}
+      <button class="link" data-act="color-del" data-kind="${kind}" data-i="${i}" title="Remove this colour" aria-label="Remove">×</button></span>`).join('')}
+      ${cols.length < MAX_COLORS ? `<span class="dim">${cols.length}/${MAX_COLORS}: pick again to add a shade</span>` : ''}</div>`;
+  }
+
+  // Auto mode: the live map compared with the static map, the mower found by its picture.
+  _autoSection(m) {
+    const det = this.card.mowerAuto(m, true);
+    if (!det) return '';
+    const imgs = Object.keys(this.hass.states).filter((e) => e.startsWith('image.')).sort();
+    const on = !!this.card.mowerAuto(m);
+    let out = '<div class="sub">Automatic</div>';
+    out += `<p class="hint auto-state">${on ? `<b>Auto (static map${det.picture ? ' + mower picture' : ''})</b>: live map ${esc(det.live)}, static map ${esc(det.static)}${det.picture ? `, mower picture ${esc(det.picture)}` : ''}.`
+      : det.static ? 'Auto mode is off: the colour picks below are used.' : 'No static map found: pick the colours below, or set the static map.'}</p>`;
+    out += `<label>Static map <input list="fp-img-ents" data-field="mower-static" value="${esc(m.static_entity ?? '')}" placeholder="${esc(m.static_entity === undefined && det.static ? `auto: ${det.static}` : 'image.mower_map')}"></label>`;
+    out += `<label>Mower picture <input list="fp-img-ents" data-field="mower-picture" value="${esc(m.picture_entity ?? '')}" placeholder="${esc(m.picture_entity === undefined && det.picture ? `auto: ${det.picture}` : 'image.mower_mower_image')}"></label>`;
+    out += `<datalist id="fp-img-ents">${imgs.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
+    if (det.static) out += `<label class="check"><input type="checkbox" data-field="mower-auto-off" ${m.auto === false ? 'checked' : ''}> Use colour picks instead</label>`;
     return out;
   }
 
   _mowerImageSection(m) {
     const ic = m.image || {};
     const o = m.overlay;
-    let out = '<div class="sub">Mower icon on the map</div>';
+    let out = this._autoSection(m);
+    if (this.card.mowerAuto(m)) return out + this._markFrontHtml(m);
+    out += '<div class="sub">Mower icon on the map</div>';
     out += `<label>Image entity <input list="fp-pic-ents" data-field="mower-img-entity" value="${esc(ic.entity || '')}" placeholder="${esc((o && o.entity) || 'same as the overlay')}"></label>`;
     if (this.colorPick === true) {
       out += `<section class="box"><p>Click the mower icon on the map overlay. Esc cancels.</p>
         <div class="row"><button data-act="img-pick-cancel">Cancel</button></div></section>`;
     }
-    const sw = ic.color ? `<span class="swatch" style="display:inline-block;width:18px;height:18px;border-radius:4px;vertical-align:middle;border:1px solid var(--divider-color);background:rgb(${ic.color.map(Number).join(',')})"></span> rgb(${ic.color.join(', ')})` : '';
-    out += `<div class="row"><button data-act="img-pick" class="${ic.color || this.colorPick ? '' : 'primary'}" ${this.colorPick || !(o && o.entity) ? 'disabled' : ''}>Pick mower colour</button> ${sw}</div>`;
-    if (ic.color) {
+    const icols = colorList(ic);
+    out += `<div class="row"><button data-act="img-pick" class="${icols.length || this.colorPick ? '' : 'primary'}" ${this.colorPick || !(o && o.entity) || icols.length >= MAX_COLORS ? 'disabled' : ''}>Pick mower colour</button></div>`;
+    out += this._chipsHtml(icols, 'icon');
+    if (icols.length) {
       const tol = ic.tolerance ?? 40;
       out += sliderHtml('mower-img-tolerance', 'Colour tolerance', 0, 255, 1, tol);
     }
+    out += this._markFrontHtml(m);
     out += `<p class="hint">Align the map overlay with the plan first: the alignment maps image pixels to the plan, so no
       calibration points are needed. Then pick the colour of the mower icon on the map.</p>`;
     return out;
+  }
+
+  // "Mark front": click the icon's front tip once; the offset corrects the icon heading.
+  _markFrontHtml(m) {
+    const ic = m.image || {};
+    const can = !!this.card._imageBlob && this.card._iconHeadRaw !== undefined && this.card._iconHeadRaw !== null;
+    const off = Number(ic.front_offset) || 0;
+    return `<div class="row"><button data-act="mark-front" ${can ? '' : 'disabled'} title="Click the front tip of the mower icon in the map picture">Mark front</button>
+      ${off ? `<span class="dim">offset ${Math.round(off)}°</span> <button class="link" data-act="front-clear">Clear</button>` : ''}</div>`;
+  }
+
+  _markFront() {
+    const ld = this.view.mapPlane && this.view.mapPlane.userData.loaded, b = this.card._imageBlob;
+    if (!ld || !ld.image || !b) return;
+    this.closePicker();
+    try {
+      this.picker = new MapPicker(this.card._stage, {
+        image: ld.image, mode: 'point', title: 'Click the front tip of the mower icon',
+        onPoint: ({ px, py }) => {
+          const bb = this.card._imageBlob, raw = this.card._iconHeadRaw;
+          if (!bb || raw === undefined || raw === null) return;
+          const sx = (ld.image.naturalWidth || ld.image.width) / bb.imgW;
+          const marked = (Math.atan2(-(py - bb.py * sx), px - bb.px * sx) * 180) / Math.PI;
+          let off = (((marked - raw) % 360) + 540) % 360 - 180;
+          off = Math.round(off);
+          const ic = this.mower().image || {};
+          this.card._headSt = null;
+          this.setMower({ image: { ...ic, front_offset: off } });
+        },
+        onClose: () => { this.picker = null; this.render(); },
+      });
+    } catch (e) {
+      console.warn('floorplan3d: could not open the map picker', e);
+    }
+    this.render();
   }
 
   _calibrationHtml(m, cal, err, fitName) {
@@ -1439,9 +1614,9 @@ export class EditMode {
       const a = this.aligning;
       if (a) {
         const n = a.pairs.length + 1;
-        out += `<section class="box align-box"><p>${a.pending ? `Point ${n}: now click the same spot on the model.` : `Point ${n}: click a spot on the map image.`}
+        out += `<section class="box align-box"><p>${a.pending ? `Point ${n}: now click the same spot on the model.` : `Point ${n}: click a spot on the map image${this.picker ? ' (in the picture over the plan)' : ''}.`}
           ${a.pairs.length >= 2 ? ` Aligned to ${a.pairs.length} points.` : ' Two points align it, more refine it.'} Esc cancels.</p>
-          <div class="row"><button data-act="ov-align-done" class="primary">Done</button><button data-act="ov-align-cancel">Cancel</button></div></section>`;
+          <div class="row">${!a.pending && !this.picker ? '<button data-act="align-image">Pick image point</button>' : ''}<button data-act="ov-align-done" class="primary">Done</button><button data-act="ov-align-cancel">Cancel</button></div></section>`;
       }
       out += `<div class="row"><button data-act="ov-align" ${a ? 'disabled' : ''}>Align by points</button>
         <button data-act="ov-move" class="${this.overlayMove ? 'primary' : ''}">${this.overlayMove ? 'Drag the map on the plan…' : 'Move with mouse'}</button>
@@ -1455,17 +1630,19 @@ export class EditMode {
   // the mower icon hidden, clipped to a zone, the stripe direction arrow.
   _mapProcessingHtml(m, o, slider) {
     let out = '<div class="sub">Map picture</div>';
+    if (this.card.mowerAuto(m)) {
+      return out + '<p class="hint">Automatic: compared with the static map, unchanged parts are transparent, mowed stripes light, no-mow areas shaded.</p>';
+    }
     if (this.colorPick && this.colorPick !== true) {
       out += `<section class="box"><p>Click the ${{ bg: 'background', mowed: 'mowed stripe', nomow: 'no-mow area' }[this.colorPick]} colour on the map overlay. Esc cancels.</p>
         <div class="row"><button data-act="map-pick-cancel">Cancel</button></div></section>`;
     }
     const kinds = [['bg', 'Pick background colour', 'Background: transparent'], ['mowed', 'Pick mowed colour', 'Mowed stripes: light'], ['nomow', 'Pick no-mow colour', 'No-mow areas: shaded']];
     for (const [k, label, what] of kinds) {
-      const c = o[`${k}_color`];
-      const sw = Array.isArray(c) ? `<span class="swatch" style="display:inline-block;width:18px;height:18px;border-radius:4px;vertical-align:middle;border:1px solid var(--divider-color);background:rgb(${c.map(Number).join(',')})"></span> ${what}
-        <button class="link" data-act="map-clear" data-kind="${k}">Clear</button>` : '';
-      out += `<div class="row"><button data-act="map-pick" data-kind="${k}" ${this.colorPick ? 'disabled' : ''}>${label}</button> ${sw}</div>`;
-      if (Array.isArray(c)) out += slider(`${k}_tolerance`, 'Tolerance', 0, 128, 1, o[`${k}_tolerance`] ?? 30);
+      const cols = colorList(o, k);
+      out += `<div class="row"><button data-act="map-pick" data-kind="${k}" ${this.colorPick || cols.length >= MAX_COLORS ? 'disabled' : ''}>${label}</button>${cols.length ? ` <span class="dim">${what}</span>` : ''}</div>`;
+      out += this._chipsHtml(cols, k);
+      if (cols.length) out += slider(`${k}_tolerance`, 'Tolerance', 0, 128, 1, o[`${k}_tolerance`] ?? 30);
     }
     if (m.source === 'image') {
       out += `<label class="check"><input type="checkbox" data-field="ov-hide-icon" ${o.hide_icon !== false ? 'checked' : ''}> Hide mower icon on the map</label>`;
@@ -1477,7 +1654,7 @@ export class EditMode {
       <option value="auto" ${zsel === 'auto' ? 'selected' : ''}>Automatic (${esc(auto ? auto.id : 'none at the map centre')})</option>
       <option value="none" ${zsel === 'none' ? 'selected' : ''}>None</option>
       ${zones.map((z) => `<option value="${esc(z.id)}" ${zsel === z.id ? 'selected' : ''}>${esc(z.id)}</option>`).join('')}</select></label>`;
-    if (Array.isArray(o.mowed_color)) {
+    if (colorList(o, 'mowed').length) {
       out += `<label class="check"><input type="checkbox" data-field="ov-stripe-arrow" ${o.stripe_arrow ? 'checked' : ''}> Show the stripe direction on the lawn</label>`;
     }
     out += `<p class="hint">Pick colours by clicking them on the map. Without a background colour the picture is drawn as it is.
@@ -2162,6 +2339,7 @@ export class EditMode {
     switch (btn.dataset.act) {
       case 'tab':
         if (id !== this.tab) {
+          this.closePicker();
           this.picking = null;
           this.pivoting = false;
           this.modelPick = null;
@@ -2281,24 +2459,31 @@ export class EditMode {
       }
       case 'cal-cancel': this.calibrating = null; break;
       case 'img-pick':
-        this.colorPick = true;
-        this.calibrating = null;
-        this.overlayMove = false;
-        if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
-        break;
-      case 'img-pick-cancel': case 'map-pick-cancel': this.colorPick = false; break;
-      case 'map-pick':
-        this.colorPick = btn.dataset.kind;
         this.calibrating = null;
         this.overlayMove = false;
         this.aligning = null;
-        if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
-        break;
-      case 'map-clear': this.setOverlay({ [`${btn.dataset.kind}_color`]: null }); return;
+        this.openColorPicker('icon');
+        return;
+      case 'img-pick-cancel': case 'map-pick-cancel': this.colorPick = false; break;
+      case 'map-pick':
+        this.calibrating = null;
+        this.overlayMove = false;
+        this.aligning = null;
+        this.openColorPicker(btn.dataset.kind);
+        return;
+      case 'align-image': this._alignPicker(); return;
+      case 'mark-front': this._markFront(); return;
+      case 'front-clear': { const ic = this.mower().image || {}; this.card._headSt = null; this.setMower({ image: { ...ic, front_offset: 0 } }); return; }
+      case 'color-del': {
+        const k = btn.dataset.kind, i = Number(btn.dataset.i);
+        if (k === 'icon') { const ic = this.mower().image || {}; this.setMower({ image: { ...ic, ...removeColorPatch(ic, null, i) } }); } else this.setOverlay(removeColorPatch(this.mower().overlay || {}, k, i));
+        if (this.picker) this.picker.refresh();
+        return;
+      }
       case 'cal-del': this.setMower({ calibration: (this.mower().calibration || []).filter((_, i) => i !== Number(btn.dataset.i)) }); return;
       case 'trail-clear': this.card.clearTrail(); break;
-      case 'ov-move': this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
-      case 'ov-remove': this.overlayMove = false; this.aligning = null; this.setMower({ overlay: null }); return;
+      case 'ov-move': this.closePicker(); this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
+      case 'ov-remove': this.closePicker(); this.overlayMove = false; this.aligning = null; this.setMower({ overlay: null }); return;
       case 'ov-align': {
         const o = this.mower().overlay || {};
         // the starting alignment: Cancel / Esc put it back, Done keeps the fit
@@ -2307,10 +2492,14 @@ export class EditMode {
         this.calibrating = null;
         this.colorPick = false;
         if (this.card._floor !== this.card._mowerFloor()) this.card._setFloor(this.card._mowerFloor());
-        break;
+        this._syncStageClasses();
+        this.render();
+        this._alignPicker();
+        return;
       }
       case 'ov-align-done': {
         const done = this.aligning && this.aligning.pairs.length >= 2;
+        this.closePicker();
         this.aligning = null;
         if (done) { this.setOverlay({ aligned: true }); this._syncStageClasses(); return; }
         break;
@@ -2433,6 +2622,12 @@ export class EditMode {
       this.setMower({ floor_id: el.value });
     } else if (f === 'mower-error-entity') {
       this.setMower({ error_entity: el.value.trim() });
+    } else if (f === 'mower-static' || f === 'mower-picture') {
+      const v = el.value.trim();
+      // empty: automatic again; "none": no entity
+      this.setMower({ [f === 'mower-static' ? 'static_entity' : 'picture_entity']: v === '' ? undefined : v === 'none' ? '' : v });
+    } else if (f === 'mower-auto-off') {
+      this.setMower({ auto: el.checked ? false : undefined });
     } else if (f === 'mower-ok-values') {
       const v = el.value.split(',').map((x) => x.trim()).filter(Boolean);
       this.setMower({ ok_values: v.length ? v : undefined });

@@ -20,7 +20,10 @@ import { readSource, mowerTransform, overlayUrl } from './mower.js';
 import { badgeOptions, badgeInfo } from './badges.js';
 import { applyBadges } from './badge-dom.js';
 import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from './mower-warning.js';
-import { findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint } from './mower-image.js';
+import { compareMaps, downGray, bestShift, autoShare, dockBlob } from './mower-auto.js';
+import { iconMoments, momentHeading, momentsOf, smoothHeading, makeTemplate, matchTemplate, grayOf, norm360 } from './mower-heading.js';
+import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progressValue, connectivity, rain, deviceRows } from './mower-device.js';
+import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint, stripeAngle } from './mower-image.js';
 import { ObjectLayer } from './objects/layer.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
@@ -51,6 +54,7 @@ const OBJECT_HIT_PX = { touch: 52, mouse: 30 };
 const TRAIL_STEP_M = 0.15;
 const TRAIL_MAX = 3000;
 const MOWER_Z = 0.15;
+const MATCH_MIN = 0.5; // mower picture match score (NCC) trusted for position and heading
 const MODEL_API = '/api/floorplan3d/model';
 const nodeShown = (n) => { for (let x = n; x; x = x.parent) if (!x.visible) return false; return true; };
 
@@ -99,6 +103,12 @@ const STYLE = `
   .fp-marker.active.light .fp-dot { background: var(--fp-light, var(--state-light-active-color, #ffb74d));
     border-color: var(--fp-light, var(--state-light-active-color, #ffb74d)); color: #fff; }
   .fp-marker.unavailable .fp-dot { opacity: .45; border-style: dashed; }
+  .fp-marker.offline .fp-dot { opacity: .5; filter: grayscale(1); }
+  .fp-mower-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px 1px 4px; border-radius: 10px; font-size: 11px; font-weight: 600;
+    white-space: nowrap; pointer-events: none; transform: translate(20px, -18px); box-shadow: 0 1px 3px rgba(0,0,0,.35);
+    background: var(--card-background-color, #fff); color: var(--primary-text-color); --mdc-icon-size: 14px; }
+  .fp-mower-chip.offline { color: var(--secondary-text-color, #727272); }
+  .fp-mower-chip.rain, .fp-mower-chip.drying { color: #1e88e5; }
   .fp-marker.fp-occluded { opacity: .25; pointer-events: none; }
   .editing .fp-marker.fp-occluded { opacity: .5; pointer-events: auto; }
   .fp-val { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
@@ -317,6 +327,29 @@ const STYLE = `
   .panel ul.otree .badge.warn { background: none; color: var(--error-color, #db4437); border: 1px solid currentColor; }
   .panel ul.otree li.flash { animation: fp-flash 1.2s ease-out; }
   .panel ul.vtree li.flash { animation: fp-flash 1.2s ease-out; }
+  .panel .chips.colors { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 2px 0 6px; font-size: 12px; }
+  .panel .cchip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 2px 1px 4px; border-radius: 10px;
+    border: 1px solid var(--divider-color); font-variant-numeric: tabular-nums; }
+  .panel .cchip .swatch, .fp-picker .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--divider-color); }
+  .panel .cchip button.link { font-size: 14px; line-height: 1; padding: 0 4px; }
+  .fp-picker { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; background: var(--card-background-color, #fff);
+    color: var(--primary-text-color); }
+  .fp-pk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--divider-color); font-size: 13px; }
+  .fp-pk-title { flex: 1 1 160px; font-weight: 500; }
+  .fp-pk-chips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .fp-pk-bar button { font: inherit; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--divider-color); background: var(--card-background-color, #fff);
+    color: var(--primary-text-color); cursor: pointer; }
+  .fp-pk-bar button.primary { background: var(--primary-color, #03a9f4); border-color: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+  .fp-pk-bar button.link { border: none; padding: 0 3px; background: none; }
+  .fp-pk-bar .cchip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 3px; border-radius: 10px; border: 1px solid var(--divider-color); }
+  .fp-pk-view { position: relative; flex: 1; min-height: 0; overflow: hidden;
+    background: repeating-conic-gradient(rgba(127,127,127,.18) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px; }
+  .fp-pk-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  .fp-pk-loupe { position: absolute; display: none; pointer-events: none; border-radius: 8px; border: 2px solid var(--card-background-color, #fff);
+    box-shadow: 0 2px 10px rgba(0,0,0,.45); image-rendering: pixelated; }
+  .fp-pk-info { position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 8px; font-size: 12px;
+    background: var(--card-background-color, #fff); box-shadow: 0 1px 4px rgba(0,0,0,.3); pointer-events: none; font-variant-numeric: tabular-nums; }
+  .fp-pk-info:empty { display: none; }
   .panel .setup-flash { animation: fp-flash 1.5s ease-out; border-radius: 4px; }
   .panel details.mower-setup { border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 8px; margin: 4px 0 8px; }
   .panel details.mower-setup summary { cursor: pointer; font-weight: 500; }
@@ -717,6 +750,14 @@ class Floorplan3dCard extends HTMLElement {
           if (mi.mowed) extra.push({ kind: 'info', label: 'Mowed', value: mi.mowed });
           const wt = this._warningText();
           if (wt) extra.unshift({ kind: 'info', label: wt.label, value: wt.value });
+          // the mower's device entities (progress, rain, signal, zone ...): popup item 'device'
+          const pl = this._objectActions(id, o).popup || (o.obj.ui && o.obj.ui.popup) || typeOf('mower').defaults.popup;
+          if (Array.isArray(pl) && pl.includes('device') && o.binding && o.binding.entity) {
+            const bst = this._hass.states[o.binding.entity];
+            const skip = new Set(pl.includes('battery') && bst && bst.attributes && bst.attributes.battery_level !== undefined ? ['battery'] : []);
+            if (mi.mowed) skip.add('progress');
+            for (const r of deviceRows(this._hass, o.binding.entity)) if (!skip.has(r.key)) extra.push({ kind: 'info', label: r.label, value: r.value });
+          }
         }
         return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra,
           badge: this._objectBadge(o.binding && o.binding.entity), dark: !!(this._built.theme && this._built.theme.dark) };
@@ -946,13 +987,24 @@ class Floorplan3dCard extends HTMLElement {
     this._stuckTimer = null;
     const cfg = this._layout && this._layout.mower, h = this._hass, view = this._view;
     if (!view) return;
-    if (!cfg || !cfg.entity || !h) { this._stuck = null; this._warning = null; view.setMowerWarning(null); return; }
-    const ms = h.states[this._mowerStateEntity()], es = cfg.error_entity ? h.states[cfg.error_entity] : null;
+    if (!cfg || !cfg.entity || !h) { this._stuck = null; this._warning = null; view.setMowerWarning(null); view.setMowerChip(null); return; }
+    const mse = this._mowerStateEntity();
+    const ms = h.states[mse], ee = this._errorEntity(), es = ee ? h.states[ee] : null;
     const live = this._mowerLive, pos = live && live.x !== undefined ? [live.x, live.y] : null;
     const minutes = cfg.stuck_minutes === undefined ? STUCK_DEFAULT_MIN : Number(cfg.stuck_minutes) || 0;
     const now = Date.now();
-    this._stuck = stuckStep(this._stuck, { now, pos, state: ms && ms.state, minutes });
-    const kind = errorKind(ms, es, cfg.ok_values) || (this._stuck.stuck ? 'stuck' : null);
+    // offline, or waiting for the rain to stop: a chip next to the mower, the stuck clock paused
+    const conn = connectivity(h, mse), rn = rain(h, mse);
+    const offline = !!conn && conn.online === false;
+    const chip = offline ? { kind: 'offline', icon: 'mdi:wifi-off', text: 'offline' }
+      : rn && rn.wet ? { kind: 'rain', icon: 'mdi:weather-rainy', text: 'rain' }
+        : rn && rn.drying !== null ? { kind: 'drying', icon: 'mdi:weather-partly-rainy', text: `${rn.drying} min` } : null;
+    this._mowerChip = chip;
+    view.setMowerChip(chip && pos ? { ...chip, x: pos[0], y: pos[1], floorId: live.floorId } : null);
+    this._mowerOffline = offline;
+    const paused = offline || (rn && (rn.wet || rn.drying !== null));
+    this._stuck = stuckStep(this._stuck, { now, pos, state: paused ? 'paused' : ms && ms.state, minutes });
+    const kind = (offline ? null : errorKind(ms, es, cfg.ok_values)) || (this._stuck.stuck ? 'stuck' : null);
     this._warning = kind ? { kind, minutes } : null;
     if (kind && pos) view.setMowerWarning({ kind, x: pos[0], y: pos[1], floorId: live.floorId });
     else view.setMowerWarning(null);
@@ -967,7 +1019,16 @@ class Floorplan3dCard extends HTMLElement {
     if (!w || !h || !cfg) return null;
     if (w.kind === 'stuck' && !(this._mowerLive && this._mowerLive.x !== undefined)) return { label: 'Position', value: 'no position reading' };
     if (w.kind === 'stuck') return { label: 'Stuck?', value: `no movement for ${w.minutes} min` };
-    return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], cfg.error_entity ? h.states[cfg.error_entity] : null, cfg.ok_values) || 'error' };
+    const ee = this._errorEntity();
+    return { label: 'Error', value: errorText(h.states[this._mowerStateEntity()], ee ? h.states[ee] : null, cfg.ok_values) || 'error' };
+  }
+
+  // The Mower tab's error entity, else an error code sensor of the mower's device.
+  _errorEntity() {
+    const cfg = this._layout && this._layout.mower;
+    if (!cfg || !this._hass) return null;
+    if (cfg.error_entity) return cfg.error_entity;
+    return findErrorEntity(this._hass, this._mowerStateEntity());
   }
 
   // ---------- mower position from the live map image ----------
@@ -977,7 +1038,8 @@ class Floorplan3dCard extends HTMLElement {
     const ic = cfg.image || {};
     const entity = ic.entity || (cfg.overlay && cfg.overlay.entity);
     const st = entity && this._hass.states[entity];
-    const ready = !!(st && ic.color && cfg.overlay);
+    const auto = this.mowerAuto(cfg);
+    const ready = !!(st && (colorList(ic).length || auto) && cfg.overlay);
     // the overlay's own picture: detection runs on each loaded overlay image (one fetch per refresh)
     const driven = ready && this._mapDriven(cfg);
     this._setImageTimer(ready && !driven ? Math.max(2, Number(cfg.overlay.refresh) || 10) : 0);
@@ -986,7 +1048,8 @@ class Floorplan3dCard extends HTMLElement {
       this._imageResult = !st ? { error: entity ? `Map image ${entity} not found.` : 'Set the map overlay first.' } : null;
       return null;
     }
-    const key = [entity, driven ? '' : st.last_updated, driven ? '' : st.state, ic.color.join(','), ic.tolerance, ic.min_pixels].join('|');
+    const key = [entity, driven ? '' : st.last_updated, driven ? '' : st.state, JSON.stringify(colorList(ic)), ic.tolerance, ic.min_pixels,
+      auto ? `${auto.static}|${auto.picture}` : ''].join('|');
     if (key !== this._imageKey) {
       this._imageKey = key;
       if (driven) this._reprocessMap(); // detection settings changed: run again on the loaded picture
@@ -998,6 +1061,167 @@ class Floorplan3dCard extends HTMLElement {
     return [q.x, q.y];
   }
 
+  // Centre and heading of the icon at blob b (pixels of img): template match with the mower picture
+  // (score >= MATCH_MIN), else the icon's moments. -> { x, y, angle (image degrees) | null, source, score }
+  _iconPose(img, b, cols, tol) {
+    const t = this._mowerTemplate();
+    if (t) {
+      const g = grayOf(img.data, img.width, img.height);
+      const m = matchTemplate(g, img.width, img.height, t, b.px, b.py, { scale: Math.sqrt(b.count / t.count), radius: 3, cache: this._tplCache });
+      if (m && m.score >= MATCH_MIN) return { x: m.x, y: m.y, angle: m.angle, source: 'picture', score: m.score };
+    }
+    const r = Math.max(6, 3 * Math.sqrt(b.count));
+    const mo = cols && cols.length ? iconMoments(img.data, img.width, img.height, cols, tol, b.px, b.py, r) : (b.idx ? momentsOf([...b.idx].map((i) => [(i % img.width) + 0.5, Math.floor(i / img.width) + 0.5])) : null);
+    const hd = momentHeading(mo);
+    return { x: mo ? mo.cx : b.px, y: mo ? mo.cy : b.py, angle: hd ? hd.angle : null, source: hd ? 'icon' : null, score: null };
+  }
+
+  // The mower picture (auto-detected or set in the Mower tab) as a match template; loaded once per
+  // entity picture. -> template or null (not set / still loading)
+  _mowerTemplate() {
+    const cfg = this._layout && this._layout.mower;
+    const auto = cfg && this.mowerAuto(cfg, true);
+    const eid = auto && auto.picture;
+    const url = eid && overlayUrl(this._hass, eid, 0);
+    if (!url) return null;
+    const key = `${eid}|${(this._hass.states[eid].attributes || {}).entity_picture || ''}`;
+    if (this._tpl && this._tpl.key === key) return this._tpl.t;
+    if (this._tplLoading === key) return null;
+    this._tplLoading = key;
+    readImagePixels(url).then((px) => {
+      this._tpl = { key, t: makeTemplate(px.data, px.width, px.height) };
+      this._tplCache = new Map();
+      this._tplLoading = null;
+      if (this._view && this._view.mapPlane) this._view.reprocessMap();
+    }, (e) => { console.warn('floorplan3d: could not read the mower picture', e); this._tplLoading = null; this._tpl = { key, t: null }; });
+    return null;
+  }
+
+  // Icon heading (image degrees, counter-clockwise from the picture's right) -> plan heading, smoothed;
+  // null: none this time (movement decides). source: 'picture' | 'icon'.
+  _setIconHeading(angle, source = null) {
+    if (angle === null || angle === undefined) { this._iconHead = null; return; }
+    const cfg = this._layout.mower;
+    const off = Number((cfg.image || {}).front_offset) || 0;
+    this._iconHeadRaw = angle;
+    this._headSt = smoothHeading(this._headSt, norm360(angle + off + ((cfg.overlay && cfg.overlay.rotation) || 0)));
+    this._iconHead = { angle: this._headSt.angle, source };
+  }
+
+  // Heading shown in the Mower tab: { deg (compass bearing on the plan), source } or null.
+  mowerHeading() {
+    if (this._mowerHeading === undefined || this._mowerHeading === null) return null;
+    const deg = (this._mowerHeading * 180) / Math.PI;
+    return { deg: Math.round(norm360(90 - deg)), source: this._headingSource || 'movement' };
+  }
+
+  // Static map pixels at the working size (cached per picture and size). -> Uint8ClampedArray | null
+  async _staticPixels(eid, w, h) {
+    const st = this._hass.states[eid];
+    const url = st && overlayUrl(this._hass, eid, 0);
+    if (!url) return null;
+    const key = `${eid}|${(st.attributes || {}).entity_picture || ''}|${st.state}|${w}x${h}`;
+    if (this._static && this._static.key === key) return this._static.data;
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bmp = await createImageBitmap(await res.blob());
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    const data = g.getImageData(0, 0, w, h).data;
+    this._static = { key, data, shift: null };
+    return data;
+  }
+
+  // Auto mode: the live map against the static map -> the drawn picture (unchanged transparent,
+  // mowed light, no-mow shaded, icons hidden), mowed share, stripes, and (source image) the mower:
+  // the icon blob that best matches the mower picture, else its shape; the dock: the grey blob.
+  async _autoMap(image, W, H, cfg, auto) {
+    const proc = (this._mapProc = this._mapProc || new MapProcessor());
+    const px = proc.read(image, W, H);
+    const w = px.width, h = px.height;
+    let stat;
+    try { stat = await this._staticPixels(auto.static, w, h); } catch (e) {
+      console.warn('floorplan3d: could not read the static map', e);
+      stat = null;
+    }
+    if (!stat) return null;
+    if (!this._static.shift) { // small offset between the two pictures, once per static picture / size
+      const f = Math.max(1, Math.round(w / 256));
+      const a = downGray(stat, w, h, f), b = downGray(px.data, w, h, f);
+      const sh = bestShift(a.g, b.g, a.w, a.h, 4);
+      this._static.shift = { dx: sh.dx * f, dy: sh.dy * f };
+    }
+    const r = compareMaps(stat, px.data, w, h, this._static.shift);
+    if (cfg.source === 'image') {
+      const last = this._mapDetect;
+      const key = `auto|${this._mowerTemplate() ? 1 : 0}`; // again once the mower picture has loaded
+      if (!(last && last.image === image && last.key === key)) {
+        this._autoDetect(r, px);
+        this._mapDetect = { image, key, found: this._imageBlob };
+        if (!this._mowerRefreshQueued) {
+          this._mowerRefreshQueued = true;
+          queueMicrotask(() => {
+            this._mowerRefreshQueued = false;
+            if (!this._view || !this._layout || !this._layout.mower) return;
+            this._refreshMower(false);
+            if (this._editing && this._edit) this._edit.onStates();
+          });
+        }
+      }
+    }
+    const c = (this._autoCanvas = this._autoCanvas || document.createElement('canvas'));
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    c.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(r.data, w, h), 0, 0);
+    const sa = r.mowed ? stripeAngle(r.mowedMask, w, h) : null;
+    const was = this._mapStats;
+    this._mapStats = { zone: null, angle: sa ? sa.angle : null, share: autoShare(r), auto: true };
+    if (!was || was.angle !== this._mapStats.angle || was.share !== this._mapStats.share) this._mapStatsChanged();
+    return { canvas: c, width: w, height: h };
+  }
+
+  _autoDetect(r, px) {
+    const w = px.width, k = px.imgW / w;
+    const t = this._mowerTemplate();
+    const blobs = r.blobs.slice(0, 8);
+    let pick = null;
+    if (t && blobs.length) {
+      const g = grayOf(px.data, w, px.height);
+      for (const b of blobs) {
+        const m = matchTemplate(g, w, px.height, t, b.px, b.py, { scale: Math.sqrt(b.count / t.count), radius: 3, cache: this._tplCache });
+        if (m && (!pick || m.score > pick.m.score)) pick = { b, m };
+      }
+      if (pick && pick.m.score < MATCH_MIN) pick = null;
+    }
+    let pose;
+    if (pick) pose = { b: pick.b, x: pick.m.x, y: pick.m.y, angle: pick.m.angle, source: 'picture', score: pick.m.score };
+    else {
+      // no picture match: the blob nearest the last position, else the largest that is not grey (the dock is)
+      const prev = this._imageBlob, kk = 1 / k;
+      const near = prev && blobs.length ? blobs.reduce((a, b) => (Math.hypot(b.px - prev.px * kk, b.py - prev.py * kk) < Math.hypot(a.px - prev.px * kk, a.py - prev.py * kk) ? b : a)) : null;
+      // the dock is the largest grey blob; the mower body may be grey too
+      const dock = blobs.find((x) => x.grey);
+      const rest = blobs.filter((x) => x !== dock);
+      const b = (near && Math.hypot(near.px - prev.px * kk, near.py - prev.py * kk) < 40 ? near : null) || rest.find((x) => !x.grey) || rest[0] || null;
+      if (b) { const p = this._iconPose(px, b, null, 0); pose = { b, ...p }; }
+    }
+    if (!pose) {
+      this._imageResult = { missing: true };
+      this._setIconHeading(null);
+      if (this._imageBlob) this._imageBlob = { ...this._imageBlob, misses: (this._imageBlob.misses || 0) + 1 };
+      return;
+    }
+    this._imageBlob = { px: pose.x * k, py: pose.y * k, count: pose.b.count * k * k, misses: 0, imgW: px.imgW, imgH: px.imgH, sampleW: w, colors: [] };
+    this._imageResult = { count: pose.b.count, match: pose.score };
+    this._setIconHeading(pose.angle, pose.source);
+    const d = dockBlob(r.blobs, pose.b);
+    this._dockPx = d ? { px: d.px * k, py: d.py * k } : null;
+  }
+
   _setImageTimer(seconds) {
     if (!this.isConnected) seconds = 0;
     if (this._imageTimerSec === seconds) return;
@@ -1006,11 +1230,28 @@ class Floorplan3dCard extends HTMLElement {
     this._imageTimer = seconds ? setInterval(() => this._detectMower(), seconds * 1000) : null;
   }
 
-  // The mower icon is looked for on the overlay's own picture (no separate image entity).
+  // The mower icon is looked for on the overlay's own picture (no separate image entity); auto mode
+  // always works on it.
   _mapDriven(cfg) {
+    if (cfg && cfg.source === 'image' && this.mowerAuto(cfg)) return true;
     const ic = cfg && cfg.source === 'image' && cfg.image;
     const o = cfg && cfg.overlay;
-    return !!(ic && ic.color && o && o.entity && (!ic.entity || ic.entity === o.entity));
+    return !!(ic && colorList(ic).length && o && o.entity && (!ic.entity || ic.entity === o.entity));
+  }
+
+  // Auto mode entities: { live, static, picture } when the live map (overlay) and a static map exist
+  // and it is not switched off (mower.auto === false); entities set in the Mower tab win over the
+  // auto-detected ones ('' = none). -> object or null. detected: also when switched off.
+  mowerAuto(cfg = this._layout && this._layout.mower, detected = false) {
+    const h = this._hass;
+    const live = cfg && cfg.overlay && cfg.overlay.entity;
+    if (!h || !live) return null;
+    const pick = (v, find) => (v !== undefined && v !== null ? v || null : find());
+    const stat = pick(cfg.static_entity, () => findStaticMap(h, live, cfg.entity));
+    const picture = pick(cfg.picture_entity, () => findMowerPicture(h, live, cfg.entity));
+    const r = { live, static: stat && h.states[stat] ? stat : null, picture: picture && h.states[picture] ? picture : null };
+    if (detected) return r;
+    return r.static && cfg.auto !== false ? r : null;
   }
 
   // Find the icon colour in sampled pixels (imagePixels / readImagePixels), track it, store the pixel.
@@ -1018,16 +1259,21 @@ class Floorplan3dCard extends HTMLElement {
   _detectOn(img, ic) {
     const k = img.imgW / img.width; // sampled canvas -> image pixels
     const old = this._imageBlob;
-    const sameColor = !!old && String(old.color) === String(ic.color);
+    const cols = colorList(ic);
+    const sameColor = !!old && JSON.stringify(old.colors) === JSON.stringify(cols);
     // the picture may change size between refreshes: the track scales with it (same geometry)
     const rs = sameColor && old.imgW > 0 ? img.imgW / old.imgW : 1;
     const track = sameColor ? { px: (old.px * rs) / k, py: (old.py * rs) / k, count: old.count == null ? null : (old.count * rs * rs) / (k * k), misses: old.misses || 0 } : null;
-    const b = findBlob(img.data, img.width, img.height, ic.color, ic.tolerance ?? 40, { minPixels: ic.min_pixels ?? 4, prev: track });
+    const b = findBlob(img.data, img.width, img.height, cols, ic.tolerance ?? 40, { minPixels: ic.min_pixels ?? 4, prev: track });
     const step = stepTrack(track, b);
     if (step.found) {
-      this._imageBlob = { px: b.px * k, py: b.py * k, count: b.count * k * k, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, color: ic.color };
-      return { result: { count: b.count }, found: this._imageBlob };
+      // refined centre and the icon's heading: its picture (when set) or its shape
+      const pose = this._iconPose(img, b, cols, ic.tolerance ?? 40);
+      this._imageBlob = { px: pose.x * k, py: pose.y * k, count: b.count * k * k, misses: 0, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, colors: cols };
+      this._setIconHeading(pose.angle, pose.source);
+      return { result: { count: b.count, match: pose.score }, found: this._imageBlob };
     }
+    this._setIconHeading(null);
     if (!sameColor) this._imageBlob = null; // a stale position of another colour would mislead
     else if (rs !== 1) { // last known position and count, in this picture's pixels
       this._imageBlob = { ...old, px: old.px * rs, py: old.py * rs, count: old.count == null ? null : old.count * rs * rs, imgW: img.imgW, imgH: img.imgH, sampleW: img.width, misses: step.track.misses };
@@ -1044,7 +1290,7 @@ class Floorplan3dCard extends HTMLElement {
     const cfg = this._layout.mower;
     const ic = (cfg && cfg.source === 'image' && cfg.image) || null;
     const entity = ic && (ic.entity || (cfg.overlay && cfg.overlay.entity));
-    if (!ic || !ic.color || !entity || this._mapDriven(cfg)) return;
+    if (!ic || !colorList(ic).length || !entity || this._mapDriven(cfg)) return;
     const url = overlayUrl(this._hass, entity, Date.now());
     if (!url) return;
     this._imageBusy = true;
@@ -1075,9 +1321,15 @@ class Floorplan3dCard extends HTMLElement {
     if (!layer || !layer.mowerBound()) { this._mowerHeadFrom = null; layer && layer.setMowerPose(null); return; }
     if (!p) return;
     const from = this._mowerHeadFrom;
-    if (!from) this._mowerHeadFrom = [p[0], p[1]];
+    const icon = this._layout.mower && this._layout.mower.source === 'image' ? this._iconHead : null;
+    if (icon) { // read from the icon itself
+      this._mowerHeading = (icon.angle * Math.PI) / 180;
+      this._headingSource = icon.source;
+      this._mowerHeadFrom = [p[0], p[1]];
+    } else if (!from) this._mowerHeadFrom = [p[0], p[1]];
     else if (Math.hypot(p[0] - from[0], p[1] - from[1]) > this._headingStep()) {
       this._mowerHeading = Math.atan2(p[1] - from[1], p[0] - from[0]);
+      this._headingSource = 'movement';
       this._mowerHeadFrom = [p[0], p[1]];
     }
     layer.setMowerPose({ x: p[0], y: p[1], floorId, heading: this._mowerHeading, ground: this._view.mowerGround(p[0], p[1], floorId) });
@@ -1109,6 +1361,8 @@ class Floorplan3dCard extends HTMLElement {
     const cfg = this._layout && this._layout.mower;
     const o = cfg && cfg.overlay;
     if (!o || !W || !H) return null;
+    const auto = this.mowerAuto(cfg);
+    if (auto) return this._autoMap(image, W, H, cfg, auto);
     const driven = this._mapDriven(cfg);
     const pre = this._mapSettings(o, null);
     const wantIcon = driven && o.hide_icon !== false;
@@ -1121,7 +1375,7 @@ class Floorplan3dCard extends HTMLElement {
     let blob = null;
     if (driven) {
       const ic = cfg.image;
-      const dkey = [String(ic.color), ic.tolerance, ic.min_pixels].join('|');
+      const dkey = [JSON.stringify(colorList(ic)), ic.tolerance, ic.min_pixels].join('|');
       const last = this._mapDetect;
       if (last && last.image === image && last.key === dkey) {
         blob = last.found; // same picture, same settings: not a new sighting / miss
@@ -1174,10 +1428,10 @@ class Floorplan3dCard extends HTMLElement {
   // Processing settings of the overlay (null: none set, the picture is drawn as loaded).
   // blob: the mower icon found in this very picture (image pixels) or null.
   _mapSettings(o, blob) {
-    const col = (c, t, d) => (Array.isArray(c) && c.length >= 3 ? { color: c.map(Number), tolerance: Number(t ?? d) } : null);
-    const bg = col(o.bg_color, o.bg_tolerance, 30), mowed = col(o.mowed_color, o.mowed_tolerance, 30), nomow = col(o.nomow_color, o.nomow_tolerance, 30);
+    const col = (kind) => { const c = colorList(o, kind); return c.length ? { colors: c, tolerance: Number(o[`${kind}_tolerance`] ?? 30) } : null; };
+    const bg = col('bg'), mowed = col('mowed'), nomow = col('nomow');
     const ic = this._layout.mower.image || {};
-    const iconBlob = blob && o.hide_icon !== false ? { px: blob.px, py: blob.py, count: blob.count, color: ic.color, tolerance: ic.tolerance ?? 40 } : null;
+    const iconBlob = blob && o.hide_icon !== false ? { px: blob.px, py: blob.py, count: blob.count, colors: colorList(ic), tolerance: ic.tolerance ?? 40 } : null;
     const explicitZone = !!o.zone && o.zone !== 'auto' && o.zone !== 'none';
     if (!bg && !mowed && !nomow && !iconBlob && !explicitZone) return null;
     const zone = this.mapZone(o);
@@ -1203,7 +1457,18 @@ class Floorplan3dCard extends HTMLElement {
   // "Stripes" / "Mowed" texts from the last processed map (null each when unknown).
   mapInfo() {
     const st = this._mapStats, o = this._layout && this._layout.mower && this._layout.mower.overlay;
+    // a progress sensor of the mower's device wins over the map estimate
+    const prog = this._layout && this._layout.mower && this._layout.mower.entity ? findProgress(this._hass, this._mowerStateEntity()) : null;
+    const pv = prog ? progressValue(this._hass, prog) : null;
+    if (pv !== null) {
+      const base = st && o ? this._mapInfoBase(st, o) : { stripes: null };
+      return { ...base, mowed: `${Math.round(pv * 100)} %`, mowedSource: 'progress sensor' };
+    }
     if (!st || !o) return { stripes: null, mowed: null };
+    return { ...this._mapInfoBase(st, o), mowedSource: st.share != null ? 'map estimate' : null };
+  }
+
+  _mapInfoBase(st, o) {
     // against true north: the model's north and alignment rotation, as the sky uses them
     const m = this._view && this._view.model;
     const b = st.angle != null ? stripeBearing(st.angle, o.rotation, m ? m.north || 0 : 0, m ? this._modelAlign().rotation || 0 : 0) : null;
@@ -1246,7 +1511,7 @@ class Floorplan3dCard extends HTMLElement {
     // loaded picture again
     // the alignment only matters to a zone clip (it moves the clip over the picture)
     const z = this.mapZone(o);
-    const pk = JSON.stringify([o.bg_color, o.bg_tolerance, o.mowed_color, o.mowed_tolerance, o.nomow_color, o.nomow_tolerance,
+    const pk = JSON.stringify([colorList(o, 'bg'), o.bg_tolerance, colorList(o, 'mowed'), o.mowed_tolerance, colorList(o, 'nomow'), o.nomow_tolerance,
       o.hide_icon, o.zone, z && z.id, z && z.polygon, ...(z ? [o.x, o.y, o.rotation, o.width] : [])]);
     if (pk !== this._mapProcKey) {
       const first = this._mapProcKey == null;
@@ -2140,6 +2405,7 @@ class Floorplan3dCard extends HTMLElement {
       const st = h.states[m.entityId];
       el.classList.toggle('active', isActive(st));
       el.classList.toggle('unavailable', !st || st.state === 'unavailable');
+      el.classList.toggle('offline', m.id === this._mowerMarkerId && !!this._mowerOffline);
       const icon = el.querySelector('ha-icon');
       const ic = m.id === this._mowerMarkerId ? 'mdi:robot-mower' : iconFor(h, m.entityId);
       if (icon.getAttribute('icon') !== ic) icon.setAttribute('icon', ic);

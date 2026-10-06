@@ -476,6 +476,20 @@ export class FloorplanView {
     return hit ? [hit.x, -hit.z] : null;
   }
 
+  // The map overlay under a screen position: the ray hits the overlay plane itself (clouds, helpers,
+  // markers and the model are ignored). -> { u, v, x, y } (texture uv, v up; plan point) or null.
+  mapHit(clientX, clientY) {
+    const pl = this.mapPlane;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    if (!pl || !r.width || !r.height) return null;
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    pl.updateMatrixWorld();
+    const hit = this.raycaster.intersectObject(pl, false)[0];
+    if (!hit || !hit.uv) return null;
+    return { u: hit.uv.x, v: hit.uv.y, x: hit.point.x, y: -hit.point.z };
+  }
+
   // Screen position (client px) of a plan point, the inverse of planPoint.
   screenPoint(x, y, z, floorId) {
     const v = planToWorld(x, y, z, this.floorElevation(floorId)).project(this.camera);
@@ -1639,6 +1653,35 @@ export class FloorplanView {
     this.dirty = true;
   }
 
+  // Chip next to the mower: { kind ('offline' | 'rain' | 'drying'), icon, text, x, y, floorId } or null.
+  // A DOM label (CSS2D) 0.5 m above the ground under the mower; its element is removed with it.
+  setMowerChip(c) {
+    const cur = this.mowerChip;
+    if (!c) {
+      if (cur) { this.mowerGroup.remove(cur.obj); cur.obj.element.remove(); this.mowerChip = null; this.dirty = true; }
+      return;
+    }
+    let obj = cur && cur.obj;
+    if (!obj) {
+      const el = document.createElement('div');
+      el.innerHTML = '<ha-icon></ha-icon><span></span>';
+      obj = new CSS2DObject(el);
+      obj.userData.helper = true;
+      obj.raycast = () => {};
+      this.mowerGroup.add(obj);
+      this.mowerChip = { obj };
+    }
+    const el = obj.element;
+    el.className = `fp-mower-chip ${c.kind}`;
+    const ic = el.querySelector('ha-icon');
+    if (ic.getAttribute('icon') !== c.icon) ic.setAttribute('icon', c.icon);
+    el.querySelector('span').textContent = c.text || '';
+    obj.position.set(c.x, this.mowerHeight(c.x, c.y, c.floorId) + 0.5, -c.y);
+    obj.visible = this._mowerShows(c.floorId);
+    this.mowerChip.floorId = c.floorId;
+    this.dirty = true;
+  }
+
   _warningVisible() {
     this.warning.sprite.visible = this._mowerShows(this.warning.floorId);
   }
@@ -2110,6 +2153,7 @@ export class FloorplanView {
     for (const o of this.overlayGroup.children) if (!o.isCSS2DObject) o.visible = this._shows(o.userData.floorId);
     if (this.trail) this.trail.visible = this.trail.geometry.drawRange.count > 0 && this._mowerShows(this.trail.userData.floorId);
     if (this.warning) this._warningVisible();
+    if (this.mowerChip) this.mowerChip.obj.visible = this._mowerShows(this.mowerChip.floorId);
     if (this.model) {
       const assign = this.modelLevels || {};
       if (!this._modelVisibility) {
@@ -2643,6 +2687,7 @@ export class FloorplanView {
 
   dispose() {
     this.stop();
+    this.setMowerChip(null);
     this._disposed = true;
     this._cancelOcclusion();
     this.renderer.domElement.removeEventListener('wheel', this._onWheel);

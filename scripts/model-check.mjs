@@ -2271,9 +2271,9 @@ try {
   const alignTwo = async () => {
     for (const [px, py] of [[75, 125], [375, 725]]) {
       const n = await ev(`${card}._edit.aligning.pairs.length`);
-      const ov = await ev(`${card}._layout.mower.overlay`);
-      const img = pixelToPlan(px, py, W, H, ov);
-      const a = await ev(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${img.x}, v.mapPlane.position.y, ${-img.y})); })()`);
+      // the image point in the 2D picker on the original picture
+      await until(`!!${card}._edit.picker`, 'the align picker');
+      const a = await ev(`${card}._edit.picker.clientOf(${px}, ${py})`);
       await page.mouse.click(a[0], a[1]);
       await until(`!!${card}._edit.aligning && !!${card}._edit.aligning.pending`, 'the image point');
       const real = pixelToPlan(px, py, W, H, truth);
@@ -2281,6 +2281,7 @@ try {
       await page.mouse.click(b[0], b[1]);
       await until(`!!${card}._edit.aligning && ${card}._edit.aligning.pairs.length === ${n + 1}`, 'the model point');
     }
+    check('align: image points picked in the picker', await ev(`${card}._edit.aligning.pairs.every((p, i) => Math.abs(p.px - [75, 375][i]) <= 1 && Math.abs(p.py - [125, 725][i]) <= 1)`));
   };
   check('Align by points armed', (await panelBtn('Align by points')) && !!(await ev(`${card}._edit.aligning`)));
   await alignTwo();
@@ -2318,6 +2319,28 @@ try {
   const processed = (w) => until(`(() => { const c = ${card}, p = c._view.mapPlane; const t = p && p.material.map, im = p && p.userData.loaded && p.userData.loaded.image;
     return !!t && t.isCanvasTexture && !!im && (im.naturalWidth || im.width) === ${w} && t.image.width === ${w} && !!c._imageBlob && c._imageBlob.imgW === ${w} && !!c._mapStats; })()`, `the processed ${w} px map`, 15000);
   check('map processed into a canvas texture', await processed(450));
+  // 3D picks read the clicked map pixel (overlay on the lawn, mower floor at 7 m): the ray hits the map plane
+  await ev(`${card}._view.setCamera({ position: [17.5, 9, 6], target: [17.5, 0, -1.5] }, { instant: true })`);
+  await settle(page, card);
+  const pickAt = async (kind, px, py) => {
+    const ov = await ev(`${card}._layout.mower.overlay`);
+    const q = pixelToPlan(px, py, 450, 850, ov);
+    await ev(`${card}._view.setCamera({ position: [${q.x}, 8, ${-q.y + 5}], target: [${q.x}, 0, ${-q.y}] }, { instant: true })`); // the point mid-stage, clear of the toolbar
+    await settle(page, card);
+    const sp = await ev(`(() => { const v = ${card}._view; return v.projectWorld(v.camera.position.clone().set(${q.x}, v.mapPlane.position.y, ${-q.y})); })()`);
+    await ev(`(() => { const e = ${card}._edit; e.colorPick = ${JSON.stringify(kind)}; e._syncStageClasses(); })()`);
+    await page.mouse.click(sp[0], sp[1]);
+    await sleep(400);
+  };
+  const dot = await ev(`(() => { const b = ${card}._imageBlob; return b && [b.px, b.py]; })()`);
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, image: { ...l.mower.image, color: undefined, colors: [] } } }); })()`);
+  await pickAt(true, dot[0], dot[1]);
+  const pc = await ev(`(${card}._layout.mower.image.colors || [])[0]`);
+  check('3D pick on the mower dot stores the dot colour (floor at 7 m, map on the lawn)', !!pc && pc[0] > 200 && pc[1] < 120 && pc[2] < 120, JSON.stringify({ dot, pc }));
+  await pickAt('bg', 8, 8);
+  const bgc = await ev(`(${card}._layout.mower.overlay.bg_colors || []).slice(-1)[0]`);
+  check('3D pick on the background stores the background colour (the darker margin shade)', !!bgc && Math.abs(bgc[0] - 40) < 6 && Math.abs(bgc[1] - 79) < 6 && Math.abs(bgc[2] - 38) < 6, JSON.stringify(bgc));
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, mower: { ...l.mower, image: { ...l.mower.image, colors: [[255, 59, 48]] }, overlay: { ...l.mower.overlay, bg_colors: undefined, bg_color: [47, 93, 44] } } }); })()`);
   const mapCheck = () => ev(`(() => {
     const c = ${card}, p = c._view.mapPlane, img = p.userData.loaded.image, o = c._layout.mower.overlay;
     const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height, cv = p.material.map.image, w = cv.width, h = cv.height;
@@ -2391,6 +2414,84 @@ try {
   await ev(`${card}._view.setCamera({ position: [17.5, 24, 6], target: [17.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-processed.png') });
+  await ev('window.__demoMowerPaused = false');
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
+// 2j. auto mode: the live map (camera) against the static map of the same device, the mower found by
+// its picture (position and heading), the dock ignored; mowed share from the progress sensor; device
+// rows in the popup; offline / rain chips
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 700 });
+try {
+  const { page } = s;
+  const ev = (expr) => page.evaluate(expr);
+  const until = (expr, label, timeout = 10000) => page.waitForFunction(expr, { timeout }).then(() => true, () => { console.log(`     (timed out waiting for ${label})`); return false; });
+  await until(`!!${card}._view.model`, 'the model', 20000);
+  await ev('window.__demoMowerPaused = true');
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' } }, mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [], trail: true,
+    overlay: { entity: 'camera.robo_live_map', x: 16.5, y: 1.5, rotation: 0, width: 9, opacity: 0.6, refresh: 2 } } }); })()`);
+  check('auto mode: static map and mower picture detected', await until(`(() => { const a = ${card}.mowerAuto(); return !!a && a.static === 'image.robo_map' && a.picture === 'image.robo_mower_image'; })()`, 'auto mode'));
+  const T = 0.7;
+  await ev(`window.__setRobot(${T})`);
+  const want = { x: 225 + 150 * Math.cos(T), y: 425 - 150 * Math.sin(T) };
+  const near = `(() => { const b = ${card}._imageBlob; return !!b && Math.hypot(b.px - ${want.x}, b.py - ${want.y}) < 2 && !!${card}._iconHead; })()`;
+  check('auto mode: the mower found by its picture (within 2 px)', await until(near, 'the mower in the live map', 15000), JSON.stringify({ blob: await ev(`${card}._imageBlob`), want, res: await ev(`${card}._imageResult`) }));
+  const head = async () => ev(`(() => { const c = ${card}, p = c._objects._pose; return { pose: p && p.heading, src: c._headingSource, icon: c._iconHead }; })()`);
+  const diff = (a, b) => { const d = (((a - b) % 360) + 540) % 360 - 180; return Math.abs(d); };
+  let hd = await head();
+  check('auto mode: heading from the picture (model within 10°)', hd.src === 'picture' && hd.pose !== null && diff(hd.pose * 180 / Math.PI, T * 180 / Math.PI + 90) <= 10, JSON.stringify(hd));
+  const T2 = 2.6;
+  await ev(`window.__setRobot(${T2})`);
+  await until(`(() => { const b = ${card}._imageBlob; return !!b && Math.hypot(b.px - ${225 + 150 * Math.cos(T2)}, b.py - ${425 - 150 * Math.sin(T2)}) < 2; })()`, 'the moved mower', 15000);
+  await ev(`window.__setRobot(${T2 + 0.002})`); // a second frame: a jump > 120° needs two
+  await sleep(2500);
+  hd = await head();
+  check('auto mode: the model turns with the icon', diff(hd.pose * 180 / Math.PI, T2 * 180 / Math.PI + 90) <= 10, JSON.stringify(hd));
+  check('auto mode: the dock is not the mower', await ev(`(() => { const d = ${card}._dockPx; return !!d && Math.hypot(d.px - 391, d.py - 786) < 6; })()`), JSON.stringify(await ev(`${card}._dockPx`)));
+  const mapPx = await ev(`(() => { const t = ${card}._view.mapPlane.material.map; if (!t || !t.isCanvasTexture) return null; const g = t.image.getContext('2d');
+    const a = (x, y) => Array.from(g.getImageData(x, y, 1, 1).data); return { bg: a(5, 5), lawnS: a(100, 600), mowed: a(250, 90), nomow: a(225, 395) }; })()`);
+  check('auto mode: unchanged transparent, mowed light, no-mow shaded', !!mapPx && mapPx.bg[3] === 0 && mapPx.lawnS[3] === 0 && mapPx.nomow[3] > 0 && mapPx.nomow[0] < 40
+    && (mapPx.mowed[3] > 0 || (await ev(`${card}._mapStats.share`)) > 0.2), JSON.stringify(mapPx));
+  check('mowed share from the progress sensor', /^39 %$/.test((await ev(`${card}.mapInfo()`)).mowed) && (await ev(`${card}.mapInfo().mowedSource`)) === 'progress sensor');
+  // popup rows of the device (the model's mower object)
+  const rows = await ev(`(() => { const c = ${card}, o = c._objects.objectAt('mower'); if (!o) return null; c._popup.open(o.obj, null);
+    const t = [...c.shadowRoot.querySelectorAll('.fp-popup .fp-pop-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()); c._popup.close(); return t; })()`);
+  const has = (re) => !!rows && rows.some((t) => re.test(t));
+  check('mower popup: device rows', has(/^Mower status\s*Working/) && has(/^Battery\s*82 %/) && has(/^Rain\s*Dry/) && has(/^Wifi\s*-61 dBm/) && has(/^Zone A area\s*210 m²/) && has(/^Time left\s*≈ 61 min/) && has(/^Error code\s*0 \(OK\)/), JSON.stringify(rows));
+  // offline: chip, no warning, stuck paused; rain: rainy chip
+  await ev(`window.__setDemoStates({ 'binary_sensor.robo_online': 'off' })`);
+  check('offline chip next to the mower', await until(`(() => { const el = ${card}.shadowRoot.querySelector('.fp-mower-chip.offline'); return !!el && el.textContent.includes('offline'); })()`, 'the offline chip'));
+  const off = await ev(`(() => { const c = ${card}, o = c._objects.objectAt('mower'); c._popup.open(o.obj, null); const t = c.shadowRoot.querySelector('.fp-popup').textContent; c._popup.close(); return t; })()`);
+  check('popup: offline since', /Offline\s*since \d+ min/.test(off), off.slice(0, 200));
+  await ev(`window.__setDemoStates({ 'binary_sensor.robo_online': 'on', 'sensor.robo_rain_sensor': 'Wet' })`);
+  check('rain chip (weather-rainy) while wet', await until(`(() => { const el = ${card}.shadowRoot.querySelector('.fp-mower-chip.rain ha-icon'); return !!el && el.getAttribute('icon') === 'mdi:weather-rainy'; })()`, 'the rain chip'));
+  await ev(`window.__setDemoStates({ 'sensor.robo_rain_sensor': 'Dry countdown', 'sensor.robo_rain_sensor_countdown': '12' })`);
+  check('drying chip with minutes left', await until(`(() => { const el = ${card}.shadowRoot.querySelector('.fp-mower-chip.drying'); return !!el && el.textContent.includes('12 min') && el.querySelector('ha-icon').getAttribute('icon') === 'mdi:weather-partly-rainy'; })()`, 'the drying chip'));
+  await ev(`window.__setDemoStates({ 'sensor.robo_rain_sensor': 'Dry' })`);
+  check('chip gone when dry and online', await until(`!${card}.shadowRoot.querySelector('.fp-mower-chip')`, 'no chip'));
+  // error code auto-detected (0 = OK, 12 = error)
+  await ev(`window.__setDemoStates({ 'sensor.robo_errorcode': '12' })`);
+  check('error code sensor auto-detected: 12 is an error', await until(`(() => { const w = ${card}._warning; return !!w && w.kind === 'error'; })()`, 'the error'), JSON.stringify(await ev(`${card}._warningText()`)));
+  check('popup text "Error code 12"', (await ev(`JSON.stringify(${card}._warningText())`)).includes('Error code 12'));
+  await ev(`window.__setDemoStates({ 'sensor.robo_errorcode': '0' })`);
+  check('error code 0: no warning', await until(`!${card}._warning`, 'no warning'));
+  // edit mode: the Mower tab shows auto mode, the checklist rows and the heading
+  await ev(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await until(`${card}._editing`, 'edit mode');
+  await ev(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Mower').click()`);
+  await until(`${card}._edit.tab === 'mower'`, 'the Mower tab');
+  const tab = await ev(`${card}.shadowRoot.querySelector('.panel').textContent.replace(/\\s+/g, ' ')`);
+  check('Mower tab: auto mode, entities and heading', /Auto \(static map \+ mower picture\)/.test(tab) && tab.includes('image.robo_map') && /Heading \d+° \(mower picture\)/.test(tab), tab.slice(0, 400));
+  const rowsIds = await ev(`[...${card}.shadowRoot.querySelectorAll('.mower-setup .setup-row')].map((b) => b.textContent.replace(/\\s+/g, ' ').trim())`);
+  check('checklist: static map and mower picture rows', rowsIds.some((t) => t.includes('Static map')) && rowsIds.some((t) => t.includes('Mower picture')) && !rowsIds.some((t) => t.includes('Mower colour')), JSON.stringify(rowsIds));
+  await ev(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=mower-auto-off]'); el.click(); })()`);
+  check('"Use colour picks instead" turns auto mode off', await until(`${card}._layout.mower.auto === false && !${card}.mowerAuto()`, 'auto off'));
+  await ev(`${card}._view.setCamera({ position: [16.5, 16, 6], target: [16.5, 0, -1.5] }, { instant: true })`);
+  await ev(`(() => { const el = ${card}.shadowRoot.querySelector('[data-field=mower-auto-off]'); el.click(); })()`);
+  await sleep(2500);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'mower-auto.png') });
   await ev('window.__demoMowerPaused = false');
   allErrors.push(...s.errors);
 } finally {

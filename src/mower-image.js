@@ -6,6 +6,35 @@
 
 export const MAX_SAMPLE_WIDTH = 1600;
 
+// ---------- colour lists: up to MAX_COLORS per category ----------
+// Stored as overlay.bg_colors / mowed_colors / nomow_colors and image.colors; the older single
+// bg_color / ... / image.color is read as a one-colour list (and dropped on the next write).
+export const MAX_COLORS = 4;
+const isRgb = (c) => Array.isArray(c) && c.length >= 3 && c.slice(0, 3).every((v) => Number.isFinite(Number(v)));
+const keysOf = (kind) => (kind ? [`${kind}_colors`, `${kind}_color`] : ['colors', 'color']);
+
+// kind: 'bg' | 'mowed' | 'nomow' (on the overlay) or null (the mower icon, on mower.image)
+export function colorList(obj, kind = null) {
+  if (!obj) return [];
+  const [many, one] = keysOf(kind);
+  const list = Array.isArray(obj[many]) ? obj[many].filter(isRgb) : isRgb(obj[one]) ? [obj[one]] : [];
+  return list.slice(0, MAX_COLORS).map((c) => c.slice(0, 3).map(Number));
+}
+
+// Patch adding a colour (an equal one is not added twice; a full list replaces its last colour).
+export function addColorPatch(obj, kind, color) {
+  const [many, one] = keysOf(kind);
+  const c = color.slice(0, 3).map(Number);
+  let list = colorList(obj, kind).filter((x) => String(x) !== String(c));
+  if (list.length >= MAX_COLORS) list = list.slice(0, MAX_COLORS - 1);
+  return { [many]: [...list, c], [one]: undefined };
+}
+
+export function removeColorPatch(obj, kind, index) {
+  const [many, one] = keysOf(kind);
+  return { [many]: colorList(obj, kind).filter((_, i) => i !== index), [one]: undefined };
+}
+
 // Overlay geometry, exactly as view.setMapOverlay draws it: a plane centred on (x, y), `width`
 // metres wide, height = width * imgH / imgW, top of the image north, then rotated
 // counter-clockwise by `rotation` degrees (plane.rotation.y) about its centre.
@@ -67,14 +96,16 @@ let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0);
 // components smaller than minPixels are noise. -> [{ px, py, count }] (centroids)
 export function findBlobs(rgba, w, h, color, tolerance, minPixels = 4) {
   const n = w * h;
-  const [cr, cg, cb] = color;
+  const cols = Array.isArray(color && color[0]) ? color : [color]; // one colour or a list (any of them)
   const tol = tolerance ?? 40;
   if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); }
   const mask = maskBuf, stack = stackBuf;
   mask.fill(0, 0, n);
   for (let i = 0, k = 0; i < n; i++, k += 4) {
     if (rgba[k + 3] < 128) continue;
-    if (Math.abs(rgba[k] - cr) <= tol && Math.abs(rgba[k + 1] - cg) <= tol && Math.abs(rgba[k + 2] - cb) <= tol) mask[i] = 1;
+    for (const c of cols) {
+      if (Math.abs(rgba[k] - c[0]) <= tol && Math.abs(rgba[k + 1] - c[1]) <= tol && Math.abs(rgba[k + 2] - c[2]) <= tol) { mask[i] = 1; break; }
+    }
   }
   const blobs = [];
   for (let s = 0; s < n; s++) {
@@ -142,13 +173,13 @@ export function headingMinStep(source, overlayWidth, sampleWidth) {
   return Math.max(0.25, 3 * mpp);
 }
 
-// Per-channel median of the 5x5 neighbourhood around pixel (px, py) (integer pixel indices),
-// clamped to the image.
-export function medianColor(rgba, w, h, px, py) {
+// Per-channel median of the (2r+1)^2 neighbourhood around pixel (px, py) (integer pixel indices,
+// default 5x5), clamped to the image.
+export function medianColor(rgba, w, h, px, py, r = 2) {
   const ch = [[], [], []];
-  for (let y = py - 2; y <= py + 2; y++) {
+  for (let y = py - r; y <= py + r; y++) {
     if (y < 0 || y >= h) continue;
-    for (let x = px - 2; x <= px + 2; x++) {
+    for (let x = px - r; x <= px + r; x++) {
       if (x < 0 || x >= w) continue;
       const k = (y * w + x) * 4;
       ch[0].push(rgba[k]);
@@ -188,10 +219,21 @@ export function mapKernel() {
     return bufs[key];
   }
 
-  // Colour distance (max channel difference) when within tol, else -1.
-  function within(rgba, k, c, tol) {
-    const d = Math.max(Math.abs(rgba[k] - c[0]), Math.abs(rgba[k + 1] - c[1]), Math.abs(rgba[k + 2] - c[2]));
-    return d <= tol ? d : -1;
+  // Colour distance (max channel difference) to the nearest of the colours when within tol, else -1.
+  function within(rgba, k, cols, tol) {
+    let best = -1;
+    for (const c of cols) {
+      const d = Math.max(Math.abs(rgba[k] - c[0]), Math.abs(rgba[k + 1] - c[1]), Math.abs(rgba[k + 2] - c[2]));
+      if (d <= tol && (best < 0 || d < best)) best = d;
+    }
+    return best;
+  }
+
+  // { colors: [[r, g, b], ...] } or the single { color: [r, g, b] } -> the list
+  function colorsOf(c) {
+    if (!c) return [];
+    if (Array.isArray(c.colors)) return c.colors.filter((x) => Array.isArray(x));
+    return Array.isArray(c.color) ? [c.color] : [];
   }
 
   // Pixels of the mower icon: pixels of its colour near the blob centroid, their 4-connected
@@ -202,7 +244,8 @@ export function mapKernel() {
     const stack = grow(bufs, 'stack', Int32Array, n);
     mask.fill(0);
     const tol = blob.tolerance ?? 40;
-    const ok = (i) => rgba[i * 4 + 3] >= 128 && within(rgba, i * 4, blob.color, tol) >= 0;
+    const cols = colorsOf(blob);
+    const ok = (i) => rgba[i * 4 + 3] >= 128 && within(rgba, i * 4, cols, tol) >= 0;
     const r = Number(blob.count) > 0 ? Math.sqrt(blob.count / Math.PI) * 1.5 + 2 : 8;
     const cx = blob.px, cy = blob.py;
     let top = 0, found = 0;
@@ -251,8 +294,9 @@ export function mapKernel() {
   }
 
   // The map picture as it is drawn on the lawn. rgba: w x h pixels; opts:
-  //   bg / mowed / nomow: { color: [r, g, b], tolerance } (each optional; a pixel matching several
-  //     goes to the nearest), iconBlob: { px, py, count, color, tolerance } (working pixels) to hide,
+  //   bg / mowed / nomow: { colors: [[r, g, b], ...] (or color), tolerance } (each optional; a pixel matching
+  //     any colour of a class belongs to it, matching several classes goes to the nearest),
+  //   iconBlob: { px, py, count, colors (or color), tolerance } (working pixels) to hide,
   //   dilate: px around the icon, zoneMask: Uint8Array (1 = inside) or null.
   // Background -> transparent, mowed -> light translucent, no-mow -> dark hatched, icon and outside the
   // zone -> transparent, the rest unchanged. No options: a plain copy (no keying).
@@ -267,9 +311,10 @@ export function mapKernel() {
     mowedMask.fill(0);
     const cls = [];
     for (const [kind, c] of [['bg', opts.bg], ['mowed', opts.mowed], ['nomow', opts.nomow]]) {
-      if (c && Array.isArray(c.color)) cls.push({ kind, color: c.color, tol: c.tolerance ?? 30 });
+      const cols = colorsOf(c);
+      if (cols.length) cls.push({ kind, colors: cols, tol: c.tolerance ?? 30 });
     }
-    const icon = opts.iconBlob && Array.isArray(opts.iconBlob.color) ? iconMask(rgba, w, h, opts.iconBlob, opts.dilate ?? 3, bufs) : null;
+    const icon = opts.iconBlob && colorsOf(opts.iconBlob).length ? iconMask(rgba, w, h, opts.iconBlob, opts.dilate ?? 3, bufs) : null;
     const zone = opts.zoneMask || null;
     let mowed = 0, background = 0, nomow = 0, iconCount = 0, zoneCount = 0;
     for (let i = 0, k = 0, y = 0, x = 0; i < n; i++, k += 4) {
@@ -284,7 +329,7 @@ export function mapKernel() {
         let kind = null, best = 256;
         if (rgba[k + 3] >= 128) {
           for (const c of cls) {
-            const d = within(rgba, k, c.color, c.tol);
+            const d = within(rgba, k, c.colors, c.tol);
             if (d >= 0 && d < best) { best = d; kind = c.kind; }
           }
         }
@@ -610,7 +655,7 @@ export class MapProcessor {
     const sx = w / imgW, b = opts.iconBlob;
     const kopts = {
       bg: opts.bg || null, mowed: opts.mowed || null, nomow: opts.nomow || null, dilate: opts.dilate ?? 3,
-      iconBlob: b ? { px: b.px * sx, py: b.py * sx, count: b.count == null ? null : b.count * sx * sx, color: b.color, tolerance: b.tolerance } : null,
+      iconBlob: b ? { px: b.px * sx, py: b.py * sx, count: b.count == null ? null : b.count * sx * sx, color: b.color, colors: b.colors, tolerance: b.tolerance } : null,
     };
     this._ensureOut(w, h);
     let r = null;

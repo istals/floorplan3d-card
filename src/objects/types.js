@@ -300,7 +300,7 @@ export const TYPES = {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, obj.glow || 'glow', false),
     update: (part, chain, ctx) => updateStatus(part, statusColor('mower', stateOf(ctx, ctx.entity))),
     place: placeMower, dispose: disposeMower,
-    defaults: { tap_action: { action: 'popup' }, hold_action: { action: 'more-info' }, popup: ['state', 'battery', 'start', 'dock'] },
+    defaults: { tap_action: { action: 'popup' }, hold_action: { action: 'more-info' }, popup: ['state', 'battery', 'device', 'start', 'dock'] },
   },
   dock: {
     prepare: (obj, ctx) => prepareStatus(obj, ctx, ledName(obj), false),
