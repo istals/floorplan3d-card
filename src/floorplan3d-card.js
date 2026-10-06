@@ -5,7 +5,7 @@ import { FloorplanView } from './view.js';
 import { EditMode } from './edit-mode.js';
 import './card-editor.js';
 import { LayoutStore } from './storage.js';
-import { buildMarkers, registrySignature, iconFor, isActive, displayValue, areaName } from './registry.js';
+import { buildMarkers, registrySignature, iconFor, isActive, displayValue, areaName, markerLook } from './registry.js';
 import { mergeFloors, roomFloorId, markerPositions, lightGlow, roomLabel, roomLabelMode } from './layout.js';
 import {
   resolveLevels, resolveRoomAreas, modelRooms, combineRooms, levelFloorOverrides, bindingDiff, snapshotDiff, levelsFromFloorMap,
@@ -26,8 +26,9 @@ import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progres
 import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, planToPixel, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint, mapWorkSize, FETCH_TIMEOUT_MS } from './mower-image.js';
 import { isDocked, dockWord, trackWindow, fullSearch, layerDue, throttleStep, effectiveRefresh, LONG_TASK_MS, mowerStatusText, rememberPosition, lastPosition } from './mower-track.js';
 import { ObjectLayer } from './objects/layer.js';
+import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
 import { DebugOverlay } from './debug-overlay.js';
-import { bindObjects, mowerTabEntity, effectiveGroups, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
+import { bindObjects, mowerTabEntity, effectiveGroups, layoutTags, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
@@ -118,6 +119,24 @@ const STYLE = `
     background: var(--card-background-color, #fff); color: var(--primary-text-color);
     box-shadow: 0 1px 3px rgba(0,0,0,.2); }
   .fp-val:empty { display: none; }
+  /* marker shapes by role (registry.js markerLook) */
+  .fp-dot { position: relative; }
+  .fp-marker.shape-square .fp-dot { border-radius: 7px; }
+  .fp-marker.shape-diamond .fp-dot { border-radius: 4px; transform: rotate(45deg) scale(.9); }
+  .fp-marker.shape-diamond .fp-dot > ha-icon { transform: rotate(-45deg); }
+  .fp-marker.shape-diamond:hover .fp-dot { transform: rotate(45deg) scale(1.02); }
+  .fp-marker.alert-red .fp-dot { background: #e53935; border-color: #e53935; color: #fff; }
+  .fp-marker.alert-yellow .fp-dot { background: #fbc02d; border-color: #fbc02d; color: #212121; }
+  .fp-in:empty { display: none; }
+  .fp-marker.kind-value .fp-dot { width: auto; min-width: 28px; padding: 0 6px 0 4px; gap: 2px; --mdc-icon-size: 13px; }
+  .fp-marker.kind-value .fp-in { font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--primary-text-color); line-height: 1; }
+  .fp-marker.kind-value.active .fp-in { color: inherit; }
+  .fp-marker.kind-info .fp-dot::after { content: 'i'; position: absolute; top: -4px; left: -4px; width: 10px; height: 10px; border-radius: 50%;
+    font: italic 700 8px/10px Georgia, serif; text-align: center; color: var(--card-background-color, #fff); background: var(--secondary-text-color, #727272); }
+  .fp-dot > img.fp-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: none; }
+  .fp-dot.has-pic > img.fp-pic { display: block; }
+  .fp-dot.has-pic > ha-icon { visibility: hidden; }
+  .fp-marker.kind-picture .fp-dot { overflow: hidden; padding: 0; }
   /* device badges: integration logo (top right), status dot (bottom right), low battery chip (above) */
   .fp-marker > .fp-logo { position: absolute; top: -6px; right: -8px; width: 14px; height: 14px; box-sizing: border-box; padding: 1px;
     object-fit: contain; border-radius: 4px; background: var(--card-background-color, #fff); box-shadow: 0 0 0 1px var(--divider-color, rgba(0,0,0,.15)), 0 1px 2px rgba(0,0,0,.25); pointer-events: none; }
@@ -297,7 +316,11 @@ const STYLE = `
   .fp-marker.fp-faded { opacity: .3; }
   .compact .fp-dot { width: 21px; height: 21px; --mdc-icon-size: 13px; border-width: 1px; }
   .compact .fp-val { font-size: 9.5px; padding: 0 4px; }
+  .has-model .fp-marker.kind-value .fp-dot { width: auto; min-width: 22px; padding: 0 5px 0 3px; }
+  .compact .fp-marker.kind-value .fp-dot { width: auto; min-width: 21px; padding: 0 4px 0 2px; --mdc-icon-size: 11px; }
+  .compact .fp-marker.kind-value .fp-in { font-size: 9.5px; }
   .stage.picking-views { cursor: pointer; }
+  .stage.fp-hover canvas { cursor: pointer; }
   .panel details.advanced { margin: 12px 0 4px; }
   .panel details.advanced summary { cursor: pointer; color: var(--secondary-text-color); font-size: 12px; }
   .panel .floor-links { display: flex; flex-wrap: wrap; gap: 0 12px; }
@@ -326,6 +349,15 @@ const STYLE = `
   .panel ul.otree li.obj .oacts label.act { display: flex; flex-direction: column; margin: 0; font-size: 11px; color: var(--secondary-text-color); flex: 1; min-width: 80px; }
   .panel ul.otree li.obj .oacts select { font-size: 12px; }
   .panel ul.otree li.obj > input[data-field=obj-act-field] { margin-top: 3px; }
+  .panel .otagbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0 6px; font-size: 12px; }
+  .panel .otagbar label { margin: 0; font-size: 12px; }
+  .panel .otagbar input.tagadd { width: 90px; }
+  .panel ul.otree li.obj .opick { margin: 0; }
+  .panel ul.otree li.obj .otags { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; }
+  .panel ul.otree li.obj .otag { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; padding: 0 2px 0 6px; border-radius: 9px;
+    background: var(--secondary-background-color, rgba(127,127,127,.2)); color: var(--primary-text-color); }
+  .panel ul.otree li.obj .otag button { padding: 0 4px; font-size: 12px; line-height: 1; color: var(--secondary-text-color); }
+  .panel ul.otree li.obj .otags input.tagadd { width: 70px !important; font-size: 11px; padding: 1px 4px; }
   .panel ul.otree li.obj > .badge.warn { display: block; margin-top: 3px; white-space: normal; }
   .panel ul.otree li.obj input[type=text], .panel ul.otree li.obj input:not([type]) { width: 100%; box-sizing: border-box; }
   .panel ul.otree .badge { font-size: 9.5px; padding: 0 4px; border-radius: 4px; background: var(--secondary-background-color, rgba(127,127,127,.2)); color: var(--secondary-text-color); }
@@ -565,6 +597,7 @@ class Floorplan3dCard extends HTMLElement {
     if (!vw.model) return;
     if (this._index && this._built.viewManifest === vw.model.manifest) {
       this._index = nodeIndex(threeAdapter(vw.model.root), vw.model.manifest);
+      this._tagIndex();
       this._viewStates = new Map();
       const cur = this.currentView();
       this._viewState = cur ? this._stateFor(cur) : null;
@@ -711,6 +744,8 @@ class Floorplan3dCard extends HTMLElement {
     if (this._ltObs) { this._ltObs.disconnect(); this._ltObs = null; }
     clearTimeout(this._surfJob);
     this._surfJob = null;
+    clearTimeout(this._hintTouchTimer);
+    if (this._hoverRaf) { cancelAnimationFrame(this._hoverRaf); this._hoverRaf = null; }
   }
 
   async _load() {
@@ -806,7 +841,9 @@ class Floorplan3dCard extends HTMLElement {
           badge: this._objectBadge(o.binding && o.binding.entity), dark: !!(this._built.theme && this._built.theme.dark) };
       },
     });
-    this._view.onRender = () => this._popup.position();
+    this._hints = new TapHints(this._view.objectsGroup);
+    this._hints.setPixelRatio(this._view.renderer.getPixelRatio());
+    this._view.onRender = () => { this._popup.position(); this._hintsNear(); };
     this._view.setOcclusion(this._config.occlusion !== false);
     this._view.setMode(this._mode);
     this._loadModel();
@@ -821,10 +858,85 @@ class Floorplan3dCard extends HTMLElement {
     canvas.addEventListener('pointerup', (e) => this._editing && this._edit.canvasUp(e));
     // model objects: tap / hold, hit-tested on screen before markers and the canvas (capture phase)
     this._stage.addEventListener('pointerdown', (e) => this._objectDown(e, canvas), true);
+    // tap hints (near the pointer) and the hover highlight of tappable objects; touch: hints for 3 s
+    this._stage.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch') return;
+      this._hintPtr = { x: e.clientX, y: e.clientY, buttons: e.buttons, target: e.target };
+      if (!this._hoverRaf) this._hoverRaf = requestAnimationFrame(() => { this._hoverRaf = null; this._hover(); this._hintsNear(); });
+    });
+    this._stage.addEventListener('pointerleave', () => { this._hintPtr = null; this._hover(); this._hintsNear(); });
+    this._stage.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      this._hintTouch = performance.now() + TOUCH_SHOW_MS;
+      this._hintsNear();
+      clearTimeout(this._hintTouchTimer);
+      this._hintTouchTimer = setTimeout(() => this._hintsNear(), TOUCH_SHOW_MS + 20);
+    }, true);
     this._syncToolbar();
   }
 
+  // Tap hint dots: every tappable object (as _objectHit counts them) with its reachability; cheap when
+  // nothing changed (objects evaluated, placement, view, mode).
+  _syncHints() {
+    const hints = this._hints, layer = this._objects;
+    if (!hints || !layer) return;
+    const mode = tapHintsMode(this._layout);
+    const on = mode !== 'off' && !!layer.model && !this._editing && !!this._hass;
+    if (hints.setVisible(on)) this._view.markDirty();
+    if (!on) return;
+    const key = [layer.stats.evaluated, layer._labelSig, this._viewState, this._floorOnly, this._bindings, this._groups, mode, this._mode];
+    if (this._hintKey && key.every((x, i) => x === this._hintKey[i])) return;
+    this._hintKey = key;
+    const levelShown = this._levelShown(), states = this._hass.states, groups = this._groups || {};
+    const items = [];
+    for (const a of layer.anchors()) {
+      const o = layer.objectAt(a.id), b = o && o.binding;
+      if (!b || b.hidden) continue;
+      const own = this._objectHasOwnActions(a.id, o);
+      if (!b.missing && !actionTarget(o.obj, b, groups) && !own) continue;
+      if (!levelShown(o.obj.level) || !nodeShown(o.obj.node)) continue;
+      const ok = own && !b.entity ? true : reachability(o.obj, b, o.chain, states, groups).ok;
+      const r = o.result;
+      items.push({ id: a.id, world: a.world, ok, color: r && r.lit && r.color ? r.color : null });
+    }
+    if (hints.setItems(items)) { this._hintsNear(true); this._view.markDirty(); }
+  }
+
+  // Dot fade: always shown, or near the pointer (touch: all of them for 3 s after a touch).
+  _hintsNear(force = false) {
+    const hints = this._hints;
+    if (!hints || !hints.group.visible) return;
+    const mode = tapHintsMode(this._layout);
+    const touch = this._hintTouch && performance.now() < this._hintTouch;
+    const p = this._hintPtr;
+    if (mode === 'near' && !touch && !p && !force && hints._allZero) return;
+    const changed = hints.setAlpha((it) => {
+      if (mode === 'always' || touch) return 1;
+      if (!p) return 0;
+      const s = this._view.projectWorld(it.world);
+      return s ? hintAlpha(Math.hypot(s[0] - p.x, s[1] - p.y)) : 0;
+    });
+    hints._allZero = mode === 'near' && !touch && !p;
+    if (changed) this._view.markDirty();
+  }
+
+  // Desktop hover over a tappable object: its outline + a pointer cursor (view mode only).
+  _hover() {
+    const p = this._hintPtr;
+    let id = null;
+    if (p && !p.buttons && !this._editing && this._objectTapsOn() && !this._gesture && (p.target === this._view.renderer.domElement)) {
+      id = this._objectHit(p.x, p.y, OBJECT_HIT_PX.mouse);
+      if (id === WARN_ID) id = null;
+    }
+    if (id === this._hoverId) return;
+    this._hoverId = id;
+    const o = id && this._objects.objectAt(id);
+    if (!this._editing) this._view.highlightModelNode(o ? o.obj.node : null);
+    this._stage.classList.toggle('fp-hover', !!o);
+  }
+
   _toggleEdit() {
+    if (this._hoverId) { this._hoverId = null; this._view.highlightModelNode(null); this._stage.classList.remove('fp-hover'); }
     this._endGesture();
     this._taps.cancel();
     this._closeConfirm();
@@ -842,6 +954,7 @@ class Floorplan3dCard extends HTMLElement {
         this._applyMarkerStates();
       }
     }
+    this._syncHints(); // no tap hints while editing
     this._built.rooms = undefined; // model look: outlines and labels only while editing
     if (this._layout && this._layout.mower && this._hass) this._refreshMapOverlay(); // "map only in edit mode"
     this._schedule();
@@ -1972,6 +2085,7 @@ class Floorplan3dCard extends HTMLElement {
     const onlyViews = manifest === b.viewManifest && key === b.viewKey && !!this._floors;
     if (manifest !== b.viewManifest) {
       this._index = manifest && this._view.model ? nodeIndex(threeAdapter(this._view.model.root), manifest) : null;
+      this._tagIndex();
       this._viewFresh = true;
     }
     b.viewManifest = manifest;
@@ -2226,18 +2340,27 @@ class Floorplan3dCard extends HTMLElement {
   _syncBindings() {
     const model = this._objects && this._objects.model;
     const objs = model ? model.manifest.objects : [];
-    const l = this._layout || {}, lo = l.objects || NONE, groups = l.groups || NONE, states = this._hass.states;
+    const l = this._layout || {}, lo = l.objects || NONE, states = this._hass.states;
+    if (!this._tagsFor || this._tagsFor[0] !== l.tags || this._tagsFor[1] !== l.groups) this._tagsFor = [l.tags, l.groups, layoutTags(l)];
+    const groups = this._tagsFor[2]; // tag settings (old layout.groups included)
     const exists = objs.map((o) => {
       const e = lo[o.id] && lo[o.id].entity !== undefined ? lo[o.id].entity : (o.suggest || {}).entity;
       return e && states[e] ? 1 : 0;
     }).join('') + '|' + Object.values(groups).map((g) => (g && g.entity && states[g.entity] ? 1 : 0)).join('');
     const mowerEntity = mowerTabEntity(l.mower && l.mower.entity, this._hass.entities);
-    const key = [model, lo, groups, exists, mowerEntity && states[mowerEntity] ? mowerEntity : ''];
+    // HA labels (default tags) live in the entity registry: hass.entities / hass.labels identity
+    const key = [model, lo, groups, exists, mowerEntity && states[mowerEntity] ? mowerEntity : '', this._hass.entities, this._hass.labels];
     if (this._bindKey && key.every((x, i) => x === this._bindKey[i])) return false;
     this._bindKey = key;
-    this._bindings = bindObjects(objs, lo, states, { mowerEntity });
+    this._bindings = bindObjects(objs, lo, states, { mowerEntity, hass: this._hass });
     this._groups = effectiveGroups(groups, states); // controllers HA doesn't know are ignored
     this._objects.setBindings(this._bindings, this._groups);
+    if (this._tagIndex() && this._index) { // tag: view rules follow the new tags
+      this._viewStates = new Map();
+      const cur = this.currentView();
+      this._viewState = cur ? this._stateFor(cur) : null;
+      if (this._viewState && !this._floorOnly) this._applyViewVisibility();
+    }
     const bound = new Set();
     for (const b of this._bindings.values()) if (b.entity && !b.hidden) bound.add(b.entity);
     // the mower marker depends on whether the mower object is bound (its entity may stay bound by the dock)
@@ -2248,11 +2371,25 @@ class Floorplan3dCard extends HTMLElement {
     return changed;
   }
 
+  // Every object's tags into the view index (tag: selectors). True when a tag changed.
+  _tagIndex() {
+    if (!this._index) return false;
+    let changed = false;
+    for (const n of this._index.nodes) {
+      if (!n.tag || n.tag.kind !== 'object') continue;
+      const b = this._bindings && this._bindings.get(n.tag.id);
+      const tags = b && b.tags ? b.tags : null;
+      if (JSON.stringify(tags) !== JSON.stringify(n.tag.tags || null)) { n.tag.tags = tags; changed = true; }
+    }
+    return changed;
+  }
+
   // Lamps and the light pool for the current states and view (cheap when nothing changed).
   _updateObjects() {
     const layer = this._objects;
     if (!layer || !layer.model || !this._hass || !this._config) return;
     layer.update(this._hass.states, { visibleLevel: this._levelShown(), lightsOn: this._config.lights !== 'off' });
+    this._syncHints();
   }
 
   _levelShown() {
@@ -2373,6 +2510,7 @@ class Floorplan3dCard extends HTMLElement {
     return resolveActions({
       modelUi: o.obj.ui, layoutUi: (((this._layout && this._layout.objects) || {})[id] || {}).ui, yaml: this._config.actions,
       kind: 'object', id, entityId: entity, deviceId: (reg && reg.device_id) || null, typeDefaults: typeOf(o.obj.type).defaults,
+      tags: (o.binding && o.binding.tags) || null,
     });
   }
 
@@ -2396,6 +2534,11 @@ class Floorplan3dCard extends HTMLElement {
     if (!o || !this._hass) return;
     const action = this._objectActions(id, o)[which];
     if (!action || action.action === 'none') return;
+    if (which !== 'hold' && action.action === 'toggle' && !action.entity) {
+      // unreachable (offline / a controller off): no toggle, say why; hold still opens the popup
+      const r = reachability(o.obj, o.binding, o.chain, this._hass.states, this._groups || {});
+      if (!r.ok) { this._toast(r.reason); return; }
+    }
     const target = actionTarget(o.obj, o.binding, this._groups || {}, this._hass.states);
     const st = target && this._hass.states[target];
     const usable = st && st.state !== 'unavailable' && st.state !== 'unknown';
@@ -2649,7 +2792,7 @@ class Floorplan3dCard extends HTMLElement {
   _markerElement(m) {
     const el = document.createElement('div');
     el.className = 'fp-marker ' + m.domain;
-    el.innerHTML = '<div class="fp-dot"><ha-icon></ha-icon></div><div class="fp-val"></div>';
+    el.innerHTML = '<div class="fp-dot"><ha-icon></ha-icon><span class="fp-in"></span></div><div class="fp-val"></div>';
     el.title = m.name;
     let start = null, timer = null, long = false;
     const cancel = () => { clearTimeout(timer); timer = null; };
@@ -2707,8 +2850,14 @@ class Floorplan3dCard extends HTMLElement {
       const icon = el.querySelector('ha-icon');
       const ic = m.id === this._mowerMarkerId ? 'mdi:robot-mower' : iconFor(h, m.entityId);
       if (icon.getAttribute('icon') !== ic) icon.setAttribute('icon', ic);
-      const own = displayValue(h, m.entityId);
-      el.querySelector('.fp-val').textContent = own || (m.secondaryId ? displayValue(h, m.secondaryId) : '');
+      const look = markerLook(h, m);
+      this._applyLook(el, look);
+      const own = look.kind === 'value' ? '' : displayValue(h, m.entityId);
+      const val = own || (look.kind !== 'value' && m.secondaryId ? displayValue(h, m.secondaryId) : '');
+      const ve = el.querySelector('.fp-val');
+      if (ve.textContent !== val) ve.textContent = val;
+      const inner = el.querySelector('.fp-in');
+      if (inner.textContent !== look.value) inner.textContent = look.value;
       const name = st && st.attributes.friendly_name;
       el.title = m.name + (name && name !== m.name ? ' – ' + name : '');
       if (anyBadge || el._fpBadgeSig) applyBadges(el, anyBadge ? badgeInfo(h, m, bo) : null, dark);
@@ -2721,6 +2870,37 @@ class Floorplan3dCard extends HTMLElement {
       }
     }
     this._view.setGlows(glows);
+  }
+
+  // Marker shape / kind classes and the entity picture (registry.js markerLook); DOM writes only on a change.
+  _applyLook(el, look) {
+    // a picture counts by its path: HA's rotating access tokens / cache busters do not reload it every update,
+    // a data: URL (a live image) is shown once
+    const pic = look.picture ? (look.picture.startsWith('data:') ? 'data' : look.picture.split('?')[0]) : '';
+    const key = `${look.shape}|${look.kind}|${look.alert || ''}|${pic}`;
+    if (el._fpLook === key) return;
+    el._fpLook = key;
+    for (const c of [...el.classList]) if (/^(shape|kind|alert)-/.test(c)) el.classList.remove(c);
+    el.classList.add(`shape-${look.shape}`, `kind-${look.kind}`);
+    if (look.alert) el.classList.add(`alert-${look.alert}`);
+    const dot = el.querySelector('.fp-dot');
+    let img = dot.querySelector('img.fp-pic');
+    if (!look.picture) {
+      if (img) img.remove();
+      dot.classList.remove('has-pic');
+      return;
+    }
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'fp-pic';
+      img.alt = '';
+      img.draggable = false;
+      img.addEventListener('load', () => img.parentNode && img.parentNode.classList.add('has-pic'));
+      img.addEventListener('error', () => img.parentNode && img.parentNode.classList.remove('has-pic')); // the icon stays
+      dot.prepend(img);
+    }
+    dot.classList.remove('has-pic');
+    img.src = look.picture;
   }
 
   _moreInfo(entityId) {

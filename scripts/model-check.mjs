@@ -1224,7 +1224,7 @@ try {
   check('Objects tab: 14 rows, all "auto", none "entity not found"', rows.length === 14 && rows.every((r) => r.badge === 'auto'), JSON.stringify(rows));
   check('Objects tab: lamps have a Test button', ['lamp_living', 'facade_1', 'terrace_spot'].every((id) => (rows.find((r) => r.id === id) || {}).test));
   const grp = () => page.evaluate(`(() => { const g = ${sr}.querySelector('label.grp[data-grp=facade]'); return g && { warn: !!g.querySelector('.badge.warn'), val: g.querySelector('input').value,
-    saved: JSON.stringify((${card}._layout.groups || {}).facade || null), eff: JSON.stringify(${card}._groups.facade || null) }; })()`);
+    saved: JSON.stringify((${card}._layout.tags || {}).facade || null), eff: JSON.stringify(${card}._groups.facade || null) }; })()`);
   const setGrp = async (v) => { await page.evaluate(`(() => { const i = ${sr}.querySelector('[data-field=grp-entity][data-id=facade]'); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(250); };
   let g = await grp();
   check('Groups: facade controller switch.demo_facade, found', !!g && !g.warn && g.val === 'switch.demo_facade', JSON.stringify(g));
@@ -1240,7 +1240,79 @@ try {
   await setGrp('switch.demo_facade');
   g = await grp();
   check('Groups: controller back, the switch is off -> facade dark', !!g && !g.warn && (await look()).facadeLit === 0, JSON.stringify(g));
+  // tags: defaults = fp.group + HA labels; a tag added on the row; a second controller tag joins the chain
+  const chips = (id) => page.evaluate(`[...${sr}.querySelectorAll('li.obj[data-obj=${id}] .otag')].map((x) => x.firstChild.textContent)`);
+  check('Tags: facade_1 shows its model group and HA label (facade, Outdoor)', JSON.stringify(await chips('facade_1')) === '["facade","Outdoor"]', JSON.stringify(await chips('facade_1')));
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_on', { entity_id: 'switch.demo_facade' })`);
+  await page.evaluate(`(() => { const i = ${sr}.querySelector('[data-field=tag-add][data-id=terrace_spot]'); i.value = 'night'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(300);
+  const ts = await page.evaluate(`JSON.stringify(${card}._layout.objects.terrace_spot)`);
+  check('Tags: + tag on a row saves the full list', ts.includes('"tags":["Outdoor","night"]'), ts);
+  await page.evaluate(`(() => { const i = ${sr}.querySelector('[data-field=grp-entity][data-id=night]'); i.value = 'switch.demo_facade'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(300);
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_off', { entity_id: 'switch.demo_facade' })`);
+  await sleep(300);
+  const spotChain = await page.evaluate(`JSON.stringify(${card}._objects.objectAt('terrace_spot').chain)`);
+  check('Tags: a controller on the new tag gates the spot (switch off -> dark)', spotChain.includes('"lit":false') && spotChain.includes('switch.demo_facade'), spotChain.slice(0, 200));
+  await page.evaluate(`(() => { const b = ${sr}.querySelector('[data-act=tag-rm][data-id=terrace_spot][data-tag=night]'); b.click(); })()`);
+  await sleep(300);
+  const ts2 = await page.evaluate(`JSON.stringify((${card}._layout.objects || {}).terrace_spot || null)`);
+  check('Tags: x removes it; back to the defaults (nothing stored)', !ts2.includes('tags'), ts2);
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_on', { entity_id: 'switch.demo_facade' })`);
+  await sleep(200);
   await page.screenshot({ path: path.join(root, 'screenshots', 'objects-tab-demo.png') });
+  allErrors.push(...s.errors);
+} finally {
+  await s.close();
+}
+
+// 1w. wall washes for every lit lamp, tap hints, marker shapes
+s = await openDemo({ model: '1', view: '3d' }, { width: 1400, height: 560 });
+try {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 20000 });
+  await page.evaluate('window.__setDemoSun(-25, 0)'); // night
+  await sleep(800);
+  const W = () => page.evaluate(`(() => { const c = ${card}, l = c._objects; return { shown: [...l.washes.meshes].filter((m) => m.visible).length,
+    walls: [...l.parts].filter(([, p]) => p.wash && p.wash.placement && p.wash.placement.surface === 'wall' && p.wash.mesh.visible).map(([id]) => id),
+    made: l.washes.stats.created, programs: c._view.renderer.info.programs.length }; })()`);
+  let w = await W();
+  check('washes: lit facade lamps and uplights wash the south wall', ['facade_1', 'facade_3', 'wall_uplight_1', 'wall_uplight_2'].every((id) => w.walls.includes(id)), JSON.stringify(w));
+  const progs = w.programs, made = w.made;
+  for (let i = 0; i < 4; i++) {
+    await page.evaluate(`${card}._hass.callService('switch', 'toggle', { entity_id: 'switch.demo_facade' })`);
+    await page.evaluate(`${card}._hass.callService('light', 'toggle', { entity_id: 'light.demo_terrace' })`);
+    await sleep(300);
+  }
+  w = await W();
+  check('washes: toggling lamps compiles no shader and makes no new wash', w.programs === progs && w.made === made, JSON.stringify({ progs, made, w }));
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_off', { entity_id: 'switch.demo_facade' })`);
+  await sleep(300);
+  w = await W();
+  check('washes: controller off hides the facade washes', !w.walls.some((id) => id.startsWith('facade_')), JSON.stringify(w.walls));
+  // tap hints: always -> dots; facade hollow while its controller is off; a tap says why
+  await page.evaluate(`${card}._commit({ ...${card}._layout, tap_hints: 'always' })`);
+  await sleep(400);
+  const H = () => page.evaluate(`(() => { const h = ${card}._hints; return { vis: h.group.visible, items: h.items.map((i) => i.id + ':' + (i.ok ? 1 : 0)),
+    filled: h.layers.filled.geometry.drawRange.count, hollow: h.layers.hollow.geometry.drawRange.count, programs: ${card}._view.renderer.info.programs.length }; })()`);
+  let h = await H();
+  check('tap hints: a dot per tappable object, facade hollow (controller off)', h.vis && h.items.includes('facade_1:0') && h.items.includes('lamp_living:1') && h.hollow >= 3 && h.filled > 0, JSON.stringify(h));
+  await page.evaluate(`${card}._runObjectAction('facade_1', 'tap')`);
+  await sleep(200);
+  const toast = await page.evaluate(`${card}._toastEl.hidden ? '' : ${card}._toastEl.textContent`);
+  check('tap hints: tapping an unreachable lamp says "Turn on first: …" and toggles nothing',
+    toast.startsWith('Turn on first') && (await page.evaluate(`${card}._hass.states['light.demo_facade'].state`)) === 'on', toast);
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_on', { entity_id: 'switch.demo_facade' })`);
+  await sleep(300);
+  h = await H();
+  check('tap hints: controller on -> facade dots filled', h.items.includes('facade_1:1'), JSON.stringify(h.items));
+  await page.evaluate(`${card}._commit({ ...${card}._layout, tap_hints: 'off' })`);
+  await sleep(300);
+  check('tap hints: off hides them', !(await H()).vis);
+  // marker shapes
+  const shapes = await page.evaluate(`(() => { const out = {}; for (const el of ${card}.shadowRoot.querySelectorAll('.fp-marker')) {
+    const k = [...el.classList].filter((c) => c.startsWith('kind-')).join(); out[k] = (out[k] || 0) + 1; } return out; })()`);
+  check('markers: shapes by role (control circles, value squares, binary, info)', shapes['kind-control'] > 0 && shapes['kind-value'] > 0 && shapes['kind-binary'] > 0, JSON.stringify(shapes));
   allErrors.push(...s.errors);
 } finally {
   await s.close();
@@ -2693,7 +2765,7 @@ try {
     await sleep(800);
     let stats = await page.evaluate(`${card}._view.stats`);
     check('10 state updates, nothing relevant changed: 0 occlusion passes, 0 shadow map renders', stats.occPasses === 0 && stats.occPartial === 0 && stats.shadow === 0, JSON.stringify(stats));
-    check('the state updates still reached the markers', await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.fp-val')].some((e) => e.textContent.startsWith('29'))`));
+    check('the state updates still reached the markers', await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.fp-val, .fp-in')].some((e) => e.textContent.startsWith('29'))`));
     // a moving mower: only its own marker is re-tested
     const mpos = () => page.evaluate(`(() => { const c = ${card}; const o = c._view.markerObjects.get(c._mowerMarkerId); return o ? o.obj.position.toArray().map((x) => x.toFixed(2)).join() : null; })()`);
     const p0 = await mpos();
