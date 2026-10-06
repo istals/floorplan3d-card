@@ -5,10 +5,14 @@
 // Shadow maps are rendered per light (shadow.autoUpdate = false): only lit shadow slots whose
 // fixture or position changed, or all lit ones when the casters changed (shadowsStale).
 import * as THREE from 'three';
-import { chainState, lightBudget } from './logic.js';
+import { chainState, lightBudget, controllersOf, budgetGroup } from './logic.js';
 import { typeOf } from './types.js';
 import { badTargets, aimPoint, aimsUp } from './aim.js';
 import { dockFrontAxis, dockPose } from '../mower-track.js';
+import { WashLayer, washKind, washSize, placeWash, washOpacity } from './wash.js';
+
+const WASH_TYPES = new Set(['light', 'light_strip']);
+const WASH_SLICE_MS = 8; // wash placements (ray casts) per pass; the rest follow in the next task
 
 const POINTS = 8, SPOTS = 4, SHADOWS = 4;
 const DEG = Math.PI / 180;
@@ -40,6 +44,9 @@ export class ObjectLayer {
       this.pool.spots.push(l);
       group.add(l, l.target);
     }
+    // wall washes for every lit lamp (shared materials, compiled once; see wash.js)
+    this.washes = new WashLayer(view.objectsGroup, view.modelClip ? [view.modelClip] : null);
+    this._washSig = null;
     view.objectsGroup.visible = false; // objects (and their lights) only while a model is loaded
     group.visible = false;
     this._lightsOn = true;
@@ -64,6 +71,10 @@ export class ObjectLayer {
     if (this._dimMats) { for (const d of this._dimMats.values()) d.dispose(); this._dimMats = null; this._dimNode = null; }
     for (const p of this.parts.values()) p.type.dispose(p.part);
     this.parts.clear();
+    this.washes.clear();
+    this._washSig = null;
+    clearTimeout(this._washTimer);
+    this._washTimer = null;
     this._darken();
     this.model = model || null;
     this._budgetSig = null;
@@ -238,11 +249,11 @@ export class ObjectLayer {
     for (const [id, p] of this.parts) {
       const binding = this.bindings.get(id);
       const hidden = !!(binding && binding.hidden); // hidden = ignored as a control: dark, no pool light
-      const ctrl = !hidden && p.obj.group && this.groups[p.obj.group] && this.groups[p.obj.group].entity;
+      const ctrls = hidden ? [] : controllersOf(p.obj, binding, this.groups).map((c) => c.entity);
       const own = binding && binding.entity;
       // extra inputs a type reads (e.g. the charger's power sensor), so its look follows them too
       const extra = !hidden && own && p.type.inputs ? p.type.inputs(own) : [];
-      const ents = hidden ? [] : [own, ctrl, p.obj.type === 'dock' ? mowerEntity : null, ...extra];
+      const ents = hidden ? [] : [own, ...ctrls, p.obj.type === 'dock' ? mowerEntity : null, ...extra];
       // HA replaces a state object when it changes: same objects, nothing to do
       const inputs = ents.map((e) => (e ? states[e] : null));
       if (!p.inputs || inputs.length !== p.inputs.length || inputs.some((x, i) => x !== p.inputs[i]) || ents.some((e, i) => e !== p.ents[i])) {
@@ -261,7 +272,7 @@ export class ObjectLayer {
       const h = p.part.hints;
       fixtures.push({
         id, lit: lightsOn && !!p.result.lit, visible: visibleLevel(p.obj.level) && shown(p.obj.node),
-        group: p.obj.group, max: h.max, beam: h.beam, castShadow: h.castShadow,
+        group: budgetGroup(p.obj, binding, this.groups), max: h.max, beam: h.beam, castShadow: h.castShadow,
       });
     }
     // the model was placed elsewhere: pool positions move with it
@@ -295,7 +306,50 @@ export class ObjectLayer {
         if (slot) this._light(slot, this.parts.get(id));
       }
     }
+    if (this._updateWashes(placeSig, fixtures)) changed = true;
     if (changed) this.view.markDirty();
+  }
+
+  // Washes: one per lit, visible light / light_strip (beam hint or a real light), placed the first time it is lit
+  // (and again after the model moved), coloured by its light; brighter where no pool light shines. Cheap when
+  // nothing changed (signature). Placement ray casts are time-sliced; returns true when a wash changed.
+  _updateWashes(placeSig, fixtures) {
+    const vis = new Map(fixtures.map((f) => [f.id, f.lit && f.visible]));
+    const want = [];
+    for (const [id, p] of this.parts) {
+      if (!WASH_TYPES.has(p.obj.type) || !(p.part.pool || (p.obj.hints && p.obj.hints.beam))) continue;
+      const on = vis.has(id) ? vis.get(id) : !!(this._lightsOn && p.result && p.result.lit && shown(p.obj.node));
+      want.push({ id, p, on });
+    }
+    const sig = placeSig + '|' + want.map(({ id, p, on }) => (on ? `${id}:${p.result.level}:${colorKey(p.result.color)}:${this._slots.has(id) ? 1 : 0}` : '')).join(';');
+    if (sig === this._washSig) return false;
+    const t0 = performance.now();
+    let pending = false, changed = false;
+    const root = this.model.root;
+    for (const { id, p, on } of want) {
+      if (!on) { if (p.wash && p.wash.mesh.visible) { this.washes.paint(p.wash.mesh, null, 0); changed = true; } continue; }
+      if (!p.wash || p.wash.sig !== placeSig) {
+        if (performance.now() - t0 > WASH_SLICE_MS) { pending = true; continue; }
+        const kind = washKind(p.obj.hints);
+        const a = root.localToWorld(p.part.anchor.clone());
+        let aimDir = null;
+        if (kind === 'spot' && p.part.aim) aimDir = root.localToWorld(p.part.aim.clone()).sub(a).normalize().toArray();
+        const surf = this.view.surfaceRays ? WashLayer.surfaces(this.view, a, kind, aimDir) : {};
+        const placement = placeWash(kind, a.toArray(), washSize(p.part.hints), surf);
+        p.wash = { mesh: this.washes.place(p.wash && p.wash.mesh, placement), sig: placeSig, placement };
+      }
+      this.washes.paint(p.wash.mesh, p.result.color || [255, 255, 255], p.wash.placement ? washOpacity(p.result.level, this._slots.has(id)) : 0);
+      changed = true;
+    }
+    this._washSig = pending ? null : sig;
+    if (pending && !this._washTimer) {
+      this._washTimer = setTimeout(() => {
+        this._washTimer = null;
+        if (!this.model) return;
+        if (this._updateWashes(placeSig, fixtures)) this.view.markDirty();
+      }, 0);
+    }
+    return changed;
   }
 
   // fixture@position of a lit shadow slot, null when the slot is dark
@@ -403,6 +457,7 @@ export class ObjectLayer {
     const group = this.lights;
     for (const l of this.pool.spots) group.remove(l.target);
     for (const l of [...this.pool.points, ...this.pool.spots]) { group.remove(l); l.dispose(); }
+    this.washes.dispose();
     this.view.objectsGroup.remove(group);
     if (this.view.objectLayer === this) this.view.objectLayer = null;
   }
