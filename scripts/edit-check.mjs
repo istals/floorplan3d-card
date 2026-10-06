@@ -230,6 +230,30 @@ try {
   await sleep(150);
   check('overlay slider updates live', (await layout()).mower.overlay.rotation === 30 && (await ev(`Math.round(${card}._view.mapPlane.rotation.y * 180 / Math.PI)`)) === 30);
   check('slider kept in DOM (no re-render)', await ev(`${card}.shadowRoot.querySelector("[data-field=ov-rotation]").value === "30"`));
+  // number inputs next to the sliders: follow the slider, typed values commit on Enter (clamped / rounded), arrows step
+  const num = (f) => `${card}.shadowRoot.querySelector("input.slnum[data-num-for=${f}]")`;
+  check('number next to the slider follows it', await ev(`${num('ov-rotation')}.value === "30"`));
+  const w0 = (await layout()).mower.overlay.width;
+  await ev(`(() => { const n = ${num('ov-width')}; n.focus(); n.select(); })()`);
+  await page.keyboard.type('37.26');
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  let sl = await ev(`({ w: ${card}._layout.mower.overlay.width, range: ${card}.shadowRoot.querySelector("[data-field=ov-width]").value, num: ${num('ov-width')}.value, plane: ${card}._view.mapPlane.scale.x })`);
+  check('typed overlay width commits on Enter (rounded to the step), slider follows', sl.w === 37.3 && sl.range === '37.3' && sl.num === '37.3', JSON.stringify(sl));
+  await ev(`(() => { const n = ${num('ov-width')}; n.value = '999'; n.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(150);
+  check('typed value clamped to max', (await layout()).mower.overlay.width === 200 && (await ev(`${num('ov-width')}.value`)) === '200');
+  await ev(`(() => { const n = ${num('ov-width')}; n.value = ''; n.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await sleep(150);
+  check('invalid value reverts to the slider', (await layout()).mower.overlay.width === 200 && (await ev(`${num('ov-width')}.value`)) === '200');
+  await ev(`${num('ov-rotation')}.focus()`);
+  await page.keyboard.press('ArrowUp');
+  await sleep(150);
+  check('arrow key steps the value (and the slider)', (await layout()).mower.overlay.rotation === 30.5 && (await ev(`${card}.shadowRoot.querySelector("[data-field=ov-rotation]").value`)) === '30.5'
+    && (await ev(`${card}.shadowRoot.activeElement === ${num('ov-rotation')}`)), String((await layout()).mower.overlay.rotation));
+  await ev(`(() => { const n = ${num('ov-width')}; n.value = '${w0}'; n.dispatchEvent(new Event('change', { bubbles: true })); n.blur(); })()`);
+  await sleep(150);
+  check('width back', (await layout()).mower.overlay.width === w0);
   await panelClick('Move with mouse');
   const ov0 = (await layout()).mower.overlay;
   await drag(await at(16.5, 1.5), await at(18.5, 0.5));

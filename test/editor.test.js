@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   snapPoint, floorVertices, nearestEdge, newRoomId, upsertRoom, deleteRoom, moveVertex, insertVertex,
   removeVertex, addDoor, removeDoor, cleanPolygon, setPin, clearPin, hide, unhide, upsertFloor, deleteFloor,
-  newFloorId, parseImport, fitImport, setObject, setObjectUi, setGroup, attachPin, realignPins,
+  newFloorId, parseImport, fitImport, setObject, setObjectUi, setGroup, attachPin, realignPins, sliderValue,
 } from '../src/editor.js';
 
 const square = { id: 'r1', polygon: [[0, 0], [4, 0], [4, 3], [0, 3]] };
@@ -250,5 +250,27 @@ describe('setObjectUi', () => {
     l = setObjectUi(setObjectUi(l, 'lamp', 'tap', null), 'lamp', 'hold', null);
     expect(l.objects.lamp).toEqual({ entity: 'light.a' });
     expect(setObjectUi(setObjectUi({}, 'a', 'tap', { action: 'none' }), 'a', 'tap', null).objects.a).toBeUndefined();
+  });
+});
+
+describe('sliderValue', () => {
+  it('clamps to min / max and rounds to the step grid from min', () => {
+    expect(sliderValue('12.37', 1, 200, 0.1)).toBe(12.4);
+    expect(sliderValue('500', 1, 200, 0.1)).toBe(200);
+    expect(sliderValue('-3', 1, 200, 0.1)).toBe(1);
+    expect(sliderValue('0.333', 0, 1, 0.05)).toBe(0.35);
+    expect(sliderValue('7', -180, 180, 0.5)).toBe(7);
+    expect(sliderValue('7.3', -180, 180, 0.5)).toBe(7.5);
+    expect(sliderValue('0.07', -0.5, 0.5, 0.01)).toBe(0.07);
+    expect(sliderValue('2,5', 0, 10, 0.5)).toBe(2.5); // decimal comma
+    expect(sliderValue('3', 0.15, 4.1, 0.05)).toBe(3);
+  });
+  it('never rounds past max (a range not on the grid)', () => {
+    expect(sliderValue('10', 0, 9.97, 0.05)).toBeLessThanOrEqual(9.97);
+  });
+  it('invalid -> null', () => {
+    expect(sliderValue('', 0, 1, 0.1)).toBe(null);
+    expect(sliderValue('abc', 0, 1, 0.1)).toBe(null);
+    expect(sliderValue(null, 0, 1, 0.1)).toBe(null);
   });
 });

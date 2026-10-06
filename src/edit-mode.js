@@ -42,6 +42,16 @@ async function copyText(text) {
 }
 const fmt = (v) => (Math.round(v * 100) / 100).toString();
 
+// Every edit-mode slider: a range plus a number input with the same min / max / step and the unit after
+// it. The panel keeps them in sync (_syncSliderNumber / _commitSliderNumber); the range carries data-field.
+export function sliderHtml(field, label, min, max, step, value, unit = '') {
+  const v = Number(value);
+  return `<label class="slider"><span class="lab">${label}</span><span class="slrow">
+    <input type="range" data-field="${field}" min="${min}" max="${max}" step="${step}" value="${v}">
+    <input type="number" class="slnum" data-num-for="${field}" min="${min}" max="${max}" step="${step}" value="${fmt(v)}" aria-label="${label}"><span class="unit">${unit}</span></span></label>`; // the unit column also keeps unitless rows aligned
+}
+
+
 export class EditMode {
   constructor(card) {
     this.card = card;
@@ -68,11 +78,19 @@ export class EditMode {
     this.panel.addEventListener('input', (e) => this._onPanelInput(e));
     // rebuilding the panel under a dragged slider would drop the drag: hold renders until release
     this.panel.addEventListener('pointerdown', (e) => { if (e.target.type === 'range') this._sliding = true; });
-    const release = () => {
-      if (!this._sliding) return;
-      this._sliding = false;
-      if (this._renderHeld) { this._renderHeld = false; this.render(); }
-    };
+    const release = () => this._releaseSlider();
+    // a number input left without a change (nothing typed): release a render held while it was edited
+    // arrow keys in a slider's number: one step, applied at once
+    this.panel.addEventListener('keydown', (e) => {
+      const num = e.target;
+      if (!num.dataset || !num.dataset.numFor || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      e.preventDefault();
+      const cur = Number(String(num.value).replace(',', '.'));
+      const step = Number(num.step) || 1;
+      num.value = String((Number.isFinite(cur) ? cur : Number(num.min) || 0) + (e.key === 'ArrowUp' ? step : -step));
+      this._commitSliderNumber(num);
+    });
+    this.panel.addEventListener('focusout', (e) => { if (e.target.dataset && e.target.dataset.numFor) setTimeout(release, 0); });
     window.addEventListener('pointerup', release);
     window.addEventListener('pointercancel', release);
     this.panel.addEventListener('change', (e) => { if (e.target.type === 'range') release(); });
@@ -87,6 +105,12 @@ export class EditMode {
     this.objSel = null; // Objects tab: object picked in 3D / its row
     this.menu = null;
     this._onMenuAway = (e) => { if (this.menu && !e.composedPath().includes(this.menu)) this._closeMenu(); };
+  }
+
+  _releaseSlider() {
+    if (!this._sliding) return;
+    this._sliding = false;
+    if (this._renderHeld) { this._renderHeld = false; this.render(); }
   }
 
   get layout() { return this.card._layout; }
@@ -922,7 +946,8 @@ export class EditMode {
     const oldBody = this.panel.querySelector('.tab-body');
     const scroll = oldBody && this._renderedTab === this.tab ? oldBody.scrollTop : 0;
     const active = this.panel.contains(this.panel.getRootNode().activeElement) ? this.panel.getRootNode().activeElement : null;
-    const focusKey = active && active.dataset && active.dataset.field ? [active.dataset.field, active.dataset.id || ''] : null;
+    const focusKey = active && active.dataset && (active.dataset.field || active.dataset.numFor)
+      ? [active.dataset.field ? 'field' : 'numFor', active.dataset.field || active.dataset.numFor, active.dataset.id || ''] : null;
     const report = this.panel.querySelector('details.report');
     if (report) this._reportOpen = report.open;
     const adv = this.panel.querySelector('details.advanced');
@@ -943,8 +968,8 @@ export class EditMode {
     const newBody = this.panel.querySelector('.tab-body');
     if (newBody && scroll) newBody.scrollTop = scroll;
     if (focusKey) {
-      const el = [...this.panel.querySelectorAll('[data-field]')]
-        .find((x) => x.dataset.field === focusKey[0] && (x.dataset.id || '') === focusKey[1]);
+      const el = [...this.panel.querySelectorAll(focusKey[0] === 'field' ? '[data-field]' : '[data-num-for]')]
+        .find((x) => x.dataset[focusKey[0]] === focusKey[1] && (x.dataset.id || '') === focusKey[2]);
       if (el) el.focus({ preventScroll: true });
     }
   }
@@ -1319,8 +1344,7 @@ export class EditMode {
     out += `<div class="row"><button data-act="img-pick" class="${ic.color || this.colorPick ? '' : 'primary'}" ${this.colorPick || !(o && o.entity) ? 'disabled' : ''}>Pick mower colour</button> ${sw}</div>`;
     if (ic.color) {
       const tol = ic.tolerance ?? 40;
-      out += `<label><span class="lab">Colour tolerance<span class="val" data-val="img-tolerance">${tol}</span></span>
-        <input type="range" data-field="mower-img-tolerance" min="0" max="255" step="1" value="${tol}"></label>`;
+      out += sliderHtml('mower-img-tolerance', 'Colour tolerance', 0, 255, 1, tol);
     }
     out += `<p class="hint">Align the map overlay with the plan first: the alignment maps image pixels to the plan, so no
       calibration points are needed. Then pick the colour of the mower icon on the map.</p>`;
@@ -1350,15 +1374,14 @@ export class EditMode {
       <label>Image or camera entity <input list="fp-pic-ents" data-field="ov-entity" value="${esc((o && o.entity) || '')}" placeholder="image.mower_map"></label>
       ${datalist('fp-pic-ents', picIds)}`;
     if (o && o.entity) {
-      const slider = (f, label, min, max, step, v) => `<label><span class="lab">${label}<span class="val" data-val="${f}">${fmt(v)}</span></span>
-        <input type="range" data-field="ov-${f}" min="${min}" max="${max}" step="${step}" value="${v}"></label>`;
-      out += slider('x', 'x (m)', -100, 100, 0.05, o.x ?? 0)
-        + slider('y', 'y (m)', -100, 100, 0.05, o.y ?? 0)
-        + slider('rotation', 'Rotation (°)', -180, 180, 0.5, o.rotation ?? 0)
-        + slider('width', 'Width (m)', 1, 200, 0.1, o.width ?? 20)
+      const slider = (f, label, min, max, step, v, unit = '') => sliderHtml(`ov-${f}`, label, min, max, step, v, unit);
+      out += slider('x', 'x', -100, 100, 0.05, o.x ?? 0, 'm')
+        + slider('y', 'y', -100, 100, 0.05, o.y ?? 0, 'm')
+        + slider('rotation', 'Rotation', -180, 180, 0.5, o.rotation ?? 0, '°')
+        + slider('width', 'Width', 1, 200, 0.1, o.width ?? 20, 'm')
         + slider('opacity', 'Opacity', 0, 1, 0.05, o.opacity ?? 0.6)
-        + slider('height_offset', 'Height offset (m)', -0.5, 0.5, 0.01, o.height_offset ?? 0)
-        + (o.entity.startsWith('camera.') ? slider('refresh', 'Refresh every (s)', 1, 120, 1, o.refresh ?? 10) : '');
+        + slider('height_offset', 'Height offset', -0.5, 0.5, 0.01, o.height_offset ?? 0, 'm')
+        + (o.entity.startsWith('camera.') ? slider('refresh', 'Refresh every', 1, 120, 1, o.refresh ?? 10, 's') : '');
       out += `<label class="check"><input type="checkbox" data-field="ov-edit-only" ${o.edit_only ? 'checked' : ''}> Show the map only in edit mode</label>`;
       out += this._mapProcessingHtml(m, o, slider);
       const a = this.aligning;
@@ -1549,8 +1572,7 @@ export class EditMode {
     return `<div class="sub">Side section</div>
       <p class="hint">The Section button (box cutter) cuts the house here and looks at the cut face. ${src}</p>
       <label>Direction <select data-field="vw-sec-dir">${opts}</select></label>
-      <label><span class="lab">Position (m ${dir.normal[0] ? 'east' : 'north'})<span class="val" data-val="vw-sec-pos">${fmt(pos)}</span></span>
-        <input type="range" data-field="vw-sec-pos" min="${lo}" max="${hi}" step="0.05" value="${pos}"></label>
+      ${sliderHtml('vw-sec-pos', `Position (${dir.normal[0] ? 'east' : 'north'})`, lo, hi, 0.05, pos, 'm')}
       <div class="row"><button data-act="vw-sec-reset" ${lv.section ? '' : 'disabled'}>Reset section</button></div>`;
   }
 
@@ -1967,17 +1989,16 @@ export class EditMode {
 
     const floorInfo = this._modelBindingsHtml();
     const [x, y, z] = m.position || [0, 0, 0];
-    const slider = (f, label, min, max, step, v) => `<label><span class="lab">${label}<span class="val" data-val="${f}">${fmt(v)}</span></span>
-      <input type="range" data-field="md-${f}" min="${min}" max="${max}" step="${step}" value="${v}"></label>`;
+    const slider = (f, label, min, max, step, v, unit = '') => sliderHtml(`md-${f}`, label, min, max, step, v, unit);
     out += `<section class="box"><h3>${esc(m.name || 'house.glb')}</h3>
       <p class="dim">${m.size ? (m.size / 1048576).toFixed(1) + ' MB' : ''}${m.uploaded ? ' · ' + esc(new Date(m.uploaded).toLocaleString()) : ''}</p>
       </section>${floorInfo}
       <div class="row"><button data-act="model-fit">Frame model</button></div>
       <div class="sub">Alignment</div>`
-      + slider('x', 'East (m)', -50, 50, 0.05, x)
-      + slider('y', 'North (m)', -50, 50, 0.05, y)
-      + slider('z', 'Up (m)', -5, 5, 0.05, z)
-      + slider('rotation', 'Rotation (°)', -180, 180, 0.5, m.rotation || 0)
+      + slider('x', 'East', -50, 50, 0.05, x, 'm')
+      + slider('y', 'North', -50, 50, 0.05, y, 'm')
+      + slider('z', 'Up', -5, 5, 0.05, z, 'm')
+      + slider('rotation', 'Rotation', -180, 180, 0.5, m.rotation || 0, '°')
       + slider('opacity', 'Opacity', 0.1, 1, 0.05, m.opacity ?? 1)
       + `<label>Scale <input type="number" step="any" min="0.0001" data-field="md-scale" value="${m.scale || 1}"></label>
       <p class="hint">Scale 0.01 for a model made in centimetres, 0.001 for millimetres.</p>
@@ -2249,8 +2270,28 @@ export class EditMode {
     this.render();
   }
 
+  // The number next to a slider follows it (while dragging too).
+  _syncSliderNumber(range) {
+    const num = range.parentElement && range.parentElement.querySelector(`input.slnum[data-num-for="${range.dataset.field}"]`);
+    if (num && num !== this.panel.getRootNode().activeElement) num.value = fmt(Number(range.value));
+  }
+
+  // A number typed next to a slider (Enter / blur / arrow step): clamp + round, set the slider and run the
+  // slider's own input + change path; not a number -> back to the slider's value.
+  _commitSliderNumber(num) {
+    const range = num.parentElement && num.parentElement.querySelector(`input[type=range][data-field="${num.dataset.numFor}"]`);
+    if (!range) return;
+    const v = E.sliderValue(num.value, range.min, range.max, range.step);
+    if (v === null) { num.value = fmt(Number(range.value)); this._releaseSlider(); return; }
+    num.value = fmt(v);
+    range.value = String(v);
+    range.dispatchEvent(new Event('input', { bubbles: true }));
+    range.dispatchEvent(new Event('change', { bubbles: true })); // releases a held render
+  }
+
   _onPanelChange(e) {
     const el = e.target;
+    if (el.dataset.numFor) { this._commitSliderNumber(el); return; }
     const f = el.dataset.field;
     const sel = this.room(this.selectedRoom);
     if (f && f.startsWith('vw-')) this._viewsChange(f, el);
@@ -2382,19 +2423,17 @@ export class EditMode {
   // sliders update the overlay live, without re-rendering the panel under the pointer
   _onPanelInput(e) {
     const el = e.target;
+    if (el.dataset.numFor) { this._sliding = true; return; } // typing: hold renders until Enter / blur
+    if (el.type === 'range') this._syncSliderNumber(el);
     const f = el.dataset.field;
     if (f === 'vw-sec-pos') {
       const v = this._vwView();
-      const label = this.panel.querySelector('[data-val="vw-sec-pos"]');
-      if (label) label.textContent = fmt(Number(el.value));
       if (v) this.card.previewSection(v.id, this._sectionFromPanel(v, Number(el.value)));
       return;
     }
     if (f && f.startsWith('md-') && el.type === 'range') {
       const key = f.slice(3);
       const v = Number(el.value);
-      const label = this.panel.querySelector(`[data-val="${key}"]`);
-      if (label) label.textContent = fmt(v);
       const m = this.layout.model;
       if (!m) return;
       if (key === 'x' || key === 'y' || key === 'z') {
@@ -2404,16 +2443,10 @@ export class EditMode {
       } else this.setModelProps({ [key]: v }, false);
       return;
     }
-    if (f === 'mower-img-tolerance') {
-      const label = this.panel.querySelector('[data-val="img-tolerance"]');
-      if (label) label.textContent = el.value;
-      return;
-    }
+    if (f === 'mower-img-tolerance') return; // saved on change
     if (!f || !f.startsWith('ov-') || el.type !== 'range') return;
     const key = f.slice(3);
     const v = Number(el.value);
-    const label = this.panel.querySelector(`[data-val="${key}"]`);
-    if (label) label.textContent = fmt(v);
     this.setOverlay({ [key]: v }, false);
   }
 

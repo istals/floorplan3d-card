@@ -323,3 +323,19 @@ export function setGroup(layout, name, patch) {
   else delete groups[name];
   return { ...layout, groups };
 }
+
+// A typed slider value: clamped to min..max and rounded to the step grid (from min); null when not a number.
+export function sliderValue(raw, min, max, step) {
+  const s = String(raw ?? '').trim();
+  if (s === '') return null;
+  const n = Number(s.replace(',', '.'));
+  if (!Number.isFinite(n)) return null;
+  const lo = Number(min), hi = Number(max), st = Number(step) > 0 ? Number(step) : 0;
+  let v = Math.min(hi, Math.max(lo, n));
+  if (st) {
+    const decimals = (String(step).split('.')[1] || '').length;
+    v = Number((lo + Math.round((v - lo) / st) * st).toFixed(Math.min(10, decimals + 2)));
+    if (v > hi) v = Number((v - st).toFixed(Math.min(10, decimals + 2)));
+  }
+  return v;
+}

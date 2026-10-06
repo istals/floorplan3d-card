@@ -245,6 +245,11 @@ const STYLE = `
   .panel input[type=range] { width: 100%; margin: 0; accent-color: var(--primary-color); }
   .panel label .lab { display: flex; justify-content: space-between; }
   .panel label .val { color: var(--primary-text-color); }
+  .panel label.slider .slrow { display: flex; align-items: center; gap: 6px; }
+  .panel label.slider .slrow input[type=range] { flex: 1; min-width: 0; }
+  .panel input.slnum { width: 62px; flex: none; font: inherit; font-size: 12px; padding: 3px 4px; border-radius: 6px; box-sizing: border-box;
+    border: 1px solid var(--divider-color, rgba(0,0,0,.2)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+  .panel label.slider .unit { flex: none; min-width: 10px; font-size: 12px; color: var(--secondary-text-color); }
   .panel label.button.primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
   .panel label.button.disabled { opacity: .6; pointer-events: none; }
   .panel .bad { color: var(--error-color, #db4437); }
