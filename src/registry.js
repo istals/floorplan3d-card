@@ -88,6 +88,17 @@ const DC_ICONS = {
   moisture: 'mdi:water-alert', battery: 'mdi:battery', voltage: 'mdi:sine-wave', current: 'mdi:current-ac',
 };
 
+// binary_sensor icons by state (HA's): [on, off] per device class
+const BINARY_ICONS = {
+  door: ['mdi:door-open', 'mdi:door-closed'], garage_door: ['mdi:garage-open', 'mdi:garage'], window: ['mdi:window-open', 'mdi:window-closed'],
+  opening: ['mdi:square-outline', 'mdi:square'], motion: ['mdi:motion-sensor', 'mdi:motion-sensor-off'], occupancy: ['mdi:home', 'mdi:home-outline'],
+  presence: ['mdi:home', 'mdi:home-outline'], moisture: ['mdi:water', 'mdi:water-off'], smoke: ['mdi:smoke-detector-variant-alert', 'mdi:smoke-detector-variant'],
+  gas: ['mdi:alert-circle', 'mdi:check-circle'], problem: ['mdi:alert-circle', 'mdi:check-circle'], safety: ['mdi:alert-circle', 'mdi:check-circle'],
+  tamper: ['mdi:alert-circle', 'mdi:check-circle'], lock: ['mdi:lock-open', 'mdi:lock'], plug: ['mdi:power-plug', 'mdi:power-plug-off'],
+  power: ['mdi:power-plug', 'mdi:power-plug-off'], connectivity: ['mdi:check-network-outline', 'mdi:close-network-outline'],
+  battery: ['mdi:battery-outline', 'mdi:battery'], light: ['mdi:brightness-7', 'mdi:brightness-5'], vibration: ['mdi:vibrate', 'mdi:crop-portrait'],
+};
+
 export function iconFor(hass, eid) {
   const st = hass.states[eid];
   const e = hass.entities && hass.entities[eid];
@@ -95,6 +106,10 @@ export function iconFor(hass, eid) {
   if (e && e.icon) return e.icon;
   const d = eid.split('.')[0];
   const dc = st && st.attributes.device_class;
+  if (d === 'binary_sensor' && st) {
+    const pair = BINARY_ICONS[dc] || ['mdi:checkbox-marked-circle', 'mdi:radiobox-blank'];
+    return st.state === 'on' ? pair[0] : pair[1];
+  }
   return (dc && DC_ICONS[dc]) || ICONS[d] || 'mdi:checkbox-blank-circle-outline';
 }
 
@@ -121,3 +136,41 @@ export function displayValue(hass, eid) {
 }
 
 export const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean', 'cover', 'lock']);
+
+// Marker look by role. control (tap toggles / acts): circle; sensor with a value: rounded square with the
+// value; binary_sensor: rounded square (icon by state); alert classes: diamond, red / yellow while active;
+// entity_picture (person, media_player, image, lawn_mower): circle with the picture; the rest: rounded
+// square with a small "i" (tap opens more-info only).
+const CONTROL_DOMAINS = new Set(['light', 'switch', 'input_boolean', 'fan', 'cover', 'lock', 'climate', 'media_player', 'valve', 'vacuum',
+  'lawn_mower', 'humidifier', 'water_heater', 'siren', 'button', 'input_button', 'scene', 'script', 'alarm_control_panel', 'number', 'select', 'input_number', 'input_select']);
+const PICTURE_DOMAINS = new Set(['person', 'media_player', 'image', 'lawn_mower']);
+const ALERT_RED = new Set(['smoke', 'gas', 'safety', 'moisture', 'carbon_monoxide']);
+const ALERT_YELLOW = new Set(['problem', 'tamper']);
+
+export function markerLook(hass, m) {
+  const st = hass.states[m.entityId];
+  const out = { shape: 'square', kind: 'info', info: true, alert: null, picture: null, value: '' };
+  if (!st) return out;
+  const d = m.domain || m.entityId.split('.')[0];
+  const a = st.attributes || {};
+  const pic = PICTURE_DOMAINS.has(d) && typeof a.entity_picture === 'string' && a.entity_picture;
+  if (pic) {
+    const url = /^(data|blob):/.test(pic) || !hass.hassUrl ? pic : hass.hassUrl(pic);
+    return { ...out, shape: 'circle', kind: 'picture', info: false, picture: url };
+  }
+  if (d === 'binary_sensor') {
+    const dc = a.device_class;
+    if (ALERT_RED.has(dc) || ALERT_YELLOW.has(dc)) {
+      const on = st.state === 'on';
+      return { ...out, shape: 'diamond', kind: 'alert', info: false, alert: on ? (ALERT_RED.has(dc) ? 'red' : 'yellow') : null };
+    }
+    return { ...out, kind: 'binary', info: false };
+  }
+  if (CONTROL_DOMAINS.has(d)) return { ...out, shape: 'circle', kind: 'control', info: false };
+  if (d === 'sensor') {
+    const bad = st.state === 'unavailable' || st.state === 'unknown' || st.state === '';
+    const value = bad ? '' : displayValue(hass, m.entityId);
+    if (value) return { ...out, kind: 'value', info: false, value };
+  }
+  return out;
+}
