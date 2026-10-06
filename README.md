@@ -73,7 +73,9 @@ The options below can be set in the visual editor or in YAML.
 | `wall_height` | `1.0` | Height of the cut-away drawn walls in metres (rooms drawn on the card; a model is cut at its storey height instead). |
 | `occlusion` | `true` | With a model: markers hidden behind a wall from the current camera angle are shown faint (25 %) and can't be tapped; in edit mode they stay half visible and draggable. Checked once the camera has been still for 150 ms; not in top view. `false` turns it off. |
 | `merge` | `true` | With a model: static parts that share a room / zone / level / layer group and a material are merged into one mesh when the model loads (far fewer draw calls; Edit → Model shows "Draw calls: before → after"). Objects, glass and other transparent parts, `<room>_floor` pieces and parts named by a `node:` view rule stay separate. `false` keeps every part (reloads the model). |
-| `sky_bodies` | `true` | With a model: sun and moon discs on a dome around the house with a compass ring (moon position and phase from the HA location) and faint moonlight at night. `false` hides the discs and the ring. |
+| `sky_bodies` | `true` | With a model: sun and moon discs on a dome around the house with a compass ring (moon position and phase from the HA location) and faint moonlight at night. `false` hides the discs and the ring. Hides the clouds too. |
+| `weather` | first `weather.*` entity | Weather entity for clouds and light, or `none`. |
+| `clouds` | `true` | With a model: cloud sprites on the sky dome. `false` hides only the clouds; the light still follows the weather. |
 | `view` | `3d` | Start in `3d` or `top` view. |
 | `floor` | first floor with rooms | Floor id (or view id) to show first, or `all`. |
 | `view_id` | | View to show first (with a model: a view id such as `ground`). Wins over `floor`. |
@@ -93,6 +95,8 @@ The options below can be set in the visual editor or in YAML.
 
 Click **Edit** on the card (admins only). The panel has tabs Rooms, Devices, Objects (with a
 model that has objects), Mower, Views, Model and Data.
+Every slider has a number field next to it: type a value and press Enter (clamped to the slider's
+range and rounded to its step), or use the arrow keys.
 
 ![Edit mode](docs/images/edit-rooms.png)
 
@@ -310,6 +314,17 @@ has no marker: the object is the control.
   horizon adds a faint shadowless light from its direction (0.05 + 0.15 × illumination). Manual
   Day shows the sun at azimuth 200°, 40° high; manual Night a moon at 160°, 35° high, 80 % lit.
   Both use the model's `north` and alignment rotation. `sky_bodies: false` hides both discs and the ring.
+- **Clouds and weather:** the cloud coverage comes from the weather entity (option `weather`, default
+  the first `weather.*` entity; `weather: none` ignores it): its `cloud_coverage` attribute, else the
+  condition (sunny / clear-night 0 %, partlycloudy 40 %, cloudy 85 %, fog / rain / snow / lightning /
+  hail 100 %, windy 30 %, exceptional 50 %). Up to 12 soft clouds sit on the sky dome (the first
+  ones around the sun, so a partly cloudy sky half-covers it) and drift slowly (at most 10 frames per
+  second, only while the card is visible); at night they are dim grey-blue and cover the moon too. Under
+  coverage c the sun is × (1 − 0.75 c), its shadow fainter (intensity 1 → 0.35), the daytime sky fill
+  × (1 + 0.35 c), the sun disc × (1 − 0.8 c) and the moon and moonlight × (1 − 0.7 c); lamps are not
+  affected. Changes under 5 points are ignored. `clouds: false` hides the clouds only. (The shadow
+  radius is set too, but three.js ignores it with soft PCF shadows, so the softening is the fainter
+  shadow.)
 - **Tap** a lamp to toggle it, **hold** (500 ms) for a small popup: on / off, brightness, colour,
   and for grouped fixtures the group controller and why a lamp is dark ("Facade switch is off").
   Esc or a tap outside closes it. Taps near an object (30 px, 52 px on touch) hit the object
@@ -319,6 +334,15 @@ has no marker: the object is the control.
 - **Mower, dock, charger, climate:** the mower model drives where the mower is; the dock LED is
   lit while docked; the charger LED shows charging / ready / error with the power as a label; a
   climate unit shows its temperature and glows warm or cool while heating or cooling.
+- **Spots and uplights:** `hints.beam: "spot"` is a spot aimed at `hints.target`; `beam: "up"` is a
+  spot (24°, penumbra 0.6) aimed straight up from the lamp; `beam: "down"` stays a point light. A
+  target farther from the lamp than `hints.distance` (8 m without one), or shared by two or more lamps
+  of one group, is ignored: the spot then aims straight up (beam up, or an id / label with
+  "uplight", "up_light", "uplighter") or straight down. `npm run check-model` and the Model tab warn
+  "spot target looks wrong (shared / too far): <ids>".
+- **Labels:** every Objects tab row has a Label field (empty: the model's label); it names the object
+  in the Objects tab and its popup. A group can have a label too (Groups section), shown in popups
+  on the group controller row.
 - **Edit mode:** bind objects in the Objects tab; in the Devices tab a dragged marker sticks to the
   model's surfaces and attaches to an object it is dropped on (Alt: free drag, Detach to undo).
 
