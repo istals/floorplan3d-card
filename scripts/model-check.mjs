@@ -2182,7 +2182,8 @@ sections.add('magnetic', { group: 'views', query: { view: '3d', height: '560px' 
   await settle(page, card);
   await clickText('Devices');
   // closer to the living room: the ceiling lamp is a small disc, too small to hit from the default distance
-  await page.evaluate(`${card}._view.setCamera({ position: [8, 8.5, 8], target: [3, 1, -2.5] }, { instant: true })`);
+  // (the demo house's render recipe has fov 38: 0.92 x the distance frames it as fov 35 did from [8, 8.5, 8])
+  await page.evaluate(`${card}._view.setCamera({ position: [7.6, 7.9, 7.15], target: [3, 1, -2.5] }, { instant: true })`);
   await settle(page, card);
   // the demo model's living-room ceiling lamp (a real object, bound to light.demo_living)
   const injected = await page.evaluate(`(() => { const o = ${card}._objects.objectAt('lamp_living'); return o ? o.obj.node.name : null; })()`);

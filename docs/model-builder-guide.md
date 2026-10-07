@@ -150,6 +150,37 @@ Reference for view sets, camera presets (`fp.views[*].camera`), controls and lig
 [prototype-view-rules.md](prototype-view-rules.md) (the rules the prototype house uses: which
 view shows which buckets, camera per view, what follows the view).
 
+## Render recipe
+
+`fp.render` on the root node (or the single wrapper, next to `views`) tells the card how the
+model was meant to look. Every key is optional; missing keys keep the card's defaults (shown
+below), unknown keys are ignored, out-of-range numbers are clamped with a warning
+(`npm run check-model` lists them). The card option `render: default` ignores the recipe.
+
+```js
+house.userData.fp = { render: {
+  toneMapping: 'ACESFilmic',   // None | Linear | Reinhard | Cineon | ACESFilmic | AgX | Neutral
+  exposure: 1.25,              // 0.05..4
+  outputColorSpace: 'srgb',    // srgb | srgb-linear
+  pixelRatioMax: 1.5,          // 0.5..3 (the device pixel ratio is capped to this)
+  anisotropy: 8,               // 1..16 (texture filtering at grazing angles)
+  camera: { fov: 35, near: 0.3, far: 500 },  // fov 10..100; near / far start values, far is an upper bound
+                                             // that never cuts the house or the sky dome
+  sun: { shadowMapSize: 2048, bias: -0.0005, normalBias: 0.02 },  // map 256..4096 (power of two)
+  lampShadows: { max: 4, mapSize: 512, bias: -0.004, normalBias: 0, radius: 1 },  // max 0..8
+  day: { hemi: ['#c4d6ff', '#2a2520', 0.9], sun: ['#fff0dc', 2.6] },   // [sky, ground, intensity], [colour, intensity]
+  night: { hemi: ['#c4d6ff', '#2a2520', 0.14], sun: ['#fff0dc', 0] },
+  glowIntensityPerBrightness: 3,  // glow mesh emissive per unit of lamp brightness
+} };
+```
+
+- Colours are `'#rrggbb'` strings or numbers (`0xrrggbb`). Day and night blend through dusk;
+  clouds still dim the sun and soften its shadow on top.
+- `lampShadows.max` asks for that many shadow-casting lamps. The card grants
+  min(max, device cap): 4 on touch devices, screens with a pixel ratio above 2 or 4 CPU cores or
+  fewer, else 8. The light pool is built once when the model loads (shadow lamps + 4 more point
+  lights + 4 spots), so it never changes at runtime.
+
 ## Layers
 
 `fp.layer` on any node (a string, or an array of strings) groups parts across rooms and levels,

@@ -26,7 +26,7 @@ position over its map.
   darkens smoothly through dusk; without `sun.sun` it stays Day
 - Sun and moon in the sky (3D view with a model): the sun where `sun.sun` puts it, the moon from
   your Home Assistant location (`latitude` / `longitude`) with its current phase, and faint cool
-  moonlight on moonlit nights
+  moonlight on moonlit nights; in Auto a clock button scrubs today's sun and moon from 00:00 to 24:00
 - Model objects are the controls: lamps glow and really light rooms and the facade (night is dark,
   the lamps carry it), tap a lamp to toggle it, hold it for brightness and colour; the mower model
   drives on the plan, the dock, EV charger and climate units show their state. Objects bind to
@@ -90,7 +90,8 @@ The options below can be set in the visual editor or in YAML.
 | `model_rotation` | `0` | Model rotation in degrees, counter-clockwise. |
 | `model_scale` | `1` | Model scale (e.g. `0.01` for a centimetre model). |
 | `model_opacity` | `1` | Model opacity, `0`–`1`. |
-| `lights` | `auto` | With a model: `auto` gives lit lamps real lights (at most 12, 4 with shadows); `off` keeps them glowing only (for weak tablets). |
+| `lights` | `auto` | With a model: `auto` gives lit lamps real lights (4 with shadows, or up to 8 when the model's render recipe asks and the device allows, plus 4 point lights and 4 spots); `off` keeps them glowing only (for weak tablets). |
+| `render` | `model` | With a model: `model` applies the model's render recipe (`fp.render`: exposure, camera, shadows, day / night light); `default` ignores it. Edit → Model shows *Render recipe: from model (N keys)* or *default*. |
 | `actions` | | Tap / hold / double tap actions for objects and markers (see [Actions](#actions)). |
 | `badges` | from the layout | Device badges per card, overriding Edit → Devices: `{ integration: true, status: true, battery: true }` (each key optional). |
 | `model_floors` | auto | Which HA floor each model level belongs to, e.g. `{ground: floor1, attic: floor2}` (for a `model:` URL; uploads set it in the Model tab). |
@@ -240,7 +241,9 @@ For a Sunseeker (wireless models):
    causing long main-thread tasks, it doubles the refresh interval (up to 60 s) until things are quiet.
    While the mower is **docked or charging** (lawn_mower state, or a *Mower status* sensor) it stands
    at the model's dock object, turned as the dock (front = its +Z or `hints.front`); after undocking it
-   is tracked from there. When it is not found, it stays at its last known position. The status line
+   is tracked from there. While docked the mower and the dock act as one object: a tap on either
+   opens the mower popup (with a *Dock* row: charging / docked and the battery) and the dock shows no
+   tap dot of its own; once it mows they are two again. When it is not found, it stays at its last known position. The status line
    of the Mower tab says which: *At dock*, *Tracked on map (score 0.82)*, *Last known position*.
 4. **Align by points** until the map sits on the lawn.
 5. The error code sensor of the device is used automatically (see the warning below).
@@ -395,6 +398,9 @@ Rendering notes for model authors:
   behind windows. No shadow is cast by meshes that are transparent, have opacity < 1 or
   transmission, are named like *glass / window / pane / glazing*, sit on an `fp.layer` of
   `glass`, `terrain`, `floor`, `decal` or `label`, or are flat (< 2 cm thick) overlays.
+- **Render recipe:** `fp.render` on the model root sets tone mapping, exposure, pixel ratio cap,
+  texture filtering, camera fov, sun and lamp shadow quality, day / night light colours and the
+  glow strength (format: [model-builder-guide](docs/model-builder-guide.md#render-recipe)).
 - The sun's shadow box covers the storey / basement / roof levels + 4 m (an untagged model:
   meshes up to 30 m across), not the whole plot, so shadows stay sharp. If the model root (or a
   top node) has `fp.north` (degrees), the sun's azimuth follows it (north + 0.35 rad).
@@ -432,6 +438,11 @@ has no marker: the object is the control.
 - **Day / Night:** the toolbar button cycles Auto, Day, Night. Auto follows `sun.sun`: by night
   the house is nearly dark and the lamps carry the scene; the sun's direction and shadows follow
   the real sun.
+- **Sun time:** in Auto (3D, with a model and an HA location) the clock button next to Day / Night
+  opens a slider for today, 00:00 to 24:00 in 15 minute steps. The sun (computed in the browser from
+  `hass.config.latitude` / `longitude`) and the moon move to that time: light, shadows, sky and clouds
+  follow; the sun's shadow is redrawn once the slider rests (150 ms). **Now** returns to `sun.sun`.
+  The time is not stored (this session only).
 - **Sun and moon:** with a model the sun (down to 2° below the horizon) and the moon (while above
   it) sit on a dome around the house: house centre + their direction × the dome radius (1.4 × the
   house's half width, at least 12 m), so a low sun is near the faint compass ring on the ground
