@@ -73,13 +73,53 @@ export function sunPosition(date, latDeg, lonDeg) {
 }
 
 // Time scrubber (session only): minutes 0..1440 in 15 min steps on today's local date.
+// Today and the minutes are in HA's time zone (hass.config.time_zone), else the browser's.
 export const SCRUB_STEP_MIN = 15;
+export const SCRUB_IDLE_MS = 120000; // back to live after 2 minutes without slider input
 export const snapMinutes = (m) => Math.min(1440, Math.max(0, Math.round((Number(m) || 0) / SCRUB_STEP_MIN) * SCRUB_STEP_MIN));
-export function sliderDate(now, minutes) {
-  const d = new Date(now instanceof Date ? now.getTime() : Number(now));
-  d.setHours(0, 0, 0, 0);
-  d.setMinutes(minutes);
-  return d;
+
+const fmts = new Map();
+// wall-clock parts of ms in time zone tz -> { y, mo (0-based), d, h, mi, s } or null (unknown zone)
+function tzParts(ms, tz) {
+  if (!tz) return null;
+  let f = fmts.get(tz);
+  if (f === undefined) {
+    try {
+      f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    } catch (e) {
+      f = null;
+    }
+    fmts.set(tz, f);
+  }
+  if (!f) return null;
+  const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { y: +p.year, mo: +p.month - 1, d: +p.day, h: +p.hour % 24, mi: +p.minute, s: +p.second };
+}
+// zone offset (ms) at ms: wall clock as UTC - real UTC
+const tzOffset = (ms, tz) => { const p = tzParts(ms, tz); return Date.UTC(p.y, p.mo, p.d, p.h, p.mi, p.s) - Math.floor(ms / 1000) * 1000; };
+
+// Minutes since midnight of ms in the zone (browser's without a valid tz).
+export function tzMinutes(ms, tz) {
+  const p = tzParts(ms, tz);
+  if (p) return p.h * 60 + p.mi;
+  const d = new Date(ms);
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+// Today (in tz) at minutes since its midnight -> Date.
+export function sliderDate(now, minutes, tz = null) {
+  const ms = now instanceof Date ? now.getTime() : Number(now);
+  const p = tzParts(ms, tz);
+  if (!p) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    d.setMinutes(minutes);
+    return d;
+  }
+  const wall = Date.UTC(p.y, p.mo, p.d, 0, minutes);
+  let t = wall - tzOffset(wall, tz);
+  t = wall - tzOffset(t, tz); // the offset at the result (DST change days)
+  return new Date(t);
 }
 export const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 

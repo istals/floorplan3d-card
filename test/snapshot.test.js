@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { snapshotKey, snapshotSize, SnapshotScheduler, pickSnapshot } from '../src/snapshot.js';
+import { snapshotKey, snapshotSize, SnapshotScheduler, pickSnapshot, startKey } from '../src/snapshot.js';
 
 describe('snapshot keys and sizes', () => {
   it('keys by layout, view and mode', () => {
@@ -19,7 +19,18 @@ describe('snapshot keys and sizes', () => {
       { key: 'other|b|3d', layout: 'other', mode: '3d', at: 30 },
     ];
     expect(pickSnapshot(list, 'default', 'a', '3d').key).toBe('default|a|3d');
-    expect(pickSnapshot(list, 'default', 'x', '3d').key).toBe('default|b|3d');
+    expect(pickSnapshot(list, 'default', 'x', '3d')).toBe(null); // never another view's picture
+    expect(pickSnapshot(list, 'default', 'a', 'top')).toBe(null);
+  });
+  it('view unknown before the model loads: the remembered start view, exactly', () => {
+    const list = [
+      { key: 'default|a|3d', layout: 'default', mode: '3d', at: 5 },
+      { key: 'default|b|3d', layout: 'default', mode: '3d', at: 9 },
+    ];
+    expect(pickSnapshot(list, 'default', null, '3d')).toBe(null); // no start view known
+    const withStart = [...list, { key: startKey('default'), layout: 'default', start: 'a', size: 0, at: 1 }];
+    expect(pickSnapshot(withStart, 'default', null, '3d').key).toBe('default|a|3d');
+    expect(pickSnapshot([withStart[0 + 1], withStart[2]], 'default', null, '3d')).toBe(null); // start view has no picture
     expect(pickSnapshot(list, 'nope', 'x', '3d')).toBe(null);
   });
 });

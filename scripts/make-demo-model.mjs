@@ -58,7 +58,7 @@ house.userData.fp = {
     toneMapping: 'ACESFilmic', exposure: 1.1, outputColorSpace: 'srgb', pixelRatioMax: 1.5, anisotropy: 8,
     camera: { fov: 38, near: 0.3, far: 260 },
     sun: { shadowMapSize: 2048, bias: -0.0003, normalBias: 0.02 },
-    lampShadows: { max: 8, mapSize: 1024, bias: -0.0008, normalBias: 0.04, radius: 3 },
+    lampShadows: { max: 6, mapSize: 1024, bias: -0.0008, normalBias: 0.04, radius: 3 },
     day: { hemi: ['#c4d6ff', '#2a2520', 0.9], sun: ['#fff0dc', 2.6] },
     night: { hemi: ['#9fb4e0', '#1a1714', 0.14], sun: ['#fff0dc', 0] },
     glowIntensityPerBrightness: 3,

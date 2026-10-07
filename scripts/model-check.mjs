@@ -435,7 +435,7 @@ sections.add('model', { group: 'model', query: { model: '1', view: '3d' }, viewp
 // 1b. render recipe (fp.render of the demo house): exposure, fov, lamp shadow pool, Model tab line; render: default ignores it
 const renderState = (page) => page.evaluate(`(() => { const c = ${card}, v = c._view, l = c._objects;
   return { exposure: v.renderer.toneMappingExposure, fov: v.persp.fov, from: v.renderFrom, shadows: l.shadowSlots,
-    points: l.pool.points.length, cast: l.pool.points.filter((x) => x.castShadow).length, cap: v.shadowCap(),
+    points: l.pool.points.length, cast: l.pool.points.filter((x) => x.castShadow).length, cap: v.shadowCap(), units: v.renderer.capabilities.maxTextures, recipeMap: v.render.lampShadows.mapSize,
     mapSize: l.pool.points[0].shadow.mapSize.x, bias: l.pool.points[0].shadow.bias, sunBias: v.sun.shadow.bias, far: v.persp.far }; })()`);
 sections.add('render-recipe', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
@@ -443,7 +443,8 @@ sections.add('render-recipe', { group: 'model', query: { model: '1', view: '3d' 
   await idle(page);
   const r = await renderState(page);
   check('render recipe: exposure 1.1 and fov 38 from the model', r.exposure === 1.1 && r.fov === 38 && r.from && r.from.keys === 11, JSON.stringify(r));
-  check('render recipe: lamp shadow slots = min(8, device cap), pool = slots + 4', r.shadows === Math.min(8, r.cap) && r.points === r.shadows + 4 && r.cast === r.shadows, JSON.stringify(r));
+  check('render recipe: lamp shadow slots = min(6, device max, texture units - 9), pool = slots + 4', r.shadows === Math.max(0, Math.min(6, r.cap.max, r.units - 9)) && r.points === r.shadows + 4 && r.cast === r.shadows, JSON.stringify(r));
+  check('render recipe: lamp map size at most 1024 and the device cap', r.recipeMap === Math.min(1024, r.cap.mapSize), JSON.stringify(r));
   check('render recipe: lamp / sun shadow bias from the recipe (test mode map size)', r.bias === -0.0008 && r.sunBias === -0.0003 && r.mapSize === 256, JSON.stringify(r));
   await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
   await idle(page);
@@ -466,11 +467,12 @@ sections.add('sun-time', { group: 'model', query: { model: '1', view: '3d' }, vi
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await page.evaluate('window.__demoMowerPaused = true');
-  // a June day in a fixed time zone (the page is shared: both are put back at the end)
-  await page.emulateTimezone('Europe/Amsterdam');
-  await page.evaluate('window.__demoNow = new Date(2024, 5, 21, 9, 0).getTime()');
+  // a June day; HA's time zone Amsterdam, the browser's New York: the slider follows HA's (the page is shared:
+  // everything is put back at the end)
+  await page.emulateTimezone('America/New_York');
+  await page.evaluate(`(() => { window.__demoNow = Date.UTC(2024, 5, 21, 7, 0); const c = ${card}; c.hass = { ...c._hass, config: { ...c._hass.config, time_zone: 'Europe/Amsterdam' } }; })()`);
   try { await sunTimeChecks(page); } finally {
-    await page.evaluate(`(() => { window.__demoNow = undefined; ${card}.setSunTime(null); })()`).catch(() => {});
+    await page.evaluate(`(() => { window.__demoNow = undefined; window.__fpScrubIdleMs = undefined; const c = ${card}; c.setSunTime(null); c.hass = { ...c._hass, config: { ...c._hass.config, time_zone: 'UTC' } }; })()`).catch(() => {});
     await page.emulateTimezone().catch(() => {});
   }
 });
@@ -492,6 +494,7 @@ async function sunTimeChecks(page) {
   const t3 = await at(180), t6 = await at(360), t12 = await at(720);
   const ok = (r) => r.sun && Math.abs(r.sun.elevation - ref(r.sun.at).elevation) < 0.01 && Math.abs(r.sun.azimuth - ref(r.sun.at).azimuth) < 0.01;
   check('scrubbed sun = sunPosition(HA location, today at the time)', ok(t3) && ok(t6) && ok(t12), JSON.stringify({ t3, t6, t12 }));
+  check('slider time is in HA\'s time zone (06:00 Amsterdam = 04:00 UTC), not the browser\'s', t6.sun.at === Date.UTC(2024, 5, 21, 4, 0), new Date(t6.sun.at).toISOString());
   check('03:00 in June: sun below the horizon (night)', t3.sun.elevation < 0 && t3.night > 0.5 && t3.light === 0, JSON.stringify(t3));
   check('06:00: low sun (0..20 deg, east)', t6.sun.elevation > 0 && t6.sun.elevation < 20 && t6.sun.azimuth > 45 && t6.sun.azimuth < 100, JSON.stringify(t6));
   check('12:00: high sun (> 55 deg), brighter than 06:00', t12.sun.elevation > 55 && t12.light >= t6.light && t12.night === 0, JSON.stringify(t12));
@@ -508,6 +511,24 @@ async function sunTimeChecks(page) {
   await idle(page);
   const live = await page.evaluate(`({ t: ${card}._sunTime, pop: ${card}.shadowRoot.querySelector('.fp-suntime').hidden, label: ${card}.shadowRoot.querySelector('button.suntime .t').textContent })`);
   check('Now: back to the live sun, popover closed', live.t === null && live.pop === true && live.label === '', JSON.stringify(live));
+  const sbtn = `${card}.shadowRoot.querySelector('button.suntime')`, set = (m) => page.evaluate(`(() => { const r = ${card}.shadowRoot.querySelector('.fp-suntime input'); r.value = '${m}'; r.dispatchEvent(new Event('change')); })()`);
+  // closing the popover returns to live
+  await page.evaluate(`${sbtn}.click()`);
+  await set(480);
+  await page.evaluate(`${sbtn}.click()`);
+  check('closing the popover: back to live', (await page.evaluate(`${card}._sunTime`)) === null);
+  // tab shown again: back to live
+  await page.evaluate(`${sbtn}.click()`);
+  await set(480);
+  await page.evaluate(`document.dispatchEvent(new Event('visibilitychange'))`);
+  check('tab visible again: back to live', (await page.evaluate(`${card}._sunTime`)) === null);
+  // no slider input for the idle time (2 min; shortened here): back to live
+  await page.evaluate('window.__fpScrubIdleMs = 300');
+  await page.evaluate(`${sbtn}.click()`);
+  await set(480);
+  const was = await page.evaluate(`${card}._sunTime`);
+  await page.waitForFunction(`${card}._sunTime === null`, { timeout: 3000 }).catch(() => {});
+  check('idle: back to live after the timeout', was === 480 && (await page.evaluate(`${card}._sunTime`)) === null, String(was));
 }
 
 sections.add('weather', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
@@ -3012,7 +3033,7 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
     check('progress: download, then "Preparing model…", then gone', st.log.some((t) => /^Downloading [\d.]+ \/ [\d.]+ MB$/.test(t)) && st.log.includes('Preparing model…') && st.barHidden, JSON.stringify(st));
     check('first load downloads the glb', gets.includes('GET') && st.cached === false, JSON.stringify(gets));
     const saved = await page.evaluate(`${card}._loadUI.capture()`);
-    const snaps = await page.evaluate(`new Promise((r) => { const q = indexedDB.open('floorplan3d'); q.onsuccess = () => { const a = q.result.transaction('snapshots').objectStore('snapshots').getAll(); a.onsuccess = () => { r(a.result.map((x) => ({ key: x.key, type: x.blob.type, size: x.size }))); q.result.close(); }; }; })`);
+    const snaps = await page.evaluate(`new Promise((r) => { const q = indexedDB.open('floorplan3d'); q.onsuccess = () => { const a = q.result.transaction('snapshots').objectStore('snapshots').getAll(); a.onsuccess = () => { r(a.result.filter((x) => x.blob).map((x) => ({ key: x.key, type: x.blob.type, size: x.size }))); q.result.close(); }; }; })`);
     check('snapshot stored as a JPEG per layout / view / mode', saved === true && snaps.some((x) => x.key.startsWith('default|') && x.key.endsWith('|3d') && x.type === 'image/jpeg' && x.size > 1000), JSON.stringify(snaps));
     // the same demo again, caches kept; the model's HEAD answered late so the placeholder has time to show
     gets.length = 0;
@@ -3053,7 +3074,32 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
       return { n, c1, c2, same: a.byteLength === 8 && b.byteLength === 8 };
     })()`);
     check('no Cache Storage: model cached in IndexedDB, new version fetched again', idb.n === 2 && idb.c1 === false && idb.c2 === true && idb.same, JSON.stringify(idb));
-    allErrors.push(...s.errors);
+    // a stalled download: aborted after the timeout (60 s; shortened here), the error shown, controls enabled again
+    const stall = await page.evaluate(`(async () => {
+      const c = ${card}, v = c._view, ui = c._loadUI;
+      window.__fpModelTimeoutMs = 300;
+      let aborted = false;
+      const fetchFn = ({ signal }) => new Promise((res, rej) => signal.addEventListener('abort', () => { aborted = true; rej(new Error('aborted')); }));
+      ui._showSnap('data:,'); // controls held as while a snapshot shows
+      const err = await v.setModel({ id: 'stall', name: 'stall.glb', data: () => c._modelBytes(location.origin + '/stall.glb', null, fetchFn) });
+      ui.done(!!v.model && !err, err || '');
+      window.__fpModelTimeoutMs = undefined;
+      return { err, aborted, bar: ui.bar.hidden ? null : ui.bar.textContent, controls: v.controls.enabled };
+    })()`);
+    check('stalled download: timed out, aborted, error shown, controls enabled', /timed out/.test(stall.err || '') && stall.aborted && /timed out/.test(stall.bar || '') && stall.controls, JSON.stringify(stall));
+    // a cached copy that does not parse: evicted and fetched once more
+    const bad = await page.evaluate(`(async () => {
+      const c = ${card}, v = c._view;
+      const base = location.origin + '/api/floorplan3d/model/bad-test';
+      await c._modelBytes(base, 'b1', async () => new Response(new Uint8Array([1, 2, 3, 4]))); // junk stored in the cache
+      let n = 0;
+      const good = async () => { n++; return fetch('/demo/house.glb'); };
+      c._modelEvicted = 0;
+      const err = await v.setModel({ id: 'bad-then-good', name: 'bad.glb', data: () => { c._modelSrc = { base, version: 'b1', fetchFn: good }; return c._modelBytes(base, 'b1', good); }, dataFresh: () => c._modelFresh() });
+      return { err, model: !!v.model, evicted: c._modelEvicted, fetched: n, cachedAfter: c._modelFromCache };
+    })()`);
+    check('cached model that fails to parse: evicted, fetched once, loads', bad.err === null && bad.model && bad.evicted === 1 && bad.fetched === 1 && bad.cachedAfter === false, JSON.stringify(bad));
+    allErrors.push(...s.errors.filter((e) => !/stall\.glb|bad\.glb/.test(e))); // the deliberate failures above
   } finally {
     page.off('request', onReq);
   }

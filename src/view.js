@@ -14,7 +14,7 @@ import { outdoorShown, sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoo
 import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
-import { mergeRender, recipeFar, skyLights, deviceShadowCap, lampShadowSlots } from './render-recipe.js';
+import { mergeRender, recipeFar, skyLights, deviceShadowCap, lampShadowSlots, lampMapSize } from './render-recipe.js';
 import { cloudLight, cloudCount, coverageChanged, cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir, cloudFade, cloudNear } from './weather.js';
 import {
   castsShadow, shadowInfo, isCoplanarOverlay, coplanarWinners, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
@@ -634,7 +634,7 @@ export class FloorplanView {
           this._modelId = null;
           if (!this.model && this._modelLook) this._applyLook(); // nothing follows: the no-model look
         }
-        resolve(`Could not load model ${label}`);
+        resolve(`Could not load model ${label}${err && /timed out/.test(err.message || '') ? ` (${err.message})` : ''}`);
       };
       const onLoad = (gltf) => {
         if (this._modelId !== id) return resolve(null);
@@ -729,8 +729,16 @@ export class FloorplanView {
       else {
         // bytes from the card (its cache); external resources of a URL model resolve next to it
         const path = opts.url ? THREE.LoaderUtils.extractUrlBase(new URL(opts.url, location.href).href) : '';
+        // bytes that fail to parse (a damaged cached copy): opts.dataFresh drops the cache and fetches once more
+        const parse = (buf, retried) => {
+          const bad = (err) => {
+            if (retried || !opts.dataFresh || this._modelId !== id) { fail(err); return; }
+            Promise.resolve().then(() => opts.dataFresh()).then((b) => parse(b, true), () => fail(err));
+          };
+          try { loader.parse(buf, path, onLoad, bad); } catch (e) { bad(e); } // junk bytes throw synchronously
+        };
         Promise.resolve(typeof opts.data === 'function' ? opts.data() : opts.data)
-          .then((buf) => loader.parse(buf, path, onLoad, fail))
+          .then((buf) => parse(buf, false))
           .catch(fail);
       }
     });
@@ -1052,15 +1060,15 @@ export class FloorplanView {
     return this.test ? 1 : Math.min(window.devicePixelRatio || 1, this.render.pixelRatioMax);
   }
 
-  // Lamp shadow maps this device affords (see deviceShadowCap).
+  // Lamp shadow maps this device affords: { max, mapSize } (see deviceShadowCap).
   shadowCap() {
     const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
     return deviceShadowCap({ touch, dpr: window.devicePixelRatio || 1, cores: navigator.hardwareConcurrency });
   }
 
-  // Shadow-capable lamp slots for the loaded settings: min(recipe max, device cap).
+  // Shadow-capable lamp slots for the loaded settings: min(recipe max, device max, texture units - 9).
   lampShadowCount() {
-    return lampShadowSlots(this.render.lampShadows.max, this.shadowCap());
+    return lampShadowSlots(this.render.lampShadows.max, this.shadowCap(), this.renderer.capabilities.maxTextures);
   }
 
   // The loaded model's recipe (unless render: default) -> this.render; renderer pixel ratio and camera fov / near.
@@ -1071,6 +1079,7 @@ export class FloorplanView {
   }
 
   _setRender(render) {
+    render.lampShadows.mapSize = lampMapSize(render.lampShadows.mapSize, this.shadowCap()); // at most 1024 and the device cap
     this.render = render;
     const pr = this._pixelRatio();
     if (this.renderer.getPixelRatio() !== pr) {

@@ -25,7 +25,7 @@ const NUM = {
   exposure: [0.05, 4], pixelRatioMax: [0.5, 3], anisotropy: [1, 16, 'int'], glowIntensityPerBrightness: [0, 20],
   'camera.fov': [10, 100], 'camera.near': [0.01, 10], 'camera.far': [10, 10000],
   'sun.shadowMapSize': [256, 4096, 'pow2'], 'sun.bias': [-0.01, 0.01], 'sun.normalBias': [0, 0.5],
-  'lampShadows.max': [0, 8, 'int'], 'lampShadows.mapSize': [128, 2048, 'pow2'], 'lampShadows.bias': [-0.05, 0.05],
+  'lampShadows.max': [0, 8, 'int'], 'lampShadows.mapSize': [128, 1024, 'pow2'], 'lampShadows.bias': [-0.05, 0.05],
   'lampShadows.normalBias': [0, 0.5], 'lampShadows.radius': [0, 10],
 };
 const GROUPS = { camera: ['fov', 'near', 'far'], sun: ['shadowMapSize', 'bias', 'normalBias'], lampShadows: ['max', 'mapSize', 'bias', 'normalBias', 'radius'] };
@@ -119,12 +119,21 @@ export function mergeRender(recipe) {
   };
 }
 
-// Lamp shadow maps this device affords: 4 on touch devices, dense screens (dpr > 2) or <= 4 cores, else 8.
+// Lamp shadow maps this device affords -> { max, mapSize }: 4 at 512 on touch devices, dense screens
+// (dpr > 2) or <= 4 cores, else 6 at up to 1024.
 export function deviceShadowCap({ touch = false, dpr = 1, cores = 8 } = {}) {
-  return touch || dpr > 2 || (Number.isFinite(cores) && cores <= 4) ? 4 : 8;
+  return touch || dpr > 2 || (Number.isFinite(cores) && cores <= 4) ? { max: 4, mapSize: 512 } : { max: 6, mapSize: 1024 };
 }
 
-export const lampShadowSlots = (max, cap) => Math.max(0, Math.min(max, cap));
+// Shadow-casting lamps: min(recipe max, device max, texture units left: maxTextures - 9 for the
+// material's own maps, the sun's shadow map and the rest).
+export function lampShadowSlots(max, cap, maxTextures) {
+  const units = Number.isFinite(maxTextures) ? Math.max(0, maxTextures - 9) : Infinity;
+  return Math.max(0, Math.min(max, cap.max, units));
+}
+
+// Lamp shadow map size: the recipe's, at most 1024 and the device cap.
+export const lampMapSize = (size, cap) => Math.min(size, 1024, cap.mapSize);
 
 // Camera far with the recipe's far as an upper bound that never cuts what the scene needs.
 export function recipeFar(dynamicFar, neededFar, cap) {

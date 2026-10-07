@@ -47,8 +47,20 @@ export function lruEvict(entries, cap, keep = null) {
 }
 
 const mb = (n) => (n / 1e6).toFixed(1);
+// total: content-length (0 unknown); smaller than what arrived (a gzip-encoded body): received bytes only
 export function progressText(loaded, total) {
-  return total ? `Downloading ${mb(loaded)} / ${mb(total)} MB` : `Downloading ${mb(loaded)} MB`;
+  return total && loaded <= total ? `Downloading ${mb(loaded)} / ${mb(total)} MB` : `Downloading ${mb(loaded)} MB`;
+}
+
+export const MODEL_TIMEOUT_MS = 60000;
+
+// promise, rejected with Error(message) after ms (onTimeout() first, e.g. to abort the request).
+export function withTimeout(promise, ms, message, onTimeout = null) {
+  let timer;
+  const t = new Promise((resolve, reject) => {
+    timer = setTimeout(() => { if (onTimeout) onTimeout(); reject(new Error(message)); }, ms);
+  });
+  return Promise.race([promise, t]).finally(() => clearTimeout(timer));
 }
 
 // Response body as an ArrayBuffer, with onProgress(loaded, total) per chunk (total 0: unknown).
@@ -122,14 +134,30 @@ async function storeBody(base, version, buf) {
 // The model's bytes: from the local cache when the version matches, else fetched (with progress) and
 // stored. base: absolute URL without the version; version: string | null (null: never cached);
 // fetchFn: () => Promise<Response>. -> { buf, cached }
-export async function loadModelBuffer({ base, version, fetchFn, onProgress }) {
-  if (version) {
+// fetchFn({ signal }): the request is aborted when the download (headers + body) takes longer than
+// timeoutMs (default 60 s). skipCache: fetch even when a cached copy exists (it is replaced).
+export async function loadModelBuffer({ base, version, fetchFn, onProgress, timeoutMs = MODEL_TIMEOUT_MS, skipCache = false }) {
+  if (version && !skipCache) {
     const hit = await cachedBody(base, version);
     if (hit) return { buf: hit, cached: true };
   }
-  const res = await fetchFn();
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const buf = await readWithProgress(res, onProgress);
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const download = (async () => {
+    const res = await fetchFn({ signal: ctl ? ctl.signal : undefined });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return readWithProgress(res, onProgress);
+  })();
+  const buf = await withTimeout(download, timeoutMs, `Model download timed out (${+(timeoutMs / 1000).toFixed(1)} s)`, () => ctl && ctl.abort());
   if (version) await storeBody(base, version, buf);
   return { buf, cached: false };
+}
+
+// Drop a cached model (all versions of base), e.g. when its bytes fail to parse.
+export async function evictModel(base) {
+  const cache = await openCache();
+  if (cache) {
+    try { for (const req of await cache.keys()) if (cacheBase(req.url) === base) await cache.delete(req); } catch (e) { /* blocked */ }
+    return;
+  }
+  await idbDelete('models', [base]);
 }

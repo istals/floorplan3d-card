@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutModelVersion, headerVersion, cacheUrl, cacheBase, lruEvict, progressText, readWithProgress } from '../src/model-cache.js';
+import { layoutModelVersion, headerVersion, cacheUrl, cacheBase, lruEvict, progressText, readWithProgress, withTimeout, loadModelBuffer, MODEL_TIMEOUT_MS } from '../src/model-cache.js';
 
 describe('model cache versions', () => {
   it('versions an uploaded model by its version, size and upload time', () => {
@@ -41,6 +41,10 @@ describe('progressText', () => {
     expect(progressText(3.2e6, 6.1e6)).toBe('Downloading 3.2 / 6.1 MB');
     expect(progressText(1048576 * 0.5, 0)).toBe('Downloading 0.5 MB');
   });
+  it('received bytes only when content-length is smaller (a gzip-encoded body)', () => {
+    expect(progressText(5e6, 2e6)).toBe('Downloading 5.0 MB');
+    expect(progressText(2e6, 2e6)).toBe('Downloading 2.0 / 2.0 MB');
+  });
 });
 
 describe('readWithProgress', () => {
@@ -57,5 +61,33 @@ describe('readWithProgress', () => {
     const res = { headers: { get: () => null }, body: null, arrayBuffer: async () => new Uint8Array([9]).buffer };
     const buf = await readWithProgress(res, () => {});
     expect([...new Uint8Array(buf)]).toEqual([9]);
+  });
+});
+
+describe('withTimeout', () => {
+  it('passes the value through in time', async () => {
+    await expect(withTimeout(Promise.resolve(7), 50, 'slow')).resolves.toBe(7);
+  });
+  it('rejects with the message after ms and calls onTimeout', async () => {
+    let aborted = false;
+    await expect(withTimeout(new Promise(() => {}), 10, 'Model download timed out', () => { aborted = true; })).rejects.toThrow('Model download timed out');
+    expect(aborted).toBe(true);
+  });
+  it('the download timeout is 60 s', () => {
+    expect(MODEL_TIMEOUT_MS).toBe(60000);
+  });
+});
+
+describe('loadModelBuffer', () => {
+  it('fetchFn gets an abort signal; skipCache fetches even with a version', async () => {
+    let sig = null;
+    const fetchFn = async (o) => { sig = o && o.signal; return new Response(new Uint8Array([1])); };
+    const r = await loadModelBuffer({ base: 'http://x/m.glb', version: null, fetchFn });
+    expect(r.cached).toBe(false);
+    expect(sig && typeof sig.aborted).toBe('boolean');
+  });
+  it('a stalled download fails after the timeout', async () => {
+    const fetchFn = () => new Promise(() => {});
+    await expect(loadModelBuffer({ base: 'http://x/m.glb', version: null, fetchFn, timeoutMs: 10 })).rejects.toThrow(/timed out/);
   });
 });

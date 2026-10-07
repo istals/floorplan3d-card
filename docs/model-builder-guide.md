@@ -167,7 +167,7 @@ house.userData.fp = { render: {
   camera: { fov: 35, near: 0.3, far: 500 },  // fov 10..100; near / far start values, far is an upper bound
                                              // that never cuts the house or the sky dome
   sun: { shadowMapSize: 2048, bias: -0.0005, normalBias: 0.02 },  // map 256..4096 (power of two)
-  lampShadows: { max: 4, mapSize: 512, bias: -0.004, normalBias: 0, radius: 1 },  // max 0..8
+  lampShadows: { max: 6, mapSize: 1024, bias: -0.004, normalBias: 0, radius: 1 },  // max 0..8, map 128..1024 (default 4 × 512)
   day: { hemi: ['#c4d6ff', '#2a2520', 0.9], sun: ['#fff0dc', 2.6] },   // [sky, ground, intensity], [colour, intensity]
   night: { hemi: ['#c4d6ff', '#2a2520', 0.14], sun: ['#fff0dc', 0] },
   glowIntensityPerBrightness: 3,  // glow mesh emissive per unit of lamp brightness
@@ -176,9 +176,9 @@ house.userData.fp = { render: {
 
 - Colours are `'#rrggbb'` strings or numbers (`0xrrggbb`). Day and night blend through dusk;
   clouds still dim the sun and soften its shadow on top.
-- `lampShadows.max` asks for that many shadow-casting lamps. The card grants
-  min(max, device cap): 4 on touch devices, screens with a pixel ratio above 2 or 4 CPU cores or
-  fewer, else 8. The light pool is built once when the model loads (shadow lamps + 4 more point
+- `lampShadows.max` asks for that many shadow-casting lamps. The card grants min(max, device cap,
+  texture units − 9): 4 lamps with maps of at most 512 px on touch devices, screens with a pixel
+  ratio above 2 or 4 CPU cores or fewer, else 6 with maps of at most 1024 px. The light pool is built once when the model loads (shadow lamps + 4 more point
   lights + 4 spots), so it never changes at runtime.
 
 ## Layers

@@ -90,7 +90,7 @@ The options below can be set in the visual editor or in YAML.
 | `model_rotation` | `0` | Model rotation in degrees, counter-clockwise. |
 | `model_scale` | `1` | Model scale (e.g. `0.01` for a centimetre model). |
 | `model_opacity` | `1` | Model opacity, `0`–`1`. |
-| `lights` | `auto` | With a model: `auto` gives lit lamps real lights (4 with shadows, or up to 8 when the model's render recipe asks and the device allows, plus 4 point lights and 4 spots); `off` keeps them glowing only (for weak tablets). |
+| `lights` | `auto` | With a model: `auto` gives lit lamps real lights (4 with shadows, or up to 6 when the model's render recipe asks and the device allows (4 on touch / dense screens / 4 cores or fewer), plus 4 point lights and 4 spots); `off` keeps them glowing only (for weak tablets). |
 | `render` | `model` | With a model: `model` applies the model's render recipe (`fp.render`: exposure, camera, shadows, day / night light); `default` ignores it. Edit → Model shows *Render recipe: from model (N keys)* or *default*. |
 | `actions` | | Tap / hold / double tap actions for objects and markers (see [Actions](#actions)). |
 | `badges` | from the layout | Device badges per card, overriding Edit → Devices: `{ integration: true, status: true, battery: true }` (each key optional). |
@@ -383,7 +383,9 @@ Loading: the plan (rooms, markers) shows at once, with a progress bar while the 
 The browser keeps the model file (Cache Storage, or IndexedDB when HA is served over plain http),
 so the next load skips the download until the model changes (a new upload, or new ETag /
 Last-Modified of a `/local/` file). The last render of each view is kept as a small picture and
-shown until the model is ready. Everything stays in this browser; clearing site data removes it.
+shown until the model is ready (only that view's picture, never another view's). A download that
+takes over 60 s stops with an error; a cached copy that fails to load is dropped and downloaded
+again once. Everything stays in this browser; clearing site data removes it.
 
 In **Edit → Model** you choose which HA floor each level belongs to and assign each room to an
 HA area. Defaults follow level order and the tag's suggested area, so most of it is automatic;
@@ -441,8 +443,9 @@ has no marker: the object is the control.
 - **Sun time:** in Auto (3D, with a model and an HA location) the clock button next to Day / Night
   opens a slider for today, 00:00 to 24:00 in 15 minute steps. The sun (computed in the browser from
   `hass.config.latitude` / `longitude`) and the moon move to that time: light, shadows, sky and clouds
-  follow; the sun's shadow is redrawn once the slider rests (150 ms). **Now** returns to `sun.sun`.
-  The time is not stored (this session only).
+  follow; the sun's shadow is redrawn once the slider rests (150 ms). Times are in HA's time zone.
+  **Now**, closing the popover, 2 minutes without slider input or coming back to the tab return to
+  `sun.sun`. The time is not stored.
 - **Sun and moon:** with a model the sun (down to 2° below the horizon) and the moon (while above
   it) sit on a dome around the house: house centre + their direction × the dome radius (1.4 × the
   house's half width, at least 12 m), so a low sun is near the faint compass ring on the ground

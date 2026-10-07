@@ -29,9 +29,10 @@ import { ObjectLayer } from './objects/layer.js';
 import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
 import { DebugOverlay } from './debug-overlay.js';
 import { ModelLoadUI, LOAD_STYLE } from './load-ui.js';
-import { loadModelBuffer, layoutModelVersion, headerVersion } from './model-cache.js';
+import { rememberStartView } from './snapshot.js';
+import { loadModelBuffer, layoutModelVersion, headerVersion, evictModel } from './model-cache.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, layoutTags, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
-import { moonPosition, sunPosition, sliderDate, snapMinutes, hhmm } from './sky.js';
+import { moonPosition, sunPosition, sliderDate, snapMinutes, hhmm, tzMinutes, SCRUB_IDLE_MS } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
@@ -564,8 +565,10 @@ class Floorplan3dCard extends HTMLElement {
             const h = await fetch(url, { method: 'HEAD', credentials: 'same-origin' });
             if (h.ok) version = headerVersion(h.headers);
           } catch (e) { /* offline or no HEAD: fetched below (and not cached) */ }
-          return this._modelBytes(url, version, () => fetch(url, { credentials: 'same-origin' }));
+          this._modelSrc = { base: url, version, fetchFn: ({ signal } = {}) => fetch(url, { credentials: 'same-origin', signal }) };
+          return this._modelBytes(url, version, this._modelSrc.fetchFn);
         },
+        dataFresh: () => this._modelFresh(),
         position: Array.isArray(c.model_position) ? c.model_position.map(Number) : [0, 0, 0],
         rotation: Number(c.model_rotation) || 0, scale: Number(c.model_scale) || 1,
         opacity: c.model_opacity === undefined ? 1 : Number(c.model_opacity),
@@ -578,7 +581,11 @@ class Floorplan3dCard extends HTMLElement {
         opts = {
           id: m.version, name: m.name,
           // cached locally by version (only the body, keyed by the plain URL: no auth headers stored)
-          data: () => this._modelBytes(new URL(base, location.href).href, layoutModelVersion(m), () => this._hass.fetchWithAuth(url)),
+          data: () => {
+            this._modelSrc = { base: new URL(base, location.href).href, version: layoutModelVersion(m), fetchFn: ({ signal } = {}) => this._hass.fetchWithAuth(url, { signal }) };
+            return this._modelBytes(this._modelSrc.base, this._modelSrc.version, this._modelSrc.fetchFn);
+          },
+          dataFresh: () => this._modelFresh(),
           position: m.position || [0, 0, 0], rotation: m.rotation || 0, scale: m.scale || 1, opacity: m.opacity ?? 1,
         };
       }
@@ -624,9 +631,19 @@ class Floorplan3dCard extends HTMLElement {
   }
 
   // Model bytes through the local cache, with the download progress on the stage. -> ArrayBuffer
-  async _modelBytes(base, version, fetchFn) {
+  // The cached copy did not parse: evicted and fetched once more (a fresh download that fails is final).
+  async _modelFresh() {
+    const s = this._modelSrc;
+    if (!s || !this._modelFromCache) throw new Error('not from the cache');
+    await evictModel(s.base);
+    this._modelEvicted = (this._modelEvicted || 0) + 1; // headless checks
+    return this._modelBytes(s.base, s.version, s.fetchFn, { skipCache: true });
+  }
+
+  async _modelBytes(base, version, fetchFn, { skipCache = false } = {}) {
     const ui = this._loadUI;
-    const { buf, cached } = await loadModelBuffer({ base, version, fetchFn, onProgress: (l, t) => ui.download(l, t) });
+    const timeoutMs = Number(window.__fpModelTimeoutMs) || undefined; // headless checks shorten the 60 s
+    const { buf, cached } = await loadModelBuffer({ base, version, fetchFn, skipCache, timeoutMs, onProgress: (l, t) => ui.download(l, t) });
     this._modelFromCache = cached; // headless checks
     ui.progress('Preparing model…');
     return buf;
@@ -760,6 +777,9 @@ class Floorplan3dCard extends HTMLElement {
     this._view.start();
     clearInterval(this._skyTimer);
     this._skyTimer = setInterval(() => this._applySky(false), MOON_EVERY_MS); // the moon moves without hass updates
+    // back on the tab: a scrubbed sun time returns to live
+    if (!this._onVisible) this._onVisible = () => { if (document.visibilityState === 'visible' && this._sunTime !== null) this.setSunTime(null); };
+    document.addEventListener('visibilitychange', this._onVisible);
     this._ro = new ResizeObserver(() => this._resize());
     this._ro.observe(this._stage);
     // clouds drift only while the card is on screen
@@ -789,6 +809,9 @@ class Floorplan3dCard extends HTMLElement {
     if (this._io) { this._io.disconnect(); this._io = null; }
     clearInterval(this._skyTimer);
     this._skyTimer = null;
+    if (this._onVisible) document.removeEventListener('visibilitychange', this._onVisible);
+    clearTimeout(this._sunIdle);
+    clearTimeout(this._sunSettle);
     clearTimeout(this._stuckTimer);
     this._stuckTimer = null;
     if (this._view) this._view.setMowerWarning(null); // its pulse timer
@@ -872,10 +895,10 @@ class Floorplan3dCard extends HTMLElement {
     this._sunPop = root.querySelector('.fp-suntime');
     const range = this._sunPop.querySelector('input');
     this._sunBtn.addEventListener('click', () => {
-      this._sunPop.hidden = !this._sunPop.hidden;
-      if (!this._sunPop.hidden && this._sunTime === null) {
-        const d = new Date(this._now());
-        range.value = String(snapMinutes(d.getHours() * 60 + d.getMinutes()));
+      if (!this._sunPop.hidden) { this.setSunTime(null); return; } // closing the popover: back to live
+      this._sunPop.hidden = false;
+      if (this._sunTime === null) {
+        range.value = String(snapMinutes(tzMinutes(this._now(), this._timeZone())));
         this._sunPop.querySelector('.time').textContent = 'Now';
       }
     });
@@ -886,7 +909,8 @@ class Floorplan3dCard extends HTMLElement {
     this._view = new FloorplanView(this._stage);
     this._loadUI = new ModelLoadUI({
       stage: this._stage, view: this._view,
-      key: () => (this._config ? { layout: this._config.layout_key, view: this._viewId, mode: this._mode } : null),
+      // before the model has loaded its views are unknown: null = the remembered start view (exact match only)
+      key: () => (this._config ? { layout: this._config.layout_key, view: this._view && this._view.model ? this._viewId : (this._config.view_id || null), mode: this._mode } : null),
       canCapture: () => this.isConnected && !this._editing && this._view.size.w > 1 && !this._section,
     });
     this._view.onCameraChange = () => this._loadUI.changed();
@@ -2125,6 +2149,12 @@ class Floorplan3dCard extends HTMLElement {
       }, (v) => this._stateFor(v).floors);
       this._floorOnly = null;
     }
+    // the view picked right after a model loads is where the next load starts: its snapshot (only that one) shows
+    const vm = this._view.model;
+    if (vm && this._viewId && this._startModel !== vm) {
+      this._startModel = vm;
+      rememberStartView(this._config.layout_key, this._viewId).catch(() => {});
+    }
   }
 
   // View settings changed (rules, labels, cameras, floors, cut, order): re-resolve visibility and
@@ -3053,9 +3083,12 @@ class Floorplan3dCard extends HTMLElement {
 
   // Time scrubber: minutes today (0..1440, 15 min steps) or null = live sun.sun. settle false (dragging):
   // light and sky move now, the sun's shadow map follows 150 ms after the last move.
+  // Back to live after 2 minutes without slider input, when the popover closes or the tab is shown again.
   setSunTime(minutes, { settle = true } = {}) {
     clearTimeout(this._sunSettle);
+    clearTimeout(this._sunIdle);
     this._sunTime = minutes === null || minutes === undefined ? null : snapMinutes(minutes);
+    if (this._sunTime !== null) this._sunIdle = setTimeout(() => this.setSunTime(null), Number(window.__fpScrubIdleMs) || SCRUB_IDLE_MS);
     if (this._sunPop) {
       this._sunPop.querySelector('.time').textContent = this._sunTime === null ? 'Now' : hhmm(this._sunTime);
       if (this._sunTime === null) this._sunPop.hidden = true;
@@ -3067,6 +3100,12 @@ class Floorplan3dCard extends HTMLElement {
       this._sunSettle = setTimeout(() => this._applySky(true), 150);
     }
     this._syncToolbar();
+  }
+
+  // HA's time zone (hass.config.time_zone), null: the browser's.
+  _timeZone() {
+    const c = this._hass && this._hass.config;
+    return (c && typeof c.time_zone === 'string' && c.time_zone) || null;
   }
 
   _paintSunBtn() {
@@ -3096,7 +3135,7 @@ class Floorplan3dCard extends HTMLElement {
     if (!v || !v.model) return;
     const c = this._hass && this._hass.config;
     const scrub = this._sunTime !== null && this._sunTime !== undefined && !!c;
-    const at = scrub ? sliderDate(this._now(), this._sunTime).getTime() : null; // the scrubbed time, today
+    const at = scrub ? sliderDate(this._now(), this._sunTime, this._timeZone()).getTime() : null; // the scrubbed time, today (HA's time zone)
     const north = v.model.north || 0, rot = this._modelAlign().rotation || 0;
     let sky = { night: 0, sunDir: null }, sunBody = null, auto = false;
     if (this._skyMode === 'night') sky = { night: 1, sunDir: null };

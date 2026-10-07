@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RENDER_DEFAULTS, normRender, mergeRender, deviceShadowCap, lampShadowSlots, recipeFar, skyLights } from '../src/render-recipe.js';
+import { RENDER_DEFAULTS, normRender, mergeRender, deviceShadowCap, lampShadowSlots, lampMapSize, recipeFar, skyLights } from '../src/render-recipe.js';
 import { buildManifest } from '../src/manifest.js';
 
 const tree = (roots) => ({
@@ -51,6 +51,7 @@ describe('normRender', () => {
     expect(r.recipe.sun.shadowMapSize).toBe(4096);
     expect(r.recipe.lampShadows.max).toBe(8);
     expect(r.recipe.lampShadows.mapSize).toBe(128);
+    expect(normRender({ lampShadows: { mapSize: 2048 } }).recipe.lampShadows.mapSize).toBe(1024);
     expect(r.warnings.length).toBe(7);
   });
   it('rounds shadow map sizes to a power of two', () => {
@@ -77,18 +78,28 @@ describe('mergeRender', () => {
 });
 
 describe('lamp shadow pool', () => {
-  it('device cap: 4 on touch, dense screens or few cores, else 8', () => {
-    expect(deviceShadowCap({ touch: false, dpr: 1, cores: 8 })).toBe(8);
-    expect(deviceShadowCap({ touch: true, dpr: 1, cores: 8 })).toBe(4);
-    expect(deviceShadowCap({ touch: false, dpr: 3, cores: 8 })).toBe(4);
-    expect(deviceShadowCap({ touch: false, dpr: 1, cores: 4 })).toBe(4);
-    expect(deviceShadowCap({})).toBe(8);
+  it('device cap: desktop 6 at <= 1024; touch, dense screens or few cores 4 at 512', () => {
+    expect(deviceShadowCap({ touch: false, dpr: 1, cores: 8 })).toEqual({ max: 6, mapSize: 1024 });
+    expect(deviceShadowCap({ touch: true, dpr: 1, cores: 8 })).toEqual({ max: 4, mapSize: 512 });
+    expect(deviceShadowCap({ touch: false, dpr: 3, cores: 8 })).toEqual({ max: 4, mapSize: 512 });
+    expect(deviceShadowCap({ touch: false, dpr: 1, cores: 4 })).toEqual({ max: 4, mapSize: 512 });
+    expect(deviceShadowCap({})).toEqual({ max: 6, mapSize: 1024 });
   });
-  it('slots = min(recipe max, cap)', () => {
-    expect(lampShadowSlots(8, 8)).toBe(8);
-    expect(lampShadowSlots(8, 4)).toBe(4);
-    expect(lampShadowSlots(2, 8)).toBe(2);
-    expect(lampShadowSlots(0, 8)).toBe(0);
+  it('slots = min(recipe max, device max, texture units - 9)', () => {
+    const desk = { max: 6, mapSize: 1024 }, touch = { max: 4, mapSize: 512 };
+    expect(lampShadowSlots(8, desk, 32)).toBe(6);
+    expect(lampShadowSlots(8, touch, 32)).toBe(4);
+    expect(lampShadowSlots(2, desk, 32)).toBe(2);
+    expect(lampShadowSlots(0, desk, 32)).toBe(0);
+    expect(lampShadowSlots(6, desk, 16)).toBe(6); // 16 - 9 = 7 texture units left
+    expect(lampShadowSlots(6, desk, 12)).toBe(3);
+    expect(lampShadowSlots(6, desk, 8)).toBe(0);
+    expect(lampShadowSlots(6, desk, undefined)).toBe(6);
+  });
+  it('lamp map size: the recipe\'s, at most 1024 and the device cap', () => {
+    expect(lampMapSize(2048, { mapSize: 1024 })).toBe(1024);
+    expect(lampMapSize(1024, { mapSize: 512 })).toBe(512);
+    expect(lampMapSize(256, { mapSize: 1024 })).toBe(256);
   });
 });
 

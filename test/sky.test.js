@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { moonPosition, moonLight, moonLitRight, domeRadius, SUN_MIN_Y, sunPosition, sliderDate, snapMinutes, hhmm } from '../src/sky.js';
+import { moonPosition, moonLight, moonLitRight, domeRadius, SUN_MIN_Y, sunPosition, sliderDate, snapMinutes, hhmm, tzMinutes, SCRUB_IDLE_MS } from '../src/sky.js';
 
 // Reference: suncalc's published test values (2013-03-05 UTC, 50.5 N, 30.5 E):
 // getMoonPosition azimuth -0.9783999522438226 rad (from south), altitude 0.014551482243892251 rad;
@@ -132,6 +132,25 @@ describe('time scrubber helpers', () => {
     const now = new Date(2024, 5, 21, 17, 33, 12);
     const d = sliderDate(now, 6 * 60 + 15);
     expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()]).toEqual([2024, 5, 21, 6, 15, 0]);
+  });
+  it('sliderDate in the HA time zone (not the browser\'s)', () => {
+    const now = Date.UTC(2024, 5, 21, 23, 30); // 21 June 23:30 UTC = 22 June 02:30 in Helsinki (UTC+3)
+    expect(new Date(sliderDate(now, 6 * 60, 'Europe/Helsinki')).toISOString()).toBe('2024-06-22T03:00:00.000Z');
+    expect(new Date(sliderDate(now, 6 * 60, 'America/New_York')).toISOString()).toBe('2024-06-21T10:00:00.000Z');
+    expect(new Date(sliderDate(now, 12 * 60, 'UTC')).toISOString()).toBe('2024-06-21T12:00:00.000Z');
+    // DST change day (Europe/Amsterdam 31 March 2024, 02:00 -> 03:00): 12:00 is UTC+2
+    expect(new Date(sliderDate(Date.UTC(2024, 2, 31, 8), 12 * 60, 'Europe/Amsterdam')).toISOString()).toBe('2024-03-31T10:00:00.000Z');
+  });
+  it('sliderDate: an unknown time zone falls back to the browser\'s', () => {
+    const now = new Date(2024, 5, 21, 17, 33);
+    expect(sliderDate(now, 60, 'Not/AZone').getHours()).toBe(1);
+  });
+  it('tzMinutes: minutes since midnight in the zone', () => {
+    expect(tzMinutes(Date.UTC(2024, 5, 21, 23, 30), 'Europe/Helsinki')).toBe(150);
+    expect(tzMinutes(Date.UTC(2024, 5, 21, 23, 30), 'UTC')).toBe(23 * 60 + 30);
+  });
+  it('returns to live after 2 minutes idle', () => {
+    expect(SCRUB_IDLE_MS).toBe(120000);
   });
   it('snapMinutes: 15 min steps within 0..1440', () => {
     expect(snapMinutes(7)).toBe(0);
