@@ -8,7 +8,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/
 const view = args.view || '3d';
 // --logos=0 turns the integration logos off (they are on by default here, answered locally)
 const logos = args.logos !== '0';
-const { page, errors, close } = await openDemo({ view, floor: args.floor, logos: logos ? '1' : undefined }, undefined, { brands: logos });
+const { page, errors, close } = await openDemo({ view, floor: args.floor, logos: logos ? '1' : undefined }, undefined, { brands: logos, test: false });
 try {
   await new Promise((r) => setTimeout(r, 300));
   const stats = await page.evaluate(() => [...document.querySelectorAll('floorplan3d-card')].map((c) => ({

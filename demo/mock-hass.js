@@ -291,6 +291,14 @@ async function fetchWithAuth(url, init = {}) {
   return json(200, { size: buf.byteLength, version: digest.slice(0, 12), name: file.name });
 }
 
+// Headless checks reuse one page: stop the previous mock (its timer, uploaded models) before a new one.
+let mockTimer = null;
+export function resetMockHass() {
+  clearInterval(mockTimer);
+  mockTimer = null;
+  models.clear();
+}
+
 export function createMockHass({ onChange }) {
   let layoutStore = JSON.parse(JSON.stringify(DEMO_LAYOUT));
   let current;
@@ -329,7 +337,8 @@ export function createMockHass({ onChange }) {
 
   // mower drives a circle in the garden (~4 m radius)
   let t = 0;
-  setInterval(() => {
+  clearInterval(mockTimer);
+  mockTimer = setInterval(() => {
     if (window.__demoMowerPaused) return; // headless checks hold it still
     t += 0.06;
     const lat = 45.0 + (Math.sin(t) * 4) / 111320;

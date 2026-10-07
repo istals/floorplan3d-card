@@ -184,6 +184,10 @@ export function planToWorld(x, y, z, elevation = 0) {
   return new THREE.Vector3(x, elevation + z, -y);
 }
 
+// Headless test mode (the demo's ?test=1 sets window.__floorplan3dTest): cheaper rendering for the
+// checks: pixel ratio 1, small shadow maps and sky textures, no cloud drift. Never set in HA.
+export const testMode = () => typeof window !== 'undefined' && !!window.__floorplan3dTest;
+
 let glowTexture = null;
 function getGlowTexture() {
   if (glowTexture) return glowTexture;
@@ -206,17 +210,18 @@ let sunTexture = null;
 function getSunTexture() {
   if (sunTexture) return sunTexture;
   const c = document.createElement('canvas');
-  c.width = c.height = 128;
+  const n = testMode() ? 64 : 128, r = n / 2;
+  c.width = c.height = n;
   const g = c.getContext('2d');
   if (g) {
-    const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    const grad = g.createRadialGradient(r, r, 0, r, r, r);
     grad.addColorStop(0, 'rgba(255,252,236,1)');
     grad.addColorStop(0.42, 'rgba(255,240,196,1)');
     grad.addColorStop(0.5, 'rgba(255,214,140,0.55)');
     grad.addColorStop(0.7, 'rgba(255,190,110,0.18)');
     grad.addColorStop(1, 'rgba(255,180,100,0)');
     g.fillStyle = grad;
-    g.fillRect(0, 0, 128, 128);
+    g.fillRect(0, 0, n, n);
   }
   sunTexture = new THREE.CanvasTexture(c);
   sunTexture.colorSpace = THREE.SRGBColorSpace;
@@ -274,8 +279,10 @@ export class FloorplanView {
   constructor(container) {
     this.container = container;
     this.scene = new THREE.Scene();
+    // test mode: { drift } (checks of the cloud drift turn it back on); null in real use
+    this.test = testMode() ? { drift: false } : null;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.setPixelRatio(this.test ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.localClippingEnabled = true; // model cut-away
     this.labelRenderer = new CSS2DRenderer();
@@ -1241,7 +1248,8 @@ export class FloorplanView {
       this._applyLights();
       sun.castShadow = true; // stays on (toggling recompiles shaders); night = intensity 0
       sun.shadow.autoUpdate = false; // redrawn only when flagged, and only while the sun is up
-      sun.shadow.mapSize.set(2048, 2048);
+      const sm = this.test ? 512 : 2048;
+      sun.shadow.mapSize.set(sm, sm);
       sun.shadow.bias = -0.0005;
       sun.shadow.normalBias = 0.02; // against acne on roofs
       this._fitShadow();
@@ -2664,7 +2672,7 @@ export class FloorplanView {
   // card is on screen, the page visible and a cloud is inside the camera frustum.
   _driftClouds() {
     const w = this.weather;
-    if (!w.shown || !this.onScreen || this.mode === 'top' || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) { w.frameAt = 0; return; }
+    if (!w.shown || !this.onScreen || this.mode === 'top' || (this.test && !this.test.drift) || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) { w.frameAt = 0; return; }
     const now = performance.now();
     if (!w.frameAt) { w.frameAt = now; return; }
     if (now - w.frameAt < CLOUD_FRAME_MS) return;

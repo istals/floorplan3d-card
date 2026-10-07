@@ -22,14 +22,18 @@ export async function launch() {
   const server = http.createServer((req, res) => {
     const file = path.join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname));
     if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404).end(); return; }
-    res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' });
+    // validators like a real static server (the card's model cache versions URL models by them)
+    const st = fs.statSync(file);
+    res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream', 'content-length': st.size,
+      etag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`, 'last-modified': st.mtime.toUTCString() });
+    if (req.method === 'HEAD') { res.end(); return; }
     fs.createReadStream(file).pipe(res);
   }).listen(0);
   const browser = await puppeteer.launch({
     executablePath: findChrome(), headless: true,
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
   });
-  const close = async () => { await browser.close(); server.close(); };
+  const close = async () => { await browser.close(); server.closeAllConnections(); server.close(); }; // no keep-alive socket holds the process
   return { browser, base: `http://localhost:${server.address().port}`, close };
 }
 
@@ -63,20 +67,30 @@ export async function interceptBrands(page) {
   });
 }
 
-// Opens demo/index.html?query and waits for markers. Returns { page, errors, close }.
-// opts.brands: answer integration logo requests locally (interceptBrands).
+// demo/index.html?query; test mode (?test=1, cheaper rendering) unless test is false.
+export function demoUrl(base, query = {}, { test = true } = {}) {
+  const q = new URLSearchParams(Object.entries({ ...(test ? { test: '1' } : {}), ...query }).filter(([, v]) => v !== undefined));
+  return `${base}/demo/index.html?${q}`;
+}
+
+// Markers on the first card and two rendered frames after that.
+export async function waitForDemo(page) {
+  await page.waitForFunction(() => {
+    const c = document.querySelector('floorplan3d-card');
+    return c && c.shadowRoot && c.shadowRoot.querySelectorAll('.fp-marker').length > 0 && c._view && c._view.stats.frames > 0;
+  }, { timeout: 30000 }); // a loaded machine can take > 10 s for the first frame
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
+// Opens the demo and waits for markers. Returns { page, errors, close, browser, base }.
+// opts.brands: answer integration logo requests locally (interceptBrands); opts.test: false = real look.
 export async function openDemo(query = {}, viewport = { width: 1400, height: 560 }, opts = {}) {
   const { browser, base, close } = await launch();
   try {
     const { page, errors } = await newPage(browser, viewport);
     if (opts.brands) await interceptBrands(page);
-    const q = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined));
-    await page.goto(`${base}/demo/index.html?${q}`, { waitUntil: 'load', timeout: 120000 });
-    await page.waitForFunction(() => {
-      const c = document.querySelector('floorplan3d-card');
-      return c && c.shadowRoot && c.shadowRoot.querySelectorAll('.fp-marker').length > 0;
-    }, { timeout: 30000 }); // a loaded machine can take > 10 s for the first frame
-    await new Promise((r) => setTimeout(r, 500));
+    await page.goto(demoUrl(base, query, { test: opts.test !== false }), { waitUntil: 'load', timeout: 120000 });
+    await waitForDemo(page);
     return { page, errors, close, browser, base };
   } catch (e) {
     await close();

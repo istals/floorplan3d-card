@@ -31,7 +31,8 @@ export class ObjectLayer {
       const l = new THREE.PointLight(0xffffff, 0, 0, 2);
       if (i < SHADOWS) {
         l.castShadow = true; // never toggled later (a toggle recompiles every shader)
-        l.shadow.mapSize.set(512, 512);
+        const sm = view.test ? 256 : 512; // headless test mode: smaller lamp shadow maps
+        l.shadow.mapSize.set(sm, sm);
         l.shadow.bias = -0.004;
         l.shadow.camera.near = 0.15;
         l.shadow.autoUpdate = false; // re-rendered only when flagged (needsUpdate)

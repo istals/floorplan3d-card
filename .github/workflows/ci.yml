@@ -18,8 +18,8 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - name: Headless browser checks (demo, edit mode, model, mower map benchmark)
-        run: node scripts/screenshot.mjs && node scripts/edit-check.mjs && (node scripts/model-check.mjs || (echo "model-check retry (slow shared runner timing)" && node scripts/model-check.mjs)) && (node scripts/perf-check.mjs || (echo "perf-check retry (slow shared runner timing)" && node scripts/perf-check.mjs))
+      - name: Headless browser checks (demo, edit mode, mower map benchmark)
+        run: node scripts/screenshot.mjs && node scripts/edit-check.mjs && (node scripts/perf-check.mjs || (echo "perf-check retry (slow shared runner timing)" && node scripts/perf-check.mjs))
         env:
           CHROME_PATH: /usr/bin/google-chrome
       - uses: actions/upload-artifact@v4
@@ -29,6 +29,32 @@ jobs:
           path: |
             dist/floorplan3d-card.js
             screenshots/
+
+  # the model checks in 3 shards (section groups), each retried once on a slow shared runner
+  model-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Model checks (shard ${{ matrix.shard }} of 3)
+        run: node scripts/model-check.mjs --shard ${{ matrix.shard }}/3 || (echo "model-check retry (slow shared runner timing)" && node scripts/model-check.mjs --shard ${{ matrix.shard }}/3)
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: model-check-${{ matrix.shard }}
+          path: screenshots/
+          if-no-files-found: ignore
 
   integration:
     runs-on: ubuntu-latest
