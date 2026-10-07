@@ -461,6 +461,55 @@ sections.add('render-default', { group: 'model', query: { model: '1', view: '3d'
   check('render: default ignores the recipe (exposure 1.25, fov 35, 4 lamp shadows)', r.exposure === 1.25 && r.fov === 35 && r.from === null && r.shadows === 4 && r.points === 8, JSON.stringify(r));
 });
 
+// 1c. sun time scrubber (Auto): 03:00 / 06:00 / 12:00 today from the HA location (sunPosition), shadows once it settles
+sections.add('sun-time', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
+  await page.evaluate('window.__demoMowerPaused = true');
+  // a June day in a fixed time zone (the page is shared: both are put back at the end)
+  await page.emulateTimezone('Europe/Amsterdam');
+  await page.evaluate('window.__demoNow = new Date(2024, 5, 21, 9, 0).getTime()');
+  try { await sunTimeChecks(page); } finally {
+    await page.evaluate(`(() => { window.__demoNow = undefined; ${card}.setSunTime(null); })()`).catch(() => {});
+    await page.emulateTimezone().catch(() => {});
+  }
+});
+async function sunTimeChecks(page) {
+  for (let i = 0; i < 3 && (await page.evaluate(`${card}._skyMode`)) !== 'auto'; i++) await page.evaluate(`${card}.shadowRoot.querySelector('button.daynight').click()`);
+  await idle(page);
+  const btn = await page.evaluate(`(() => { const b = ${card}.shadowRoot.querySelector('button.suntime'); return !!b && !b.hidden; })()`);
+  check('sun time button shown in Auto with a model (3D)', btn);
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.suntime').click()`);
+  const pop = await page.evaluate(`!${card}.shadowRoot.querySelector('.fp-suntime').hidden`);
+  check('sun time popover opens', pop);
+  const at = async (min) => {
+    await page.evaluate(`(() => { const r = ${card}.shadowRoot.querySelector('.fp-suntime input'); r.value = '${min}'; r.dispatchEvent(new Event('change')); })()`);
+    await idle(page);
+    return page.evaluate(`(() => { const c = ${card}, v = c._view; return { sun: c._sunNow, night: v.sky.night, light: v.sun.intensity, label: c.shadowRoot.querySelector('button.suntime .t').textContent }; })()`);
+  };
+  const { sunPosition } = await import('../src/sky.js');
+  const ref = (t) => sunPosition(t, 52.0, 5.0);
+  const t3 = await at(180), t6 = await at(360), t12 = await at(720);
+  const ok = (r) => r.sun && Math.abs(r.sun.elevation - ref(r.sun.at).elevation) < 0.01 && Math.abs(r.sun.azimuth - ref(r.sun.at).azimuth) < 0.01;
+  check('scrubbed sun = sunPosition(HA location, today at the time)', ok(t3) && ok(t6) && ok(t12), JSON.stringify({ t3, t6, t12 }));
+  check('03:00 in June: sun below the horizon (night)', t3.sun.elevation < 0 && t3.night > 0.5 && t3.light === 0, JSON.stringify(t3));
+  check('06:00: low sun (0..20 deg, east)', t6.sun.elevation > 0 && t6.sun.elevation < 20 && t6.sun.azimuth > 45 && t6.sun.azimuth < 100, JSON.stringify(t6));
+  check('12:00: high sun (> 55 deg), brighter than 06:00', t12.sun.elevation > 55 && t12.light >= t6.light && t12.night === 0, JSON.stringify(t12));
+  check('button shows the scrubbed time', t12.label === '12:00', t12.label);
+  // dragging: lights now, sun shadow map 150 ms after the last move
+  const n0 = await page.evaluate(`${card}._view.stats.shadowLights`);
+  await page.evaluate(`(() => { const r = ${card}.shadowRoot.querySelector('.fp-suntime input'); r.value = '600'; r.dispatchEvent(new Event('input')); })()`);
+  const mid = await page.evaluate(`({ n: ${card}._view.stats.shadowLights, stale: ${card}._view._sunStale, el: ${card}._sunNow.elevation })`);
+  check('dragging: the sun moves, its shadow map waits', mid.n === n0 && mid.stale === true && Math.abs(mid.el - t12.sun.elevation) > 1, JSON.stringify({ n0, mid }));
+  await page.waitForFunction(`${card}._view.stats.shadowLights > ${n0}`, { timeout: 3000 }).catch(() => {});
+  const after = await page.evaluate(`({ n: ${card}._view.stats.shadowLights, stale: ${card}._view._sunStale })`);
+  check('settled (150 ms): the sun shadow map redrawn once', after.n === n0 + 1 && after.stale === false, JSON.stringify(after));
+  await page.evaluate(`${card}.shadowRoot.querySelector('.fp-suntime button.now').click()`);
+  await idle(page);
+  const live = await page.evaluate(`({ t: ${card}._sunTime, pop: ${card}.shadowRoot.querySelector('.fp-suntime').hidden, label: ${card}.shadowRoot.querySelector('button.suntime .t').textContent })`);
+  check('Now: back to the live sun, popover closed', live.t === null && live.pop === true && live.label === '', JSON.stringify(live));
+}
+
 sections.add('weather', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });

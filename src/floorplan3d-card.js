@@ -31,7 +31,7 @@ import { DebugOverlay } from './debug-overlay.js';
 import { ModelLoadUI, LOAD_STYLE } from './load-ui.js';
 import { loadModelBuffer, layoutModelVersion, headerVersion } from './model-cache.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, layoutTags, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
-import { moonPosition } from './sky.js';
+import { moonPosition, sunPosition, sliderDate, snapMinutes, hhmm } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
 import { ObjectPopup, actionTarget, toggleCall } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
@@ -277,6 +277,18 @@ const STYLE = `
   button.daynight { font: inherit; font-size: 15px; line-height: 1; cursor: pointer; padding: 5px 10px; border-radius: 16px;
     border: 1px solid var(--divider-color, rgba(0,0,0,.12)); background: var(--card-background-color, #fff);
     color: var(--primary-text-color); display: flex; align-items: center; --mdc-icon-size: 17px; }
+  button.suntime { font: inherit; font-size: 12px; line-height: 1; cursor: pointer; padding: 5px 8px; border-radius: 16px; gap: 4px;
+    border: 1px solid var(--divider-color, rgba(0,0,0,.12)); background: var(--card-background-color, #fff);
+    color: var(--primary-text-color); display: flex; align-items: center; --mdc-icon-size: 15px; }
+  button.suntime[hidden], .fp-suntime[hidden] { display: none; }
+  button.suntime.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+  .fp-suntime { position: absolute; top: 46px; right: 8px; z-index: 6; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-radius: 12px; background: var(--card-background-color, #fff); color: var(--primary-text-color);
+    border: 1px solid var(--divider-color, rgba(0,0,0,.12)); box-shadow: 0 2px 8px rgba(0,0,0,.2); font-size: 13px; }
+  .fp-suntime input { width: min(220px, 50vw); accent-color: var(--primary-color); }
+  .fp-suntime .time { font-variant-numeric: tabular-nums; min-width: 3em; }
+  .fp-suntime button { font: inherit; cursor: pointer; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--divider-color, rgba(0,0,0,.12));
+    background: transparent; color: var(--primary-text-color); }
   .editing button.edit { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
 
   .fp-handle { box-sizing: border-box; width: 13px; height: 13px; border-radius: 50%; pointer-events: auto; cursor: grab;
@@ -460,6 +472,7 @@ class Floorplan3dCard extends HTMLElement {
     this._mode = '3d';
     this._daylight = true;
     this._skyMode = readSkyMode();
+    this._sunTime = null; // time scrubber: minutes today, null = live (session only)
     this._skyLast = null;
     this._section = false; // side section toggle
     this._sectionPreview = null; // Views tab slider: plane shown while dragging
@@ -815,8 +828,10 @@ class Floorplan3dCard extends HTMLElement {
               <button class="reset" title="Reset view"><ha-icon icon="mdi:crosshairs-gps"></ha-icon></button>
               <button class="section" hidden title="Side section"><ha-icon icon="mdi:box-cutter"></ha-icon></button>
               <button class="daynight" hidden title="Day / night: auto"><ha-icon icon="mdi:theme-light-dark"></ha-icon></button>
+              <button class="suntime" hidden title="Sun time (today)"><ha-icon icon="mdi:clock-outline"></ha-icon><span class="t"></span></button>
               <button class="edit" hidden title="Edit floorplan"><ha-icon icon="mdi:pencil"></ha-icon><span>Edit</span></button>
             </div>
+            <div class="fp-suntime" hidden><input type="range" min="0" max="1440" step="15" aria-label="Sun time"><span class="time"></span><button class="now">Now</button></div>
             <div class="empty" hidden></div>
             <div class="notice" hidden></div>
             <div class="fp-toast" hidden></div>
@@ -847,9 +862,26 @@ class Floorplan3dCard extends HTMLElement {
     this._dayBtn.addEventListener('click', () => {
       this._skyMode = { auto: 'day', day: 'night', night: 'auto' }[this._skyMode];
       try { localStorage.setItem('floorplan3d.sky', this._skyMode); } catch (e) { /* private mode */ }
+      this._sunTime = null; // the time scrubber is for Auto only
+      this._sunPop.hidden = true;
       this._applySky(true);
       this._syncToolbar();
     });
+    // sun time scrubber (Auto): today 00:00-24:00 in 15 min steps, session only; shadows once it settles (150 ms)
+    this._sunBtn = root.querySelector('button.suntime');
+    this._sunPop = root.querySelector('.fp-suntime');
+    const range = this._sunPop.querySelector('input');
+    this._sunBtn.addEventListener('click', () => {
+      this._sunPop.hidden = !this._sunPop.hidden;
+      if (!this._sunPop.hidden && this._sunTime === null) {
+        const d = new Date(this._now());
+        range.value = String(snapMinutes(d.getHours() * 60 + d.getMinutes()));
+        this._sunPop.querySelector('.time').textContent = 'Now';
+      }
+    });
+    range.addEventListener('input', () => this.setSunTime(Number(range.value), { settle: false }));
+    range.addEventListener('change', () => this.setSunTime(Number(range.value)));
+    this._sunPop.querySelector('button.now').addEventListener('click', () => this.setSunTime(null));
     this._editBtn.addEventListener('click', () => this._toggleEdit());
     this._view = new FloorplanView(this._stage);
     this._loadUI = new ModelLoadUI({
@@ -3000,6 +3032,37 @@ class Floorplan3dCard extends HTMLElement {
     this._loadUI.changed();
   }
 
+  // Time scrubber: minutes today (0..1440, 15 min steps) or null = live sun.sun. settle false (dragging):
+  // light and sky move now, the sun's shadow map follows 150 ms after the last move.
+  setSunTime(minutes, { settle = true } = {}) {
+    clearTimeout(this._sunSettle);
+    this._sunTime = minutes === null || minutes === undefined ? null : snapMinutes(minutes);
+    if (this._sunPop) {
+      this._sunPop.querySelector('.time').textContent = this._sunTime === null ? 'Now' : hhmm(this._sunTime);
+      if (this._sunTime === null) this._sunPop.hidden = true;
+      else this._sunPop.querySelector('input').value = String(this._sunTime);
+    }
+    if (settle) this._applySky(true);
+    else {
+      this._applySky(true, { shadow: false });
+      this._sunSettle = setTimeout(() => this._applySky(true), 150);
+    }
+    this._syncToolbar();
+  }
+
+  _paintSunBtn() {
+    if (!this._sunBtn) return;
+    const c = this._hass && this._hass.config;
+    const located = !!c && Number.isFinite(Number(c.latitude)) && Number.isFinite(Number(c.longitude)) && c.latitude !== undefined && c.longitude !== undefined;
+    const show = !!(this._view && this._view.model) && this._mode === '3d' && this._skyMode === 'auto' && located;
+    this._sunBtn.hidden = !show;
+    if (!show) this._sunPop.hidden = true;
+    const scrub = this._sunTime !== null && this._sunTime !== undefined;
+    this._sunBtn.classList.toggle('on', scrub);
+    const t = this._sunBtn.querySelector('.t'), txt = scrub ? hhmm(this._sunTime) : '';
+    if (t.textContent !== txt) t.textContent = txt;
+  }
+
   _paintDayBtn() {
     const icon = { auto: 'mdi:theme-light-dark', day: 'mdi:white-balance-sunny', night: 'mdi:weather-night' }[this._skyMode];
     const el = this._dayBtn.querySelector('ha-icon');
@@ -3009,9 +3072,12 @@ class Floorplan3dCard extends HTMLElement {
 
   // Auto reads sun.sun; setSky only when night moved > 0.01 or the sun > 1 degree since the last call.
   // Sun / moon sprites: with the sun change, else the moon at most every 60 s (option sky_bodies).
-  _applySky(force) {
+  _applySky(force, { shadow = true } = {}) {
     const v = this._view;
     if (!v || !v.model) return;
+    const c = this._hass && this._hass.config;
+    const scrub = this._sunTime !== null && this._sunTime !== undefined && !!c;
+    const at = scrub ? sliderDate(this._now(), this._sunTime).getTime() : null; // the scrubbed time, today
     const north = v.model.north || 0, rot = this._modelAlign().rotation || 0;
     let sky = { night: 0, sunDir: null }, sunBody = null, auto = false;
     if (this._skyMode === 'night') sky = { night: 1, sunDir: null };
@@ -3019,7 +3085,9 @@ class Floorplan3dCard extends HTMLElement {
     else {
       auto = true;
       const a = this._hass && this._hass.states && this._hass.states['sun.sun'];
-      const el = a ? Number(a.attributes.elevation) : NaN, az = a ? Number(a.attributes.azimuth) : NaN;
+      const sp = scrub ? sunPosition(at, Number(c.latitude), Number(c.longitude)) : null;
+      const el = sp ? sp.elevation : a ? Number(a.attributes.elevation) : NaN, az = sp ? sp.azimuth : a ? Number(a.attributes.azimuth) : NaN;
+      this._sunNow = Number.isFinite(el) && Number.isFinite(az) ? { elevation: el, azimuth: az, at } : null; // for the checks
       if (Number.isFinite(el) && Number.isFinite(az)) {
         const dir = sunVector(az, el, north, rot);
         sky = { night: nightFactor(el), sunDir: clampSunDir(dir), sun: sunStrength(el) };
@@ -3034,13 +3102,12 @@ class Floorplan3dCard extends HTMLElement {
     if (!same) {
       this._skyLast = sky;
       this._daylight = sky.night < 0.5;
-      v.setSky(sky);
+      v.setSky(sky, { shadow });
     }
     let moonBody = null;
     if (this._skyMode === 'night') moonBody = { dir: sunVector(...NIGHT_MOON, north, rot), phase: 0.4, illumination: 0.8 };
     else if (auto) {
-      const c = this._hass && this._hass.config;
-      const m = c ? moonPosition(now, Number(c.latitude), Number(c.longitude)) : null;
+      const m = c ? moonPosition(scrub ? at : now, Number(c.latitude), Number(c.longitude)) : null;
       if (m) moonBody = { dir: sunVector(m.azimuth, m.elevation, north, rot), phase: m.phase, illumination: m.illumination, latitude: Number(c.latitude) };
     }
     this._moonAt = now;
@@ -3104,6 +3171,7 @@ class Floorplan3dCard extends HTMLElement {
       this._sectionBtn.classList.toggle('on', !!this._section);
     }
     this._paintDayBtn();
+    this._paintSunBtn();
     this._editBtn.hidden = !(this._hass && this._hass.user && this._hass.user.is_admin);
     this._editBtn.querySelector('span').textContent = this._editing ? 'Done' : 'Edit';
     if (this._empty && this._editing) this._empty.hidden = true;

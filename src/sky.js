@@ -1,4 +1,4 @@
-// Sun / moon in the sky: moon position and phase (low precision, the suncalc formulas:
+// Sun / moon in the sky: sun position, moon position and phase (low precision, the suncalc formulas:
 // https://github.com/mourner/suncalc, after "Astronomy Answers" by Aa. Kirsch), moonlight strength.
 
 const RAD = Math.PI / 180;
@@ -57,6 +57,31 @@ export function moonPosition(date, latDeg, lonDeg) {
     illumination: (1 + Math.cos(inc)) / 2,
   };
 }
+
+// Sun position (suncalc formulas): date Date or ms, lat / lon degrees -> { azimuth (deg from north,
+// clockwise, 0..360), elevation (deg, geometric: no refraction, so it stays smooth across the horizon) }
+// or null without a valid time / location.
+export function sunPosition(date, latDeg, lonDeg) {
+  const ms = date instanceof Date ? date.getTime() : Number(date);
+  if (!Number.isFinite(ms) || !Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) return null;
+  const d = toDays(ms), phi = RAD * latDeg, lw = RAD * -lonDeg;
+  const c = sunCoords(d);
+  const H = siderealTime(d, lw) - c.ra;
+  const h = Math.asin(Math.sin(phi) * Math.sin(c.dec) + Math.cos(phi) * Math.cos(c.dec) * Math.cos(H));
+  const azSouth = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(phi) - Math.tan(c.dec) * Math.cos(phi));
+  return { azimuth: (((azSouth / RAD + 180) % 360) + 360) % 360, elevation: h / RAD };
+}
+
+// Time scrubber (session only): minutes 0..1440 in 15 min steps on today's local date.
+export const SCRUB_STEP_MIN = 15;
+export const snapMinutes = (m) => Math.min(1440, Math.max(0, Math.round((Number(m) || 0) / SCRUB_STEP_MIN) * SCRUB_STEP_MIN));
+export function sliderDate(now, minutes) {
+  const d = new Date(now instanceof Date ? now.getTime() : Number(now));
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(minutes);
+  return d;
+}
+export const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 // Moonlight intensity: night (0..1) > 0.5 and the moon above the horizon (dir[1] > 0, world up).
 export function moonLight(night, moon) {
