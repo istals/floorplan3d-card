@@ -15,10 +15,39 @@ const DOWN_RANGE = 6, UP_RANGE = 3, AIM_RANGE = 8;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
 
-// 'down' (default), 'up', 'point' (an oval around the lamp) or 'spot' (a pool where it aims), from the model's hints.beam
+// 'down' (default), 'up', 'both' (updown), 'point' (an oval around the lamp) or 'spot' (a pool where it aims),
+// from the model's hints.beam
 export function washKind(hints) {
   const b = hints && hints.beam;
+  if (b === 'updown' || b === 'both') return 'both';
   return b === 'up' || b === 'point' || b === 'spot' ? b : 'down';
+}
+
+// "Light on wall" settings (layout.objects[id].wash, layout.tags[name].wash).
+export const WASH_DIRS = ['down', 'up', 'both', 'none'];
+export const washSetting = (v) => (WASH_DIRS.includes(v) ? v : null);
+
+// The wash kind of a lamp: its own setting, else the first of its tags with a setting, else the model's beam.
+export function resolveWash(hints, own, tagNames, tagSettings) {
+  const o = washSetting(own);
+  if (o) return o;
+  for (const t of Array.isArray(tagNames) ? tagNames : []) {
+    const s = tagSettings && Object.prototype.hasOwnProperty.call(tagSettings, t) && tagSettings[t] ? washSetting(tagSettings[t].wash) : null;
+    if (s) return s;
+  }
+  return washKind(hints);
+}
+
+// The real point light kept at least `min` m off the wall it faces (no hot spot on the wall / door right behind it).
+// wall: { point, normal (towards the lamp) } or null; returns a new [x, y, z].
+export function clearOfWall(pos, wall, min = 0.15) {
+  const p = toArr(pos).slice();
+  if (!wall) return p;
+  const w = toArr(wall.point), n = toArr(wall.normal);
+  const len = Math.hypot(n[0], n[1], n[2]) || 1;
+  const d = ((p[0] - w[0]) * n[0] + (p[1] - w[1]) * n[1] + (p[2] - w[2]) * n[2]) / len;
+  if (d >= min) return p;
+  return p.map((v, i) => v + (n[i] / len) * (min - d));
 }
 
 // Decal size (m) from hints.max (strength) and hints.distance (reach).
@@ -85,6 +114,13 @@ export function placeWash(kind, anchor, size, { wall = null, floor = null, ceili
   }
   if (kind === 'up') return ceiling ? pool(ceiling, 'ceiling') : null;
   return floor ? pool(floor, 'floor') : null;
+}
+
+// Every wash quad of a lamp: 'both' = a down and an up wash (two quads, each with its own cone), 'none' = none.
+export function placeWashes(kind, anchor, size, surfaces = {}) {
+  if (kind === 'none') return [];
+  const kinds = kind === 'both' ? ['down', 'up'] : [kind];
+  return kinds.map((k) => placeWash(k, anchor, size, surfaces)).filter(Boolean);
 }
 
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -158,8 +194,13 @@ export class WashLayer {
   }
 
   // The wash surfaces around a lamp at world point a: rays through the view's model surfaces.
-  // aimDir: a spot's direction (world, unit) or null.
-  static surfaces(view, a, kind, aimDir = null) {
+  // The nearest wall around world point a (horizontal rays within WALL_REACH) or null.
+  static wall(view, a) {
+    return chooseWall(view.surfaceRays([a.x, a.y, a.z], HORIZONTAL_DIRS, WALL_REACH));
+  }
+
+  // aimDir: a spot's direction (world, unit) or null. wall: a cached wall hit (undefined: cast the rays).
+  static surfaces(view, a, kind, aimDir = null, wall = undefined) {
     const p = [a.x, a.y, a.z];
     const flat = (hits) => { const h = hits[0]; return h && Math.abs(h.normal[1]) > FLAT_NY ? h : null; };
     const out = { wall: null, floor: null, ceiling: null, aim: null };
@@ -168,9 +209,9 @@ export class WashLayer {
       if (!out.aim) out.floor = flat(view.surfaceRays(p, DOWN_DIR, DOWN_RANGE));
       return out;
     }
-    out.wall = kind === 'up' || kind === 'down' || kind === 'point' ? chooseWall(view.surfaceRays(p, HORIZONTAL_DIRS, WALL_REACH)) : null;
+    out.wall = wall !== undefined ? wall : WashLayer.wall(view, a);
     if (kind !== 'up') out.floor = flat(view.surfaceRays(p, DOWN_DIR, DOWN_RANGE));
-    if (kind === 'up' && !out.wall) out.ceiling = flat(view.surfaceRays(p, UP_DIR, UP_RANGE));
+    if ((kind === 'up' || kind === 'both') && !out.wall) out.ceiling = flat(view.surfaceRays(p, UP_DIR, UP_RANGE));
     return out;
   }
 

@@ -1274,7 +1274,8 @@ try {
   await page.evaluate('window.__setDemoSun(-25, 0)'); // night
   await sleep(800);
   const W = () => page.evaluate(`(() => { const c = ${card}, l = c._objects; return { shown: [...l.washes.meshes].filter((m) => m.visible).length,
-    walls: [...l.parts].filter(([, p]) => p.wash && p.wash.placement && p.wash.placement.surface === 'wall' && p.wash.mesh.visible).map(([id]) => id),
+    walls: [...l.parts].filter(([, p]) => p.wash && p.wash.placements.some((pl, i) => pl.surface === 'wall' && p.wash.meshes[i].visible)).map(([id]) => id),
+    quads: Object.fromEntries([...l.parts].filter(([, p]) => p.wash).map(([id, p]) => [id, p.wash.meshes.filter((m) => m.visible).length])),
     made: l.washes.stats.created, programs: c._view.renderer.info.programs.length }; })()`);
   let w = await W();
   check('washes: lit facade lamps and uplights wash the south wall', ['facade_1', 'facade_3', 'wall_uplight_1', 'wall_uplight_2'].every((id) => w.walls.includes(id)), JSON.stringify(w));
@@ -1290,6 +1291,43 @@ try {
   await sleep(300);
   w = await W();
   check('washes: controller off hides the facade washes', !w.walls.some((id) => id.startsWith('facade_')), JSON.stringify(w.walls));
+  // Light on wall: tag facade = both -> two quads (down + up) per lit facade lamp, no new shader program
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_on', { entity_id: 'switch.demo_facade' })`);
+  await page.evaluate(`${card}._commit({ ...${card}._layout, tags: { ...${card}._layout.tags, facade: { ...(${card}._layout.tags || {}).facade, wash: 'both' } } })`);
+  await sleep(600);
+  w = await W();
+  // facade_2 has no wall within reach and nothing under it (no wash at all, as before)
+  check('Light on wall: tag facade = both -> 2 wash quads per lit facade lamp', ['facade_1', 'facade_3'].every((id) => w.quads[id] === 2), JSON.stringify(w.quads));
+  const progsBoth = w.programs;
+  for (let i = 0; i < 4; i++) {
+    await page.evaluate(`${card}._hass.callService('switch', 'toggle', { entity_id: 'switch.demo_facade' })`);
+    await sleep(250);
+  }
+  w = await W();
+  check('Light on wall: both keeps the shader programs constant (toggling too)', w.programs === progs && w.programs === progsBoth, JSON.stringify({ progs, progsBoth, now: w.programs }));
+  // the object's own setting wins over its tag
+  await page.evaluate(`${card}._commit({ ...${card}._layout, objects: { ...${card}._layout.objects, facade_2: { ...((${card}._layout.objects || {}).facade_2 || {}), wash: 'none' } } })`);
+  await sleep(500);
+  w = await W();
+  check('Light on wall: object none beats tag both', w.quads.facade_2 === 0 && w.quads.facade_1 === 2, JSON.stringify(w.quads));
+  // the point light keeps 0.15 m off the wall it faces (no hot spot on the wall / door behind it)
+  const gap = await page.evaluate(`(() => { const l = ${card}._objects; let worst = Infinity; for (const [id, s] of l._slots) {
+    const p = l.parts.get(id), h = p.wallHit && p.wallHit.hit; if (!h || s.light.isSpotLight) continue;
+    const d = (s.light.position.x - h.point[0]) * h.normal[0] + (s.light.position.y - h.point[1]) * h.normal[1] + (s.light.position.z - h.point[2]) * h.normal[2];
+    worst = Math.min(worst, d); } return worst; })()`);
+  check('real point lights stay >= 0.15 m off their wall', gap === Infinity || gap >= 0.149, String(gap));
+  await page.evaluate(`${card}._commit({ ...${card}._layout, objects: { ...${card}._layout.objects, facade_2: (({ wash, ...r }) => r)((${card}._layout.objects || {}).facade_2 || {}) } })`);
+  await sleep(500);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'washes-both-night.png') });
+  // glare: a large glow mesh (the 3 m kitchen strip) glows less per level than a small bulb
+  await page.evaluate(`${card}._hass.callService('light', 'turn_on', { entity_id: 'light.demo_strip', brightness: 255 })`);
+  await page.evaluate(`${card}._hass.callService('light', 'turn_on', { entity_id: 'light.demo_living', brightness: 255 })`);
+  await sleep(400);
+  const glare = await page.evaluate(`(() => { const l = ${card}._objects, k = (id) => { const p = l.parts.get(id), m = p.part.glow.material;
+    return (Array.isArray(m) ? m[0] : m).emissiveIntensity / (3 * p.result.level); }; return { strip: k('kitchen_strip'), bulb: k('lamp_living') }; })()`);
+  check('glare: the large strip glow gets a lower emissive intensity than the small bulb', glare.bulb === 1 && glare.strip < 0.5, JSON.stringify(glare));
+  await page.evaluate(`${card}._hass.callService('switch', 'turn_off', { entity_id: 'switch.demo_facade' })`); // as the tap hint checks expect
+  await sleep(300);
   // tap hints: always -> dots; facade hollow while its controller is off; a tap says why
   await page.evaluate(`${card}._commit({ ...${card}._layout, tap_hints: 'always' })`);
   await sleep(400);

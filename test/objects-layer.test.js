@@ -23,7 +23,7 @@ function model(lamps) {
   const objects = lamps.map((l) => {
     const node = new THREE.Group();
     node.position.set(l.x, 2, 0);
-    const glow = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshStandardMaterial());
+    const glow = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), new THREE.MeshStandardMaterial());
     glow.name = 'glow';
     node.add(glow);
     level.add(node);
@@ -383,5 +383,55 @@ describe('ObjectLayer', () => {
     expect(led.emissive.g).toBeGreaterThan(led.emissive.r);
     layer.update({ 'lawn_mower.m': st('mowing') }, ctx);
     expect(led.emissiveIntensity).toBe(0);
+  });
+
+  describe('Light on wall (washes) and the wall clearance', () => {
+    // a wall at z = -0.05 behind every lamp and a floor at y = 0
+    const withSurfaces = (v) => Object.assign(v, {
+      surfaceRays(p, dirs) {
+        const out = [];
+        for (const d of dirs) {
+          if (d[2] < -0.5) { const t = (p[2] + 0.05) / -d[2]; out.push({ point: [p[0] + d[0] * t, p[1], -0.05], normal: [0, 0, 1], distance: t, dir: d }); }
+          if (d[1] < -0.5) out.push({ point: [p[0], 0, p[2]], normal: [0, 1, 0], distance: p[1], dir: d });
+        }
+        return out;
+      },
+    });
+    const shownWashes = (l, id) => l.parts.get(id).wash.meshes.filter((m) => m.visible).map((m) => m.material);
+
+    it('a point light is kept 0.15 m off the wall it faces', () => {
+      withSurfaces(view);
+      const m = model([{ id: 'a', x: 3, hints: { beam: 'down', max: 5 } }]);
+      layer.setModel(m);
+      layer.setBindings(bind([['a', 'light.a']]), {});
+      layer.update({ 'light.a': st('on') }, ctx);
+      const on = lit(points(layer));
+      expect(on[0].position.x).toBeCloseTo(3);
+      expect(on[0].position.z).toBeCloseTo(0.1);
+    });
+
+    it('object > tag > model: tag both draws two quads (down + up), the object setting wins', () => {
+      withSurfaces(view);
+      const m = model([{ id: 'a', x: 1, group: 'facade', hints: { beam: 'down', max: 5 } }, { id: 'b', x: 4, group: 'facade', hints: { beam: 'down', max: 5 } }]);
+      layer.setModel(m);
+      const b = bind([['a', 'light.a'], ['b', 'light.a']]);
+      for (const v of b.values()) v.tags = ['facade'];
+      layer.setBindings(b, {}, { objects: {}, tags: {} });
+      const on = { 'light.a': st('on') };
+      layer.update(on, ctx);
+      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down]);
+      layer.setBindings(new Map(b), {}, { objects: { b: { wash: 'none' } }, tags: { facade: { wash: 'both' } } });
+      layer.update(on, ctx);
+      expect(layer.washKindOf('a')).toBe('both');
+      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down, layer.washes.materials.up]);
+      expect(shownWashes(layer, 'b')).toEqual([]);
+      const made = layer.washes.stats.created;
+      layer.update({ 'light.a': st('off') }, ctx);
+      layer.update(on, ctx);
+      expect(layer.washes.stats.created).toBe(made);
+      layer.setBindings(new Map(b), {}, { objects: { a: { wash: 'up' } }, tags: { facade: { wash: 'both' } } });
+      layer.update(on, ctx);
+      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.up]);
+    });
   });
 });

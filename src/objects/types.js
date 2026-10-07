@@ -24,6 +24,23 @@ export function hintDefaults(hints) {
   };
 }
 
+// Glow emissive strength by the glow mesh's size (world bounding-sphere diameter, m): small bulbs at full
+// strength, large shades dimmed (they stay coloured instead of blowing out to white).
+export const GLOW_REF = 0.12;
+export function glowEmissiveScale(size) {
+  if (!fin(size) || size <= 0) return 1;
+  return Math.min(1, Math.max(0.25, Math.pow(GLOW_REF / size, 0.7)));
+}
+
+// World bounding-sphere diameter of a mesh (0 without geometry).
+function glowSize(mesh) {
+  const g = mesh.geometry;
+  if (!g || !g.attributes || !g.attributes.position) return 0;
+  g.computeBoundingSphere(); // the true sphere (GLTFLoader's comes from the box: √3 too large for a round bulb)
+  mesh.updateWorldMatrix(true, false);
+  return g.boundingSphere.clone().applyMatrix4(mesh.matrixWorld).radius * 2;
+}
+
 const nameOf = (n) => (n.userData && n.userData.name) || n.name || '';
 
 // First node named `name` (userData.name or name) under node, resolved to a mesh (itself or its first mesh).
@@ -78,7 +95,7 @@ function claimGlow(part, glow) {
       return c;
     });
     glow.material = Array.isArray(original) ? clones : clones[0];
-    entry = { original, clones, owners: new Set() };
+    entry = { original, clones, owners: new Set(), scale: glowEmissiveScale(glowSize(glow)) };
     shared.set(glow, entry);
   }
   entry.owners.add(part);
@@ -101,7 +118,7 @@ function paint(glow) {
   const level = best ? best.level : 0, c = (best && best.color) || [0, 0, 0];
   for (const m of entry.clones) {
     if (m.emissive) m.emissive.setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace);
-    m.emissiveIntensity = level * 3;
+    m.emissiveIntensity = level * 3 * entry.scale;
   }
 }
 

@@ -82,7 +82,7 @@ describe('types', () => {
     const node = new THREE.Group();
     node.position.set(2, 1, 0);
     const mat = new THREE.MeshStandardMaterial({ emissive: 0x333333, emissiveIntensity: 1 });
-    const glow = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), mat);
+    const glow = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), mat);
     glow.name = 'glow';
     glow.position.set(0, 0.5, 0);
     node.add(glow);
@@ -102,6 +102,20 @@ describe('types', () => {
     expect(part.pool).toBe(true);
     TYPES.light.dispose(part);
     expect(glow.material).toBe(mat);
+  });
+
+  it('light: a large glow mesh (a shade) gets a lower emissive intensity than a small bulb', () => {
+    const { root, node, glow } = lamp();
+    const big = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 6), new THREE.MeshStandardMaterial());
+    big.name = 'shade';
+    node.add(big);
+    const on = { state: 'on', attributes: { brightness: 255 } };
+    const small = TYPES.light.prepare({ id: 's', type: 'light', node, hints: {} }, { root });
+    const large = TYPES.light.prepare({ id: 'b', type: 'light', node, glow: 'shade', hints: {} }, { root });
+    TYPES.light.update(small, { lit: true, source: on });
+    TYPES.light.update(large, { lit: true, source: on });
+    expect(glow.material.emissiveIntensity).toBe(3);
+    expect(big.material.emissiveIntensity).toBeCloseTo(3 * Math.pow(0.12 / 0.5, 0.7), 3);
   });
 
   it('light: hints.offset moves the anchor in the model frame', () => {

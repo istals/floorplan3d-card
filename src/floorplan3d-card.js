@@ -353,6 +353,8 @@ const STYLE = `
   .panel .otagbar label { margin: 0; font-size: 12px; }
   .panel .otagbar input.tagadd { width: 90px; }
   .panel ul.otree li.obj .opick { margin: 0; }
+  .panel label.owash { display: flex; align-items: center; gap: 6px; margin: 3px 0 0; font-size: 12px; }
+  .panel label.owash select { font-size: 12px; }
   .panel ul.otree li.obj .otags { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; }
   .panel ul.otree li.obj .otag { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; padding: 0 2px 0 6px; border-radius: 9px;
     background: var(--secondary-background-color, rgba(127,127,127,.2)); color: var(--primary-text-color); }
@@ -2369,7 +2371,7 @@ class Floorplan3dCard extends HTMLElement {
     this._bindKey = key;
     this._bindings = bindObjects(objs, lo, states, { mowerEntity, hass: this._hass.labels || !this._labels ? this._hass : Object.create(this._hass, { labels: { value: this._labels } }) });
     this._groups = effectiveGroups(groups, states); // controllers HA doesn't know are ignored
-    this._objects.setBindings(this._bindings, this._groups);
+    this._objects.setBindings(this._bindings, this._groups, { objects: lo, tags: groups }); // + "Light on wall" settings
     if (this._tagIndex() && this._index) { // tag: view rules follow the new tags
       this._viewStates = new Map();
       const cur = this.currentView();

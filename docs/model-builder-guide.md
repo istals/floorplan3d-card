@@ -198,7 +198,7 @@ What the card reads (everything else in `fp` is kept for later and ignored):
 
 | type | look in the card | tap / hold (default) | hints read |
 |---|---|---|---|
-| `light` | glow mesh emissive in the light colour (brightness / 255 × 3) + a real light | toggle / popup | `beam`, `max`, `distance`, `decay`, `angle`, `penumbra`, `target`, `castShadow`, `offset` |
+| `light` | glow mesh emissive in the light colour (brightness / 255 × 3, less for large glow meshes) + a real light | toggle / popup | `beam`, `max`, `distance`, `decay`, `angle`, `penumbra`, `target`, `castShadow`, `offset` |
 | `light_strip` | the whole glow mesh emissive; a real light only when `max` is set | toggle / popup | as `light` |
 | `mower` | the node follows the mower's live position and heading; glow green mowing, amber returning, red error | popup / more-info | `front`: `+x` / `-x` / `+z` / `-z` (which local axis is the nose, default `+x`) |
 | `dock` | LED mesh lit while the mower is docked | more-info / more-info | `led`: LED mesh name (default `led`) |
@@ -213,7 +213,7 @@ Later types (`door`, `gate`, `cover`, `fan`, `vacuum`, …) can be tagged alread
 
 | key | meaning | default |
 |---|---|---|
-| `beam` | `point`, `spot`, `down` or `up` (`down` / `up` are point lights for now) | `point` |
+| `beam` | `point`, `spot`, `down`, `up` or `updown` (alias `both`: washes the wall above and below; a point light) | `point` |
 | `max` | light intensity at full brightness (real light = brightness / 255 × `max`) | 5 |
 | `distance` | metres the light reaches (0 = no limit) | 0 |
 | `decay` | fall-off (2 = physical) | 2 |

@@ -311,9 +311,11 @@ export function setObjectUi(layout, id, which, action) {
   return setObject(layout, id, { ui: Object.keys(ui).length ? ui : undefined });
 }
 
-// layout.tags[name] = { entity, label }: the optional controller of a tag (every object carrying the tag
+// layout.tags[name] = { entity, label, wash }: the optional controller of a tag (every object carrying the tag
 // is lit only while it is on) and its display label (popup chain rows). No entity (empty or "none") /
-// empty label: not stored; nothing left: no entry. Old layout.groups entries move into tags.
+// empty label: not stored; wash ("Light on wall" for its objects): down | up | both | none, else from the model;
+// nothing left: no entry. Old layout.groups entries move into tags.
+const WASH_DIRS = ['down', 'up', 'both', 'none'];
 export function setTag(layout, name, patch) {
   const all = layoutTags(layout);
   const cur = { ...(all[name] || {}), ...patch };
@@ -321,6 +323,7 @@ export function setTag(layout, name, patch) {
   if (!cur.entity || typeof cur.entity !== 'string' || cur.entity.toLowerCase() === 'none') delete cur.entity;
   if (typeof cur.label === 'string') cur.label = cur.label.trim();
   if (!cur.label || typeof cur.label !== 'string') delete cur.label;
+  if (!WASH_DIRS.includes(cur.wash)) delete cur.wash; // "Light on wall": empty = from the model
   const tags = { ...all };
   if (Object.keys(cur).length) tags[name] = cur;
   else delete tags[name];

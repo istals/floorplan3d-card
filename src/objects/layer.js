@@ -9,7 +9,7 @@ import { chainState, lightBudget, controllersOf, budgetGroup } from './logic.js'
 import { typeOf } from './types.js';
 import { badTargets, aimPoint, aimsUp } from './aim.js';
 import { dockFrontAxis, dockPose } from '../mower-track.js';
-import { WashLayer, washKind, washSize, placeWash, washOpacity } from './wash.js';
+import { WashLayer, resolveWash, washSize, placeWashes, washOpacity, clearOfWall, washSetting } from './wash.js';
 
 const WASH_TYPES = new Set(['light', 'light_strip']);
 const WASH_SLICE_MS = 8; // wash placements (ray casts) per pass; the rest follow in the next task
@@ -228,10 +228,13 @@ export class ObjectLayer {
     }
   }
 
-  setBindings(bindings, groups) {
-    if (bindings === this.bindings && groups === this.groups) return;
+  // washCfg: { objects: layout.objects, tags: tag settings (all, not only those with a controller) } for
+  // the "Light on wall" settings (object > tag > model).
+  setBindings(bindings, groups, washCfg = null) {
+    if (bindings === this.bindings && groups === this.groups && washCfg === this.washCfg) return;
     this.bindings = bindings || new Map();
     this.groups = groups || {};
+    this.washCfg = washCfg;
     for (const p of this.parts.values()) p.inputs = null; // re-evaluate every chain once
   }
 
@@ -313,32 +316,70 @@ export class ObjectLayer {
   // Washes: one per lit, visible light / light_strip (beam hint or a real light), placed the first time it is lit
   // (and again after the model moved), coloured by its light; brighter where no pool light shines. Cheap when
   // nothing changed (signature). Placement ray casts are time-sliced; returns true when a wash changed.
+  // The wash kind of an object: its "Light on wall" setting, else its tags', else the model's beam (resolveWash).
+  washKindOf(id) {
+    const r = this._washOf(id);
+    return r ? r.kind : null;
+  }
+
+  // { kind, set: true when the object or one of its tags has a setting } or null.
+  _washOf(id) {
+    const p = this.parts.get(id);
+    if (!p) return null;
+    const cfg = this.washCfg || {}, b = this.bindings.get(id), tagCfg = cfg.tags || {};
+    const own = cfg.objects && cfg.objects[id] ? cfg.objects[id].wash : undefined;
+    const tags = b && Array.isArray(b.tags) ? b.tags : p.obj.group ? [p.obj.group] : [];
+    const set = !!washSetting(own) || tags.some((t) => Object.hasOwn(tagCfg, t) && !!tagCfg[t] && !!washSetting(tagCfg[t].wash));
+    return { kind: resolveWash(p.obj.hints, own, tags, tagCfg), set };
+  }
+
+  // The wall next to a lamp (world hit, facing the lamp) or null; cast once per model placement.
+  _wallOf(p, a, placeSig) {
+    if (!this.view.surfaceRays) return null;
+    if (!p.wallHit || p.wallHit.sig !== placeSig) p.wallHit = { sig: placeSig, hit: WashLayer.wall(this.view, a) };
+    return p.wallHit.hit;
+  }
+
   _updateWashes(placeSig, fixtures) {
     const vis = new Map(fixtures.map((f) => [f.id, f.lit && f.visible]));
     const want = [];
     for (const [id, p] of this.parts) {
-      if (!WASH_TYPES.has(p.obj.type) || !(p.part.pool || (p.obj.hints && p.obj.hints.beam))) continue;
-      const on = vis.has(id) ? vis.get(id) : !!(this._lightsOn && p.result && p.result.lit && shown(p.obj.node));
-      want.push({ id, p, on });
+      if (!WASH_TYPES.has(p.obj.type)) continue;
+      const { kind, set } = this._washOf(id);
+      if (!(p.part.pool || (p.obj.hints && p.obj.hints.beam) || set)) {
+        if (p.wash) for (const m of p.wash.meshes) this.washes.paint(m, null, 0);
+        continue;
+      }
+      const on = kind !== 'none' && (vis.has(id) ? vis.get(id) : !!(this._lightsOn && p.result && p.result.lit && shown(p.obj.node)));
+      want.push({ id, p, on, kind });
     }
-    const sig = placeSig + '|' + want.map(({ id, p, on }) => (on ? `${id}:${p.result.level}:${colorKey(p.result.color)}:${this._slots.has(id) ? 1 : 0}` : '')).join(';');
+    const sig = placeSig + '|' + want.map(({ id, p, on, kind }) => (on ? `${id}:${kind}:${p.result.level}:${colorKey(p.result.color)}:${this._slots.has(id) ? 1 : 0}` : '')).join(';');
     if (sig === this._washSig) return false;
     const t0 = performance.now();
     let pending = false, changed = false;
     const root = this.model.root;
-    for (const { id, p, on } of want) {
-      if (!on) { if (p.wash && p.wash.mesh.visible) { this.washes.paint(p.wash.mesh, null, 0); changed = true; } continue; }
-      if (!p.wash || p.wash.sig !== placeSig) {
+    for (const { id, p, on, kind } of want) {
+      if (!on) {
+        if (p.wash) for (const m of p.wash.meshes) if (m.visible) { this.washes.paint(m, null, 0); changed = true; }
+        continue;
+      }
+      const wsig = placeSig + '|' + kind;
+      if (!p.wash || p.wash.sig !== wsig) {
         if (performance.now() - t0 > WASH_SLICE_MS) { pending = true; continue; }
-        const kind = washKind(p.obj.hints);
         const a = root.localToWorld(p.part.anchor.clone());
         let aimDir = null;
         if (kind === 'spot' && p.part.aim) aimDir = root.localToWorld(p.part.aim.clone()).sub(a).normalize().toArray();
-        const surf = this.view.surfaceRays ? WashLayer.surfaces(this.view, a, kind, aimDir) : {};
-        const placement = placeWash(kind, a.toArray(), washSize(p.part.hints), surf);
-        p.wash = { mesh: this.washes.place(p.wash && p.wash.mesh, placement), sig: placeSig, placement };
+        const wall = kind === 'spot' ? undefined : this._wallOf(p, a, placeSig);
+        const surf = this.view.surfaceRays ? WashLayer.surfaces(this.view, a, kind, aimDir, wall) : {};
+        const placements = placeWashes(kind, a.toArray(), washSize(p.part.hints), surf);
+        // a mesh per quad (two for 'both'), made once and reused; spare ones stay hidden
+        const meshes = p.wash ? p.wash.meshes.slice() : [];
+        const n = Math.max(meshes.length, placements.length, 1);
+        for (let i = 0; i < n; i++) meshes[i] = this.washes.place(meshes[i], placements[i] || null);
+        p.wash = { meshes, sig: wsig, placements };
       }
-      this.washes.paint(p.wash.mesh, p.result.color || [255, 255, 255], p.wash.placement ? washOpacity(p.result.level, this._slots.has(id)) : 0);
+      const opacity = washOpacity(p.result.level, this._slots.has(id));
+      p.wash.meshes.forEach((m, i) => this.washes.paint(m, p.result.color || [255, 255, 255], p.wash.placements[i] ? opacity : 0));
       changed = true;
     }
     this._washSig = pending ? null : sig;
@@ -396,10 +437,13 @@ export class ObjectLayer {
       this._slots.set(id, { light, shadow: pts.indexOf(light) < SHADOWS, factor });
     }
     const root = this.model.root;
+    const placeSig = root.matrixWorld.elements.map((v) => v.toFixed(5)).join();
     for (const [id, slot] of this._slots) {
       const p = this.parts.get(id);
       const h = p.part.hints, l = slot.light;
       l.position.copy(root.localToWorld(p.part.anchor.clone()));
+      // a point light right on a wall (or door) burns a hot spot into it: kept 0.15 m off the wall it faces
+      if (!l.isSpotLight) l.position.fromArray(clearOfWall(l.position.toArray(), this._wallOf(p, l.position.clone(), placeSig)));
       l.distance = h.distance;
       l.decay = h.decay;
       if (l.isSpotLight) {

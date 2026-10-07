@@ -17,6 +17,7 @@ import { outlineLoops, pickLoop, rasterGrid, outlineFromGrid } from './outline.j
 import { snapPin, attachOffset, floorAtHeight, objectTags, layoutTags } from './objects/logic.js';
 import { actionTarget } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
+import { resolveWash, WASH_DIRS } from './objects/wash.js';
 import { resolveActions, validateAction } from './actions.js';
 import { surfaceKind, surfaceSearch, stickSurface, nearestDistance, needsStick, worldOf, planOf } from './surface.js';
 
@@ -1351,6 +1352,11 @@ export class EditMode {
     const types = [...new Set(objs.map((o) => (DOMAINS[o.type] ? o.type : 'other')))];
     const datalists = types.map((t) => `<datalist id="fp-obj-${t}">${listFor(t).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`).join('');
     const lo = this.layout.objects || {};
+    const lgAll = layoutTags(this.layout);
+    // "Light on wall" (the wash): object > tag > model; the default option names what applies without a setting
+    const WASH_LABEL = { down: 'Down', up: 'Up', both: 'Up and down', none: 'None', point: 'Around the lamp', spot: 'Where it aims', model: 'from the model' };
+    const washSelect = (field, id, cur, def) => `<label class="owash">Light on wall <select data-field="${field}" data-id="${esc(id)}">
+      <option value="">Default (${esc(WASH_LABEL[def] || def)})</option>${WASH_DIRS.map((d) => `<option value="${d}"${cur === d ? ' selected' : ''}>${WASH_LABEL[d]}</option>`).join('')}</select></label>`;
     const rowHtml = (o) => {
       const b = bindings.get(o.id) || {};
       const t = DOMAINS[o.type] ? o.type : 'other';
@@ -1376,6 +1382,7 @@ export class EditMode {
           <label class="check"><input type="checkbox" data-field="obj-hidden" data-id="${esc(o.id)}" ${b.hidden ? 'checked' : ''}> Hide</label></div>
         <input class="olabel" data-field="obj-label" data-id="${esc(o.id)}" value="${esc(saved.label || '')}" placeholder="${esc(o.label || o.id)}" title="Label (empty: the model's)" aria-label="Label">
         <input list="fp-obj-${t}" data-field="obj-entity" data-id="${esc(o.id)}" value="${esc(value)}" placeholder="${esc(ph)}" title="Empty: automatic; type none to leave it unbound">
+        ${o.type === 'light' || o.type === 'light_strip' ? washSelect('obj-wash', o.id, saved.wash, resolveWash(o.hints, undefined, tagsOf(o), lgAll)) : ''}
         ${tagChips(o)}${this._objActionsHtml(o, saved.ui)}</li>`;
     };
     // tags: chips (x removes), + adds (datalist of known tags)
@@ -1418,7 +1425,7 @@ export class EditMode {
     if (allTags.length) {
       const lg = layoutTags(this.layout);
       const gl = ids.filter((id) => /^(light|switch|input_boolean)\./.test(id));
-      out += `<div class="sub">Tags</div><p class="hint">A tag's controller must be on too: an object is lit only while its own entity and the controllers of all its tags are on. Objects sharing a controller tag share the real-light budget. Views and card YAML <code>actions:</code> accept <code>tag:&lt;name&gt;</code>.</p>
+      out += `<div class="sub">Tags</div><p class="hint">A tag's controller must be on too: an object is lit only while its own entity and the controllers of all its tags are on. Objects sharing a controller tag share the real-light budget. Views and card YAML <code>actions:</code> accept <code>tag:&lt;name&gt;</code>. Light on wall: the wash a lit lamp throws on the wall next to it (an object's own setting wins over its tags', a tag's over the model's).</p>
         <datalist id="fp-grp-ents">${gl.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
       out += allTags.map((g) => {
         const e = (lg[g] && lg[g].entity) || '', gl2 = (lg[g] && lg[g].label) || '';
@@ -1426,7 +1433,8 @@ export class EditMode {
         const missing = e && !states[e] ? ' <span class="badge warn">entity not found</span>' : '';
         return `<label class="grp" data-grp="${esc(g)}">${esc(gl2 || g)} <span class="dim">${n}</span>${missing} <input list="fp-grp-ents" data-field="grp-entity" data-id="${esc(g)}"
         value="${esc(e)}" placeholder="no controller" title="Empty or none: no controller">
-        <input class="glabel" data-field="grp-label" data-id="${esc(g)}" value="${esc(gl2)}" placeholder="label: ${esc(g)}" title="Label in popups (empty: the controller's name)"></label>`;
+        <input class="glabel" data-field="grp-label" data-id="${esc(g)}" value="${esc(gl2)}" placeholder="label: ${esc(g)}" title="Label in popups (empty: the controller's name)"></label>
+        ${objs.some((o) => (o.type === 'light' || o.type === 'light_strip') && tagsOf(o).includes(g)) ? washSelect('grp-wash', g, lg[g] && lg[g].wash, 'model') : ''}`;
       }).join('');
     }
     return out;
@@ -2681,6 +2689,12 @@ export class EditMode {
       this.render();
     } else if (f === 'grp-label') {
       this.commit(E.setTag(this.layout, el.dataset.id, { label: el.value }));
+      this.render();
+    } else if (f === 'obj-wash') {
+      this.commit(E.setObject(this.layout, el.dataset.id, { wash: el.value || undefined }));
+      this.render();
+    } else if (f === 'grp-wash') {
+      this.commit(E.setTag(this.layout, el.dataset.id, { wash: el.value }));
       this.render();
     } else if (f === 'grp-entity') {
       this.commit(E.setTag(this.layout, el.dataset.id, { entity: el.value.trim() }));
