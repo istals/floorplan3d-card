@@ -182,6 +182,10 @@ lit only while its own entity and the controllers of all its tags are on; empty 
 the controller, an unknown entity is ignored and flagged. Objects sharing a controller tag share the
 real-light budget like a model group, and views (`tag:<name>`) and `actions:` (`tag:<name>`) can
 select them. Layouts from before 0.4.5 keep their group controllers (they load as tags).
+**Light on wall** (lamp rows and the Tags section) sets which way a lamp washes its wall: *Down*,
+*Up*, *Up and down* or *None*; *Default* follows the model (`hints.beam`). An object's own setting
+wins over its tags', a tag's over the model's (stored as `layout.objects[id].wash` /
+`layout.tags[name].wash`).
 See [Lamps and objects](#lamps-and-objects).
 
 **Mower.** See below.
@@ -412,7 +416,13 @@ has no marker: the object is the control.
   floor (or the ceiling for an uplight); spots light a pool where they aim. Size follows
   `hints.max` / `hints.distance`; lamps that also got a real light wash at half strength. A wash is
   placed the first time its lamp is lit (and again after the model is moved); turning lamps on and
-  off only shows and hides them, no shader is rebuilt.
+  off only shows and hides them, no shader is rebuilt. `hints.beam: "updown"` (or `"both"`), or
+  *Light on wall: Up and down* in the Objects tab, draws two washes, a cone below and one above the
+  lamp; *None* draws none. A real point light is kept at least 0.15 m off the wall it faces, so a
+  lamp next to a door does not burn a hot spot into it.
+- **Glow:** a lamp's glow mesh glows with its colour and brightness; large glow meshes (a big shade,
+  a long strip) glow less per unit of brightness than small bulbs (by their size, down to a quarter),
+  so they keep their colour instead of blowing out to white. The real light is unchanged.
 - **Day / Night:** the toolbar button cycles Auto, Day, Night. Auto follows `sun.sun`: by night
   the house is nearly dark and the lamps carry the scene; the sun's direction and shadows follow
   the real sun.
@@ -522,8 +532,12 @@ the floor of its top storey):
 **Edit → Views** edits the current view: label, add / hide / reorder views, linked HA floors,
 **Save current view as start** (the camera), and a tree of the model (levels, rooms, objects,
 layers, groups) with an eye per row: *default* → *shown* → *hidden* in this view. Click any part
-of the model in 3D for a menu: **Hide in this view**, **Show in this view**, **Hide in all
-views**, **Reveal in tree**. Your changes are stored per view id in the layout and survive model
+of the model in 3D for a menu: **Hide in this view**, **Hide surfaces, keep devices**, **Show in
+this view**, **Hide in all views**, **Reveal in tree**. *Hide surfaces, keep devices* hides a
+level, room, zone or group but keeps the model objects inside it (e.g. wall lamps exported inside a
+paved zone) visible, lit and tappable; its row in the tree shows *devices kept*, and in rules it is
+`{ hide: <selector>, keep_objects: true }`. An object-level hide (`object:`, `type:`, `group:`,
+`tag:`) still hides those objects. Your changes are stored per view id in the layout and survive model
 re-exports; parts no longer in the model are listed for removal.
 
 #### Camera
@@ -570,6 +584,8 @@ views:
       - hide: layer:furniture
       - hide: node:house/level0/sofa
       - hide: tag:garden_lights      # objects carrying a tag (Edit -> Objects)
+      - hide: zone:driveway          # the paving goes, the lamps nested in it stay
+        keep_objects: true
     camera: { position: [18, 22, 16], target: [6, 0, -4] }
     camera_top: { center: [6, 4], zoom: 1.5 }   # plan metres
     zoom_to: cursor
