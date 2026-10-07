@@ -28,6 +28,8 @@ import { isDocked, dockWord, trackWindow, fullSearch, layerDue, throttleStep, ef
 import { ObjectLayer } from './objects/layer.js';
 import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
 import { DebugOverlay } from './debug-overlay.js';
+import { ModelLoadUI, LOAD_STYLE } from './load-ui.js';
+import { loadModelBuffer, layoutModelVersion, headerVersion } from './model-cache.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, layoutTags, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition } from './sky.js';
 import { weatherEntity, cloudCoverage } from './weather.js';
@@ -538,8 +540,18 @@ class Floorplan3dCard extends HTMLElement {
     const c = this._config;
     let opts = null;
     if (c.model) {
+      const url = new URL(String(c.model), location.href).href;
       opts = {
         url: String(c.model),
+        // versioned by the server's validators (HEAD), cached locally like an uploaded model
+        data: async () => {
+          let version = null;
+          try {
+            const h = await fetch(url, { method: 'HEAD', credentials: 'same-origin' });
+            if (h.ok) version = headerVersion(h.headers);
+          } catch (e) { /* offline or no HEAD: fetched below (and not cached) */ }
+          return this._modelBytes(url, version, () => fetch(url, { credentials: 'same-origin' }));
+        },
         position: Array.isArray(c.model_position) ? c.model_position.map(Number) : [0, 0, 0],
         rotation: Number(c.model_rotation) || 0, scale: Number(c.model_scale) || 1,
         opacity: c.model_opacity === undefined ? 1 : Number(c.model_opacity),
@@ -547,14 +559,12 @@ class Floorplan3dCard extends HTMLElement {
     } else {
       const m = this._layout && this._layout.model;
       if (m && m.version && this._hass && this._hass.fetchWithAuth) {
-        const url = `${MODEL_API}/${encodeURIComponent(c.layout_key)}?v=${m.version}`;
+        const base = `${MODEL_API}/${encodeURIComponent(c.layout_key)}`;
+        const url = `${base}?v=${m.version}`;
         opts = {
           id: m.version, name: m.name,
-          data: async () => {
-            const r = await this._hass.fetchWithAuth(url);
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.arrayBuffer();
-          },
+          // cached locally by version (only the body, keyed by the plain URL: no auth headers stored)
+          data: () => this._modelBytes(new URL(base, location.href).href, layoutModelVersion(m), () => this._hass.fetchWithAuth(url)),
           position: m.position || [0, 0, 0], rotation: m.rotation || 0, scale: m.scale || 1, opacity: m.opacity ?? 1,
         };
       }
@@ -567,7 +577,13 @@ class Floorplan3dCard extends HTMLElement {
       opts.reload = reload;
     }
     const prevModel = this._view.model;
+    const fresh = !!opts && !this._view.isModelLoaded(opts) && !this._view.isModelLoading(opts);
+    if (fresh) {
+      this._loadUI.progress('Loading model…');
+      if (!prevModel) this._loadUI.loading(); // the last render of this view as a placeholder
+    }
     this._view.setModel(opts).then((err) => {
+      if (fresh || err || !opts) this._loadUI.done(!!this._view.model && !err, err || '');
       if (this._view.model !== prevModel && this._section) this._dropSection();
       if (this._view.model !== prevModel) { this._endGesture(); this._popup.close(); }
       this._objects.setModel(this._view.model);
@@ -591,6 +607,15 @@ class Floorplan3dCard extends HTMLElement {
       if (this._layout && this._layout.mower && this._hass) this._refreshMapOverlay(); // the map lies on the model's lawn
       if (this._editing) this._edit.onModelLoaded(this._view.model !== prevModel);
     });
+  }
+
+  // Model bytes through the local cache, with the download progress on the stage. -> ArrayBuffer
+  async _modelBytes(base, version, fetchFn) {
+    const ui = this._loadUI;
+    const { buf, cached } = await loadModelBuffer({ base, version, fetchFn, onProgress: (l, t) => ui.download(l, t) });
+    this._modelFromCache = cached; // headless checks
+    ui.progress('Preparing model…');
+    return buf;
   }
 
   // The model was merged after it was shown (the layout came later): index the merged tree, re-apply the view.
@@ -740,6 +765,7 @@ class Floorplan3dCard extends HTMLElement {
 
   disconnectedCallback() {
     if (this._view) this._view.stop();
+    if (this._loadUI) this._loadUI.scheduler.cancel();
     this._endGesture();
     this._taps.cancel();
     this._closeConfirm();
@@ -778,7 +804,7 @@ class Floorplan3dCard extends HTMLElement {
 
   _render() {
     const root = this.shadowRoot;
-    root.innerHTML = `<style>${STYLE}</style>
+    root.innerHTML = `<style>${STYLE}${LOAD_STYLE}</style>
       <ha-card>
         <div class="body">
           <div class="stage">
@@ -825,6 +851,12 @@ class Floorplan3dCard extends HTMLElement {
     });
     this._editBtn.addEventListener('click', () => this._toggleEdit());
     this._view = new FloorplanView(this._stage);
+    this._loadUI = new ModelLoadUI({
+      stage: this._stage, view: this._view,
+      key: () => (this._config ? { layout: this._config.layout_key, view: this._viewId, mode: this._mode } : null),
+      canCapture: () => this.isConnected && !this._editing && this._view.size.w > 1 && !this._section,
+    });
+    this._view.onCameraChange = () => this._loadUI.changed();
     this._view.onMapImage = (img, w, h) => this._onMapImage(img, w, h);
     // auto mode: settings or the mower picture changed -> the current picture again, searched in full
     this._view.onMapReprocess = () => { this._forceFull = true; this._extUrl = null; if (this._layout && this._layout.mower) this._refreshMapOverlay(); };
@@ -2240,6 +2272,7 @@ class Floorplan3dCard extends HTMLElement {
     else if (!this._view.model || wasSection) this._view.fit({ instant });
     this._syncToolbar();
     if (this._editing) this._edit.onViewChanged();
+    this._loadUI.changed();
   }
 
   // First view after load / model change: its saved camera, else frame it.
@@ -2961,6 +2994,7 @@ class Floorplan3dCard extends HTMLElement {
     }
     this._syncToolbar();
     if (this._editing && this._edit.tab === 'views') this._edit.render();
+    this._loadUI.changed();
   }
 
   _paintDayBtn() {

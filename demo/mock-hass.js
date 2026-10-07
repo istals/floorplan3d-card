@@ -279,7 +279,7 @@ async function fetchWithAuth(url, init = {}) {
   const key = decodeURIComponent(new URL(url, location.href).pathname.split('/').pop());
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const method = (init.method || 'GET').toUpperCase();
-  if (method === 'GET') return models.has(key) ? new Response(models.get(key)) : json(404, { message: 'No model uploaded' });
+  if (method === 'GET') return models.has(key) ? new Response(models.get(key), { headers: { 'content-length': String(models.get(key).byteLength) } }) : json(404, { message: 'No model uploaded' });
   if (method === 'DELETE') { models.delete(key); return json(200, { deleted: true }); }
   const file = init.body && init.body.get('file');
   if (!file) return json(400, { message: 'Missing file field' });

@@ -61,7 +61,7 @@ function rewriteGlbJson(buf, edit) {
 // 1. model in the demo
 sections.add('model', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await idle(page);
   const st = () => page.evaluate(`(() => { const v = ${card}._view; const vis = (id) => v.modelManifest().levels.find((l) => l.id === id)?.node.visible; return {
     level0: vis('level0'), level1: vis('level1'), exterior: vis('exterior'), roof: vis('roof'),
@@ -434,7 +434,7 @@ sections.add('model', { group: 'model', query: { model: '1', view: '3d' }, viewp
 // 1w. weather: clouds on the dome, sun / shadow / fill follow the cloud coverage, slow drift without recompiles
 sections.add('weather', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await page.evaluate('window.__demoMowerPaused = true');
   await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=exterior]').click()`);
   await settle(page, card);
@@ -525,7 +525,7 @@ sections.add('weather', { group: 'model', query: { model: '1', view: '3d' }, vie
 // 1u. uplights: the demo's wall uplights aim straight up; a shared (bad) target in their group is ignored
 sections.add('uplights', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await page.evaluate('window.__setDemoSun(-20, 0)'); // night: lamps on
   await sleep(500);
   const aims = () => page.evaluate(`(() => { const c = ${card}, L = c._objects, v = c._view;
@@ -562,7 +562,7 @@ sections.add('uplights', { group: 'model', query: { model: '1', view: '3d' }, vi
 // 1a. static meshes merged at load (per owner + material), merge: false keeps every part, node: rules keep theirs
 sections.add('merge', { group: 'objects', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._view.mergeStats`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._view.mergeStats`, { timeout: 30000 });
   const stats = () => page.evaluate(`JSON.stringify(${card}._view.mergeStats)`).then(JSON.parse);
   // shader programs created since the last read: per render, the ids new in renderer.info.programs
   await page.evaluate(`(() => { const r = ${card}._view.renderer, seen = new Set(r.info.programs.map((p) => p.id)), f = r.render.bind(r);
@@ -656,7 +656,7 @@ sections.add('merge', { group: 'objects', query: { model: '1', view: '3d' }, vie
 // 1b. model objects: tap toggles, hold opens the popup, a drag never toggles (the demo model's hall ceiling lamp)
 sections.add('objects-tap', { group: 'objects', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 30000 });
   await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=ground]').click()`);
   await settle(page, card);
   const injected = await page.evaluate(`(() => { const o = ${card}._objects.objectAt('lamp_hall'); return o ? o.obj.node.name : null; })()`);
@@ -833,7 +833,7 @@ sections.add('objects-tap', { group: 'objects', query: { model: '1', view: '3d' 
 // object never delays single taps on another, missing target -> message, confirmation, popup links, markers
 sections.add('actions', { group: 'objects', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 30000 });
   await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=ground]').click()`);
   await settle(page, card);
   await page.evaluate(`(() => {
@@ -845,7 +845,7 @@ sections.add('actions', { group: 'objects', query: { model: '1', view: '3d' }, v
   const origin = await page.evaluate('location.pathname + location.search');
   const setActions = async (actions) => {
     await page.evaluate(`(() => { const c = ${card}; c.setConfig({ ...c._config, actions: ${JSON.stringify(actions)} }); })()`);
-    await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 10000 });
+    await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 30000 });
     await settle(page, card);
   };
   const at = (id) => page.evaluate(`(() => { const c = ${card}, a = c._objects.anchorOf(${JSON.stringify(id)}); return a && c._view.projectWorld(a); })()`);
@@ -964,7 +964,7 @@ sections.add('actions', { group: 'objects', query: { model: '1', view: '3d' }, v
 // 1c. mower object: the model node follows the live position, the mower marker is gone (the demo model's mower)
 sections.add('mower-object', { group: 'lamps', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 30000 });
   await settle(page, card);
   await page.waitForFunction(`!!${card}._objects.objectAt('mower') && !!${card}._objects.mowerBound() && !!${card}._mowerLive`, { timeout: 5000 }).catch(() => {});
   check('the demo model\'s mower object is bound to lawn_mower.demo', await page.evaluate(`${card}._bindings.get('mower').entity === 'lawn_mower.demo'`));
@@ -1036,7 +1036,7 @@ sections.add('mower-object', { group: 'lamps', query: { model: '1', view: '3d' }
 // and its controller, dock / charger looks, lights: off, idle updates (no budget or shadow work)
 sections.add('demo-objects', { group: 'lamps', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
-  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass && ${card}._objects.parts.size > 0`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass && ${card}._objects.parts.size > 0`, { timeout: 30000 });
   await page.evaluate('window.__demoMowerPaused = true');
   await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=ground]').click()`);
   await settle(page, card);
@@ -1192,7 +1192,7 @@ sections.add('demo-objects', { group: 'lamps', query: { model: '1', view: '3d' }
   await idle(page);
   // lights: off -> emissive only
   await page.evaluate(`${card}.setConfig({ ...${card}._config, lights: 'off' })`);
-  await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 30000 });
   await idle(page);
   L = await look();
   check('lights: off -> every pool light at intensity 0, lamps still glow', L.lit === 0 && L.glow.lamp_living > 0, JSON.stringify({ lit: L.lit, g: L.glow.lamp_living }));
@@ -1404,7 +1404,7 @@ sections.add('upload', { group: 'upload', query: { view: '3d', height: '560px' }
   fs.unlinkSync(bad);
 
   await upload(path.join(root, 'demo', 'house.glb'));
-  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await idle(page);
   const lm = await page.evaluate(`${card}._layout.model`);
   check('upload stored in layout', lm && lm.name === 'house.glb' && lm.version && lm.size > 1000, JSON.stringify(lm));
@@ -1508,7 +1508,7 @@ sections.add('upload', { group: 'upload', query: { view: '3d', height: '560px' }
     return json;
   }));
   await upload(renamed);
-  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'lvl_a0')`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'lvl_a0')`, { timeout: 30000 });
   await idle(page);
   fs.unlinkSync(renamed);
   check('renamed levels still map by order', (await lv()) === JSON.stringify({ lvl_a0: 'with:ground', lvl_a1: 'with:first', exterior: 'always:ground', roof: 'all-only:null' }), await lv());
@@ -1560,7 +1560,7 @@ sections.add('upload', { group: 'upload', query: { view: '3d', height: '560px' }
     return json;
   }));
   await upload(untagged);
-  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 0`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 0`, { timeout: 30000 });
   fs.unlinkSync(untagged);
   check('untagged model loads whole', await page.evaluate(`${card}._view.model.root.visible && ${card}._modelRooms.length === 0`));
   await idle(page);
@@ -1568,7 +1568,7 @@ sections.add('upload', { group: 'upload', query: { view: '3d', height: '560px' }
   await page.evaluate(`${card}.shadowRoot.querySelector('[data-act=md-forget]').click()`);
   await idle(page);
   await upload(path.join(root, 'demo', 'house.glb'));
-  await page.waitForFunction(`${card}._view.modelManifest()?.levels.length === 4`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.modelManifest()?.levels.length === 4`, { timeout: 30000 });
   await idle(page);
   const cam0 = await page.evaluate(`${card}._view.camera.position.toArray().join()`);
   await clickText('Frame model');
@@ -1593,7 +1593,7 @@ sections.add('upload', { group: 'upload', query: { view: '3d', height: '560px' }
     return json;
   }));
   await upload(legacy);
-  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'site')`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'site')`, { timeout: 30000 });
   await idle(page);
   fs.unlinkSync(legacy);
   check('legacy names read as levels', (await page.evaluate(`${card}._view.modelManifest().levels.map((l) => l.id).join()`)) === 'ground,first,site,roof',
@@ -1693,7 +1693,7 @@ sections.add('model-views', { group: 'views', query: { view: '3d', height: '560p
   await page.evaluate(`${sr}.querySelector('button.edit').click()`);
   await idle(page);
   await upload(path.join(root, 'demo', 'house.glb'));
-  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 4`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 4`, { timeout: 30000 });
   await idle(page);
   check('uploaded model: chips are its views in order', JSON.stringify(await chipIds()) === '["exterior","ground","first"]'
     && JSON.stringify(await page.evaluate(`[...${sr}.querySelectorAll('.chip')].map((b) => b.textContent)`)) === '["Exterior","Ground floor","First floor"]', JSON.stringify(await chipIds()));
@@ -1824,7 +1824,7 @@ sections.add('model-views', { group: 'views', query: { view: '3d', height: '560p
     return json;
   }));
   await upload(legacy);
-  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'site')`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.modelManifest()?.levels.some((l) => l.id === 'site')`, { timeout: 30000 });
   await idle(page);
   fs.unlinkSync(legacy);
   check('legacy copy: generated views ground / first / All', JSON.stringify(await chipIds()) === '["ground","first","all"]', JSON.stringify(await chipIds()));
@@ -2027,7 +2027,7 @@ sections.add('model-views', { group: 'views', query: { view: '3d', height: '560p
     return json;
   }));
   await upload(untagged);
-  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 0`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 0`, { timeout: 30000 });
   await idle(page);
   fs.unlinkSync(untagged);
   check('untagged copy: a single generated "All" view (no chips)', JSON.stringify(await page.evaluate(`${card}._views.map((v) => v.id + ':' + v.source)`)) === '["all:generated"]'
@@ -2060,7 +2060,7 @@ sections.add('magnetic', { group: 'views', query: { view: '3d', height: '560px' 
   await clickText('Model');
   const input = await page.evaluateHandle(`${sr}.querySelector('.panel [data-field=model-file]')`);
   await input.uploadFile(path.join(root, 'demo', 'house.glb'));
-  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 4`, { timeout: 10000 });
+  await page.waitForFunction(`${card}._view.model && ${card}._view.modelManifest().levels.length === 4`, { timeout: 30000 });
   await idle(page);
   await page.evaluate(`${sr}.querySelector('.chip[data-view=ground]').click()`);
   await settle(page, card);
@@ -2216,7 +2216,7 @@ sections.add('magnetic', { group: 'views', query: { view: '3d', height: '560px' 
 sections.add('surfaces', { group: 'mower', query: { model: '1', view: '3d', height: '560px' }, viewport: { width: 1500, height: 680 } }, async (s) => {
   const { page } = s;
   const sr = `${card}.shadowRoot`;
-  await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+  await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
   await page.waitForFunction(`(() => { const c = ${card}; return !!c._surf && !c._surfJob && c._positions.get('device:living_climate').base; })()`, { timeout: 5000 }).catch(() => {});
   // the wall sensor: moved off its computed point, 5 cm (< 0.1 m) off a wall, its 3D marker there too
   const wallInfo = await page.evaluate(`(() => { const c = ${card}, v = c._view, p = c._positions.get('device:living_climate');
@@ -2769,7 +2769,7 @@ sections.add('export', { group: 'upload', query: null }, async (s) => {
   sections.add('review', { group: 'review', query: { model: `/screenshots/${camsName}`, view: '3d' }, viewport: { width: 1400, height: 560 }, before }, async (s) => {
   try {
     const { page } = s;
-    await page.waitForFunction(`!!${card}._view.model`, { timeout: 10000 });
+    await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });
     await sleep(1500);
     // these checks are about the live mower marker: hide the model's mower object, so the marker is back
     await page.evaluate(`(() => { const c = ${card}; c._commit({ ...c._layout, objects: { ...(c._layout.objects || {}), mower: { hidden: true } } }); })()`);
@@ -2880,6 +2880,67 @@ sections.add('export', { group: 'upload', query: null }, async (s) => {
   }
   });
 }
+
+// 6. model loading: progress text, local model cache (second load without the glb download), the
+// snapshot placeholder shown before the model, IndexedDB fallback without Cache Storage
+sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' } }, async (s) => {
+  const { page } = s;
+  const gets = [];
+  const onReq = (r) => { if (r.url().includes('/demo/house.glb')) gets.push(r.method()); };
+  page.on('request', onReq);
+  try {
+    await page.evaluate((q) => window.__demoReset(q), { test: '1', model: '1', view: '3d' }); // loaded again, now watched
+    await page.waitForFunction(`!!${card}._view.model && ${card}._loadUI.readyAt !== null`, { timeout: 20000 });
+    let st = await page.evaluate(`(() => { const c = ${card}, ui = c._loadUI; return { log: ui.log, barHidden: ui.bar.hidden, cached: c._modelFromCache }; })()`);
+    check('progress: download, then "Preparing model…", then gone', st.log.some((t) => /^Downloading [\d.]+ \/ [\d.]+ MB$/.test(t)) && st.log.includes('Preparing model…') && st.barHidden, JSON.stringify(st));
+    check('first load downloads the glb', gets.includes('GET') && st.cached === false, JSON.stringify(gets));
+    const saved = await page.evaluate(`${card}._loadUI.capture()`);
+    const snaps = await page.evaluate(`new Promise((r) => { const q = indexedDB.open('floorplan3d'); q.onsuccess = () => { const a = q.result.transaction('snapshots').objectStore('snapshots').getAll(); a.onsuccess = () => { r(a.result.map((x) => ({ key: x.key, type: x.blob.type, size: x.size }))); q.result.close(); }; }; })`);
+    check('snapshot stored as a JPEG per layout / view / mode', saved === true && snaps.some((x) => x.key.startsWith('default|') && x.key.endsWith('|3d') && x.type === 'image/jpeg' && x.size > 1000), JSON.stringify(snaps));
+    // the same demo again, caches kept; the model's HEAD answered late so the placeholder has time to show
+    gets.length = 0;
+    await page.setRequestInterception(true);
+    const delay = (r) => {
+      if (r.isInterceptResolutionHandled()) return;
+      if (r.url().includes('/demo/house.glb') && r.method() === 'HEAD') setTimeout(() => r.continue(), 600);
+      else r.continue();
+    };
+    page.on('request', delay);
+    try {
+      await page.evaluate((q) => window.__demoReset(q, { keepCaches: true }), { test: '1', model: '1', view: '3d' });
+      await page.waitForFunction(`!!${card}._view.model && ${card}._loadUI.readyAt !== null`, { timeout: 20000 });
+    } finally {
+      page.off('request', delay);
+      await page.setRequestInterception(false);
+    }
+    st = await page.evaluate(`(() => { const c = ${card}, ui = c._loadUI; return { log: ui.log, cached: c._modelFromCache, shown: ui.snapShownAt, ready: ui.readyAt }; })()`);
+    check('second load: the model from the cache, no glb download', st.cached === true && !gets.includes('GET'), JSON.stringify({ gets, cached: st.cached }));
+    check('second load: snapshot shown before the model was ready', st.shown !== null && st.shown < st.ready, JSON.stringify(st));
+    check('second load: no download progress, only "Preparing model…"', !st.log.some((t) => t.startsWith('Downloading')) && st.log.includes('Preparing model…'), JSON.stringify(st.log));
+    await page.waitForFunction(`${card}._loadUI.img.hidden`, { timeout: 5000 }).catch(() => {});
+    const after = await page.evaluate(`(() => { const c = ${card}; return { hidden: c._loadUI.img.hidden, controls: c._view.controls.enabled }; })()`);
+    check('snapshot cross-faded away, controls enabled again', after.hidden && after.controls, JSON.stringify(after));
+    // plain http on the LAN: no Cache Storage -> the model blob in IndexedDB
+    const idb = await page.evaluate(`(async () => {
+      const c = ${card};
+      const own = Object.getOwnPropertyDescriptor(window, 'caches');
+      Object.defineProperty(window, 'caches', { value: undefined, configurable: true });
+      let n = 0;
+      const buf = new Uint8Array([103, 108, 84, 70, 2, 0, 0, 0]).buffer;
+      const fetchFn = async () => { n++; return new Response(buf, { headers: { 'content-length': '8' } }); };
+      const base = location.origin + '/api/floorplan3d/model/idb-test';
+      const a = await c._modelBytes(base, 'v1::', fetchFn), c1 = c._modelFromCache;
+      const b = await c._modelBytes(base, 'v1::', fetchFn), c2 = c._modelFromCache;
+      await c._modelBytes(base, 'v2::', fetchFn); // a new version: fetched again
+      if (own) Object.defineProperty(window, 'caches', own); else delete window.caches;
+      return { n, c1, c2, same: a.byteLength === 8 && b.byteLength === 8 };
+    })()`);
+    check('no Cache Storage: model cached in IndexedDB, new version fetched again', idb.n === 2 && idb.c1 === false && idb.c2 === true && idb.same, JSON.stringify(idb));
+    allErrors.push(...s.errors);
+  } finally {
+    page.off('request', onReq);
+  }
+});
 
 // about 150 s per shard of 3 (measured): lamps + views + review | objects + upload | model + mower
 sections.order(['lamps', 'objects', 'model', 'views', 'upload', 'mower', 'review']);

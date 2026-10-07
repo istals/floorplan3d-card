@@ -412,6 +412,7 @@ export class FloorplanView {
       this.dirty = true;
       this._camMovedAt = performance.now();
       this._scheduleOcclusion();
+      if (this.onCameraChange) this.onCameraChange();
     });
     c.addEventListener('start', () => { this._tween = null; });
     if (this.controls) c.enabled = this.controls.enabled;
@@ -557,9 +558,24 @@ export class FloorplanView {
   // Top-level nodes named "floor:<id>" are shown only with their floor; everything is cut at the
   // selected floor's cut-away height. Same url/id again only re-places the loaded model.
   // Resolves to null or an error message.
-  setModel(opts) {
+  _modelIdOf(opts) {
     const base = opts && (opts.id || opts.url);
-    const id = base && opts.merge === false ? base + '#nomerge' : base; // merge on / off is a reload
+    return base && opts.merge === false ? base + '#nomerge' : base; // merge on / off is a reload
+  }
+
+  // The model of opts is already shown / on its way (setModel would not fetch it again).
+  isModelLoaded(opts) {
+    const id = this._modelIdOf(opts);
+    return !!id && !opts.reload && !!this.model && this.model.id === id;
+  }
+
+  isModelLoading(opts) {
+    const id = this._modelIdOf(opts);
+    return !!id && !opts.reload && this._modelId === id && !(this.model && this.model.id === id);
+  }
+
+  setModel(opts) {
+    const id = this._modelIdOf(opts);
     if (id && opts.reload && this.model && this.model.id === id) this._disposeModel(true); // load again (e.g. merge with new keep rules)
     if (!id) {
       this._disposeModel();
@@ -699,10 +715,12 @@ export class FloorplanView {
         resolve(null);
       };
       const loader = new GLTFLoader();
-      if (opts.url) loader.load(opts.url, onLoad, undefined, fail);
+      if (opts.data === undefined && opts.url) loader.load(opts.url, onLoad, undefined, fail);
       else {
+        // bytes from the card (its cache); external resources of a URL model resolve next to it
+        const path = opts.url ? THREE.LoaderUtils.extractUrlBase(new URL(opts.url, location.href).href) : '';
         Promise.resolve(typeof opts.data === 'function' ? opts.data() : opts.data)
-          .then((buf) => loader.parse(buf, '', onLoad, fail))
+          .then((buf) => loader.parse(buf, path, onLoad, fail))
           .catch(fail);
       }
     });

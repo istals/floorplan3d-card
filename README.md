@@ -376,6 +376,12 @@ levels become floors, tagged rooms and zones become the card's rooms, so the mod
 replace hand-drawn ones. Format and examples: [docs/model-builder-guide.md](docs/model-builder-guide.md).
 Untagged models still load and show whole.
 
+Loading: the plan (rooms, markers) shows at once, with a progress bar while the model downloads.
+The browser keeps the model file (Cache Storage, or IndexedDB when HA is served over plain http),
+so the next load skips the download until the model changes (a new upload, or new ETag /
+Last-Modified of a `/local/` file). The last render of each view is kept as a small picture and
+shown until the model is ready. Everything stays in this browser; clearing site data removes it.
+
 In **Edit → Model** you choose which HA floor each level belongs to and assign each room to an
 HA area. Defaults follow level order and the tag's suggested area, so most of it is automatic;
 your choices are stored by id and survive re-exports. Click a part of the model in the view to
@@ -611,6 +617,7 @@ npm run make-demo-model   # regenerate demo/house.glb (views, layers, tagged roo
 npm test              # unit tests (vitest)
 npm run lint
 npm run check         # build + headless Chrome checks of view, edit mode and model
+npm run check:model -- --only views,mower   # some model check groups (--list, --shard 1/3, --jobs N)
 python -m pytest      # integration tests (pip install -r requirements-test.txt first)
 npm run deploy        # build and scp the integration to HA (settings in .env, see .env.example)
 ```
