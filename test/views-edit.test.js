@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nodeIndex, ruleState, setRuleState, nextEyeState, viewTree, pickSelector, orderViews, nextViewId, parseSelector, matches, legacyShowRules } from '../src/views.js';
+import { nodeIndex, ruleState, ruleKeepsObjects, setRuleState, nextEyeState, viewTree, pickSelector, orderViews, nextViewId, parseSelector, matches, legacyShowRules } from '../src/views.js';
 import { buildManifest } from '../src/manifest.js';
 
 const tree = (roots) => {
@@ -31,6 +31,11 @@ describe('rule list edits', () => {
     expect(ruleState([{ hide: 'level:ground' }], 'level:ground')).toBe('hidden');
     expect(ruleState([{ hide: 'level:ground' }, { show: 'level:ground' }], 'level:ground')).toBe('shown');
     expect(ruleState([{ show: 'layer:x' }], 'level:ground')).toBe('default');
+    expect(ruleState([{ hide: 'zone:d', keep_objects: true }], 'zone:d')).toBe('hidden');
+    expect(ruleKeepsObjects([{ hide: 'zone:d', keep_objects: true }], 'zone:d')).toBe(true);
+    expect(ruleKeepsObjects([{ hide: 'zone:d', keep_objects: true }, { hide: 'zone:d' }], 'zone:d')).toBe(false);
+    expect(setRuleState([{ hide: 'zone:d' }], 'zone:d', 'hidden', { keepObjects: true })).toEqual([{ hide: 'zone:d', keep_objects: true }]);
+    expect(setRuleState([{ hide: 'zone:d', keep_objects: true }], 'zone:d', 'shown')).toEqual([{ show: 'zone:d' }]);
     expect(ruleState(null, 'all')).toBe('default');
   });
   it('replaces earlier rules for the selector and appends the new one', () => {

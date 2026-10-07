@@ -178,9 +178,10 @@ object(room('living_room'), { id: 'climate_living', type: 'climate', label: 'Liv
     ['climate_living_body', new THREE.BoxGeometry(0.8, 0.25, 0.2), mat(0xf4f4f4)],
     ['glow', new THREE.BoxGeometry(0.6, 0.02, 0.01), glowMat(), [0, -0.08, 0.1]],
   ]);
-// facade: three wall lamps on the south wall, one circuit (group), downlights without shadows
+// facade: three wall lamps on the south wall, one circuit (group), downlights without shadows; the first one is
+// nested in the terrace zone (as exporters do with lamps above a paved area: hiding the zone must keep it)
 for (const [i, x] of [4, 6.25, 8.5].entries()) {
-  object(ext, {
+  object(i === 0 ? ext.getObjectByName('terrace') : ext, {
     id: `facade_${i + 1}`, type: 'light', label: `Facade lamp ${i + 1}`, group: 'facade', glow: 'glow',
     hints: { beam: 'down', max: 5, distance: 6, decay: 2, castShadow: false, offset: [0, 0, 0.1] },
     suggest: { entity: 'light.demo_facade' },

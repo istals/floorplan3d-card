@@ -113,24 +113,56 @@ export function matches(sel, info) {
 
 const ruleSel = (r) => parseSelector(r && (r.show ?? r.hide));
 
+// selectors that pick model objects themselves (a hide with keep_objects never keeps what they hide)
+const OBJECT_SELS = new Set(['object', 'type', 'group', 'tag']);
+const flagArray = (arr, name, values) => Object.defineProperty(arr, name, { value: values, enumerable: false });
+
+// Effective visibility per index node. A hide rule with keep_objects: true hides the matched parts' surfaces
+// but keeps the model objects inside them (lamps nested in a zone) visible, unless an object-level rule
+// (object: / type: / group: / tag:) hides them. Extra (non-enumerable) arrays on the result:
+// selfHidden[i]: on only to keep a descendant visible, its own geometry must not render;
+// keptOnly[i]: on only because of kept objects (the room / zone itself counts as hidden); kept[i]: a kept object node.
 export function resolveVisibility(index, rules, defaultVisible = true) {
-  const parsed = (rules || []).map((r) => ({ sel: ruleSel(r), show: r && r.show !== undefined }));
+  const parsed = (rules || []).map((r) => ({ sel: ruleSel(r), show: r && r.show !== undefined, keep: !!r && r.show === undefined && r.keep_objects === true }));
   // a rule applies to the matched node and cascades to its descendants; the latest rule in order wins
-  const resolved = new Array(index.nodes.length);
-  const decided = new Array(index.nodes.length); // index of the winning rule, -1 = none
+  const n = index.nodes.length;
+  const resolved = new Array(n), kept = new Array(n).fill(false);
+  const decided = new Array(n); // index of the winning rule, -1 = none
+  const inObj = new Array(n), objD = new Array(n); // inside an object's subtree; winning object-level rule there
   index.nodes.forEach((info, i) => {
-    let d = info.parent >= 0 ? decided[info.parent] : -1;
+    const par = info.parent;
+    let d = par >= 0 ? decided[par] : -1;
     parsed.forEach((r, k) => { if (k > d && r.sel && matches(r.sel, info)) d = k; });
     decided[i] = d;
     resolved[i] = d >= 0 ? parsed[d].show : defaultVisible;
+    inObj[i] = (!!info.tag && info.tag.kind === 'object') || (par >= 0 && inObj[par]);
+    let od = par >= 0 && inObj[par] ? objD[par] : -1;
+    if (inObj[i]) parsed.forEach((r, k) => { if (k > od && r.sel && OBJECT_SELS.has(r.sel.kind) && matches(r.sel, info)) od = k; });
+    objD[i] = od;
+    if (!resolved[i] && inObj[i] && d >= 0 && parsed[d].keep && !OBJECT_SELS.has(parsed[d].sel.kind) && !(od >= 0 && !parsed[od].show)) {
+      resolved[i] = true;
+      kept[i] = true;
+    }
   });
-  // a visible descendant keeps its ancestors on (their other children still use their own value)
+  // a visible descendant keeps its ancestors on (their other children still use their own value);
+  // first for plainly visible nodes, then for kept objects (ancestors on only for those: keptOnly)
   const effective = resolved.slice();
-  for (let i = index.nodes.length - 1; i >= 0; i--) {
-    if (effective[i]) for (let p = index.nodes[i].parent; p >= 0 && !effective[p]; p = index.nodes[p].parent) effective[p] = true;
+  const keptOnly = new Array(n).fill(false);
+  for (const pass of [false, true]) {
+    for (let i = n - 1; i >= 0; i--) {
+      if (!resolved[i] || kept[i] !== pass) continue;
+      for (let p = index.nodes[i].parent; p >= 0 && !effective[p]; p = index.nodes[p].parent) { effective[p] = true; keptOnly[p] = pass; }
+    }
   }
+  flagArray(effective, 'selfHidden', effective.map((on, i) => on && !resolved[i]));
+  flagArray(effective, 'keptOnly', keptOnly);
+  flagArray(effective, 'kept', kept);
   return effective;
 }
+
+// Node i is shown in its own right (not only for objects kept inside a hidden part): levels, rooms and
+// zones count as hidden when only their kept objects are on.
+export const shownHere = (effective, i) => !!effective[i] && !(effective.keptOnly && effective.keptOnly[i]) && !(effective.kept && effective.kept[i]);
 
 export function unmatchedSelectors(index, rules) {
   const out = [];
@@ -273,7 +305,7 @@ export function resolveViews({ manifest, haFloors, layoutViews, yamlViews, saved
 }
 
 export function primaryLevel(index, effective, levels) {
-  const visible = new Set(index.nodes.filter((n, i) => effective[i] && n.tag && n.tag.kind === 'level').map((n) => n.tag.id));
+  const visible = new Set(index.nodes.filter((n, i) => shownHere(effective, i) && n.tag && n.tag.kind === 'level').map((n) => n.tag.id));
   const storeys = levels.filter((l) => isStorey(l) && visible.has(l.id)).sort(byOrder);
   return storeys.length ? storeys[storeys.length - 1].id : null;
 }
@@ -303,7 +335,7 @@ export function levelOrders(levels) {
 // view that hides only the roof is still a storey view (prototype: "Attic shows only attic devices").
 export function isOverview(index, effective, levels) {
   const storeys = new Set((levels || []).filter((l) => isStorey(l) || l.role === 'roof').map((l) => l.id));
-  return index.nodes.every((n, i) => !(n.tag && n.tag.kind === 'level' && storeys.has(n.tag.id)) || effective[i]);
+  return index.nodes.every((n, i) => !(n.tag && n.tag.kind === 'level' && storeys.has(n.tag.id)) || shownHere(effective, i));
 }
 
 // HA floor id -> the lowest storey level bound to it (inverse of levelFloor).
@@ -366,11 +398,19 @@ export function ruleState(rules, sel) {
   return s;
 }
 
+// True when the selector's last rule is a hide that keeps the model objects inside (keep_objects).
+export function ruleKeepsObjects(rules, sel) {
+  let k = false;
+  for (const r of rules || []) if (selOf(r) === sel) k = r.show === undefined && r.keep_objects === true;
+  return k;
+}
+
 // Drop every rule for the selector, then append the new one ('default' appends nothing).
-export function setRuleState(rules, sel, state) {
+// opts.keepObjects: a hide that keeps the objects inside visible ("Hide surfaces, keep devices").
+export function setRuleState(rules, sel, state, { keepObjects = false } = {}) {
   const out = (rules || []).filter((r) => selOf(r) !== sel).map((r) => ({ ...r }));
   if (state === 'shown') out.push({ show: sel });
-  else if (state === 'hidden') out.push({ hide: sel });
+  else if (state === 'hidden') out.push(keepObjects ? { hide: sel, keep_objects: true } : { hide: sel });
   return out;
 }
 
@@ -615,7 +655,7 @@ export function roomAt(point, floorId, rooms, levelFloor = {}, visible = null) {
 export function exteriorShown(index, effective, levels) {
   const ext = new Set((levels || []).filter((l) => l.role === 'exterior').map((l) => l.id));
   if (!ext.size) return null;
-  return index.nodes.some((n, i) => effective[i] && ext.has(n.levelId));
+  return index.nodes.some((n, i) => shownHere(effective, i) && ext.has(n.levelId));
 }
 
 // Whether the mower's surroundings show (its map, marker and trail): any exterior-role level, or the
@@ -625,7 +665,7 @@ export function outdoorShown(levels, index = null, flags = null, groundLevel = n
   const ids = new Set((levels || []).filter((l) => l.role === 'exterior').map((l) => l.id));
   if (groundLevel) ids.add(groundLevel);
   if (!ids.size) return null;
-  if (index && flags) return index.nodes.some((n, i) => !!flags[i] && ids.has(n.levelId));
+  if (index && flags) return index.nodes.some((n, i) => shownHere(flags, i) && ids.has(n.levelId));
   return (levels || []).some((l) => ids.has(l.id) && !!l.node && l.node.visible !== false);
 }
 

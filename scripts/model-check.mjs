@@ -1351,6 +1351,27 @@ try {
   const shapes = await page.evaluate(`(() => { const out = {}; for (const el of ${card}.shadowRoot.querySelectorAll('.fp-marker')) {
     const k = [...el.classList].filter((c) => c.startsWith('kind-')).join(); out[k] = (out[k] || 0) + 1; } return out; })()`);
   check('markers: shapes by role (control circles, value squares, binary, info)', shapes['kind-control'] > 0 && shapes['kind-value'] > 0 && shapes['kind-binary'] > 0, JSON.stringify(shapes));
+  // keep_objects: the terrace zone hidden with "Hide surfaces, keep devices" keeps facade_1 (nested in it) lit and tappable
+  const vid = await page.evaluate(`${card}.currentView().id`);
+  await page.evaluate(`${card}.saveViewPatch(${JSON.stringify(vid)}, { rules: [...(${card}._layout.views?.[${JSON.stringify(vid)}]?.rules || []), { hide: 'zone:terrace', keep_objects: true }] })`);
+  await sleep(500);
+  const keep = await page.evaluate(`(() => { const c = ${card}, idx = c._index, l = c._objects;
+    const z = idx.nodes.findIndex((n) => n.tag && n.tag.kind === 'zone' && n.tag.id === 'terrace');
+    const lampNode = l.objectAt('facade_1').obj.node;
+    let inZone = false; for (let o = lampNode; o; o = o.parent) if (o === idx.nodes[z].node) inZone = true;
+    const shown = (o) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+    const surfaces = []; idx.nodes[z].node.traverse((o) => { if (o.isMesh) { let obj = false; for (let p = o; p && p !== idx.nodes[z].node; p = p.parent) if (p.userData && p.userData.fp && p.userData.fp.kind === 'object') obj = true; if (!obj) surfaces.push(shown(o) && o.layers.mask !== 0); } });
+    return { inZone, lampShown: shown(lampNode), lit: !!l.objectAt('facade_1').result.lit, surfaces, wash: l.parts.get('facade_1').wash.meshes.some((m) => m.visible) }; })()`);
+  check('keep_objects: hidden terrace zone keeps its nested facade lamp shown and lit, its surfaces hidden',
+    keep.inZone && keep.lampShown && keep.lit && keep.wash && keep.surfaces.length > 0 && keep.surfaces.every((x) => !x), JSON.stringify(keep));
+  const fa = await page.evaluate(`(() => { const c = ${card}; const a = c._objects.anchors().find((x) => x.id === 'facade_1'); return a && c._view.projectWorld(a.world); })()`);
+  const facadeBefore = await page.evaluate(`${card}._hass.states['light.demo_facade'].state`);
+  if (fa) await page.mouse.click(fa[0], fa[1]);
+  await sleep(450);
+  const facadeAfter = await page.evaluate(`${card}._hass.states['light.demo_facade'].state`);
+  check('keep_objects: the kept facade lamp is tappable (tap toggles it)', !!fa && facadeAfter !== facadeBefore, `${JSON.stringify(fa)} ${facadeBefore} -> ${facadeAfter}`);
+  await page.evaluate(`${card}._hass.callService('light', 'turn_on', { entity_id: 'light.demo_facade' })`);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'keep-objects-night.png') });
   allErrors.push(...s.errors);
 } finally {
   await s.close();
@@ -1723,7 +1744,7 @@ try {
     await page.mouse.click(pt[0], pt[1]);
     await sleep(300);
     const menu = await page.evaluate(`(() => { const m = ${sr}.querySelector('.fp-pickmenu'); return m ? [...m.querySelectorAll('button')].map((b) => b.textContent) : null; })()`);
-    check('click on furniture opens the menu', JSON.stringify(menu) === '["Hide in this view","Show in this view","Hide in all views","Reveal in tree"]', JSON.stringify(menu));
+    check('click on furniture opens the menu', JSON.stringify(menu) === '["Hide in this view","Hide surfaces, keep devices","Show in this view","Hide in all views","Reveal in tree"]', JSON.stringify(menu));
     check('the pick is the sofa group', (await page.evaluate(`${card}._edit.vwPick && ${card}._edit.vwPick.sel`)) === 'node:house/level0/sofa', await page.evaluate(`${card}._edit.vwPick && ${card}._edit.vwPick.sel`));
     await page.evaluate(`${sr}.querySelector('.fp-pickmenu [data-act=vw-hide-here]').click()`);
     await sleep(300);

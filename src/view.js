@@ -1956,7 +1956,11 @@ export class FloorplanView {
     this._restoreModelVisibility();
     if (flags && index) {
       index.nodes.forEach((n, i) => { n.node.visible = !!flags[i]; });
-      this._modelVisibility = { index, flags };
+      // on only to keep a descendant (a kept lamp) visible: its own mesh neither renders, casts shadows nor
+      // takes clicks (layers are per object, not inherited); restored with the visibility
+      const masks = new Map();
+      if (flags.selfHidden) index.nodes.forEach((n, i) => { if (flags.selfHidden[i] && n.node.isMesh) { masks.set(n.node, n.node.layers.mask); n.node.layers.mask = 0; } });
+      this._modelVisibility = { index, flags, masks };
     } else {
       this._modelVisibility = null;
     }
@@ -1966,7 +1970,10 @@ export class FloorplanView {
 
   // Set every node of the previously flagged index visible again.
   _restoreModelVisibility() {
-    if (this._modelVisibility) for (const n of this._modelVisibility.index.nodes) n.node.visible = true;
+    if (this._modelVisibility) {
+      for (const n of this._modelVisibility.index.nodes) n.node.visible = true;
+      for (const [node, mask] of this._modelVisibility.masks || []) node.layers.mask = mask;
+    }
     this._modelVisibility = null;
   }
 

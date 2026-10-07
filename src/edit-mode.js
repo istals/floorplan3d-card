@@ -10,7 +10,7 @@ import { readSource, calibrationError, overlayUrl } from './mower.js';
 import { setupChecklist } from './mower-setup.js';
 import { MapPicker } from './map-picker.js';
 import { readImagePixels, imagePixels, medianColor, colorList, addColorPatch, removeColorPatch, MAX_COLORS, fitOverlay } from './mower-image.js';
-import { ruleState, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
+import { ruleState, ruleKeepsObjects, setRuleState, nextEyeState, viewTree, pickSelector, nextViewId, unmatchedSelectors, legacyShowRules,
   SECTION_DIRS, sectionDir, sectionPos, sectionAt, sectionRange, zoomToFor } from './views.js';
 import { levelsFromFloorMap } from './bindings.js';
 import { outlineLoops, pickLoop, rasterGrid, outlineFromGrid } from './outline.js';
@@ -1740,8 +1740,8 @@ export class EditMode {
     return v && Array.isArray(v.rules) ? v.rules : [];
   }
 
-  _setRule(id, sel, state) {
-    this.card.saveViewPatch(id, { rules: setRuleState(this._layoutRules(id), sel, state) });
+  _setRule(id, sel, state, opts) {
+    this.card.saveViewPatch(id, { rules: setRuleState(this._layoutRules(id), sel, state, opts) });
   }
 
   // Tree rows for the loaded model, with the manifest's labels (cached per node index).
@@ -1823,6 +1823,7 @@ export class EditMode {
         return `<li data-sel="${esc(r.sel)}" class="${cls}${on ? '' : ' off'}${part ? ' part' : ''}${picked}" style="--d:${r.depth}" title="${esc(r.path || r.sel)}">
           <span class="state" title="${vis[0]} in this view"><ha-icon icon="${vis[1]}"></ha-icon></span>
           <span class="name">${esc(r.label)}${part ? ' <span class="dim">partly</span>' : ''}</span>${toggle}
+          ${state === 'hidden' && ruleKeepsObjects(rules, r.sel) ? '<span class="yaml kept" title="Its surfaces are hidden; the model objects inside stay visible">devices kept</span>' : ''}
           ${yamlSels.has(r.sel) ? '<span class="yaml" title="The card YAML has a rule for this part; it wins over this setting">YAML</span>' : ''}
           <button class="eye ${state}" data-act="vw-eye" data-sel="${esc(r.sel)}" title="${eyeTitle[state]}"><ha-icon icon="${eyeIcon[state]}"></ha-icon></button></li>`;
       };
@@ -1941,6 +1942,7 @@ export class EditMode {
     m.className = 'fp-pickmenu';
     m.innerHTML = `<div class="title" title="${esc(this.vwPick.sel)}">${esc(title)}</div>
       <button data-act="vw-hide-here">Hide in this view</button>
+      ${/^(object|type|group|tag):/.test(this.vwPick.sel) ? '' : '<button data-act="vw-hide-keep" title="Hide its surfaces; lamps and other model objects inside stay visible and tappable">Hide surfaces, keep devices</button>'}
       <button data-act="vw-show-here">Show in this view</button>
       <button data-act="vw-hide-all">Hide in all views</button>
       <button data-act="vw-reveal">Reveal in tree</button>`;
@@ -1971,11 +1973,12 @@ export class EditMode {
     this._closeMenu();
     switch (btn.dataset.act) {
       case 'vw-hide-here':
+      case 'vw-hide-keep':
       case 'vw-show-here':
         if (!cur) return;
         this.vwPick = null;
         this.view.highlightModelNode(null);
-        this._setRule(cur.id, pick.sel, btn.dataset.act === 'vw-hide-here' ? 'hidden' : 'shown');
+        this._setRule(cur.id, pick.sel, btn.dataset.act === 'vw-show-here' ? 'shown' : 'hidden', { keepObjects: btn.dataset.act === 'vw-hide-keep' });
         return;
       case 'vw-hide-all': {
         const views = { ...(this.layout.views || {}) };

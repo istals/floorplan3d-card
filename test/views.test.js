@@ -87,6 +87,56 @@ describe('resolveVisibility', () => {
   });
 });
 
+describe('resolveVisibility: keep_objects', () => {
+  // a driveway zone (itself a mesh) holding its paving and two facade lamps (each with a glow child)
+  const glow1 = { name: 'glow1' }, glow2 = { name: 'glow2' };
+  const lamp3 = { name: 'lamp3', extras: fp({ kind: 'object', id: 'facade_3', type: 'light', group: 'facade' }), children: [glow1] };
+  const lamp4 = { name: 'lamp4', extras: fp({ kind: 'object', id: 'facade_4', type: 'light' }), children: [glow2] };
+  const paving = { name: 'paving' };
+  const drive = { name: 'drive', extras: fp({ kind: 'zone', id: 'drive', outline: sq }), children: [paving, lamp3, lamp4] };
+  const lawn2 = { name: 'lawn2', extras: fp({ kind: 'zone', id: 'lawn2', outline: sq }) };
+  const ext2 = { name: 'exterior', extras: fp({ kind: 'level', id: 'exterior', role: 'exterior' }), children: [drive, lawn2] };
+  const ad = tree([ext2]);
+  const ix = nodeIndex(ad, buildManifest(ad));
+  const i = (name) => ix.nodes.findIndex((n) => n.name === name);
+  const v = (rules) => { const e = resolveVisibility(ix, rules); return { e, at: (n) => e[i(n)] }; };
+
+  it('hidden zone with keep_objects: lamps (and their subtree) visible, paving hidden, zone own mesh hidden', () => {
+    const { e, at } = v([{ hide: 'zone:drive', keep_objects: true }]);
+    expect([at('lamp3'), at('glow1'), at('lamp4'), at('glow2')]).toEqual([true, true, true, true]);
+    expect(at('paving')).toBe(false);
+    expect(at('drive')).toBe(true); // kept on for its lamps (pickable through it) ...
+    expect(e.selfHidden[i('drive')]).toBe(true); // ... but its own geometry is hidden
+    expect(e.keptOnly[i('drive')]).toBe(true); // counts as hidden for the zone's devices
+    expect(e.selfHidden[i('lamp3')]).toBe(false);
+    expect(at('lawn2')).toBe(true);
+  });
+  it('without keep_objects the lamps go with the zone', () => {
+    const { e, at } = v([{ hide: 'zone:drive' }]);
+    expect([at('drive'), at('lamp3'), at('glow1'), at('paving')]).toEqual([false, false, false, false]);
+    expect(e.selfHidden.some(Boolean)).toBe(false);
+  });
+  it('an object-level hide still hides a kept object, in any order', () => {
+    let { at } = v([{ hide: 'zone:drive', keep_objects: true }, { hide: 'object:facade_4' }]);
+    expect([at('lamp3'), at('lamp4'), at('glow2')]).toEqual([true, false, false]);
+    ({ at } = v([{ hide: 'object:facade_4' }, { hide: 'zone:drive', keep_objects: true }]));
+    expect([at('lamp4'), at('lamp3')]).toEqual([false, true]);
+    ({ at } = v([{ hide: 'group:facade', keep_objects: true }]));
+    expect(at('lamp3')).toBe(false); // an object-level hide is a hide, keep_objects or not
+  });
+  it('level hidden with keep_objects keeps objects in its zones; hide all + keep too', () => {
+    let { at } = v([{ hide: 'level:exterior', keep_objects: true }]);
+    expect([at('exterior'), at('lamp3'), at('paving'), at('lawn2')]).toEqual([true, true, false, false]);
+    ({ at } = v([{ hide: 'all', keep_objects: true }]));
+    expect([at('lamp4'), at('glow2'), at('paving')]).toEqual([true, true, false]);
+  });
+  it('a plain visible sibling is not marked self-hidden', () => {
+    const { e } = v([{ hide: 'zone:drive', keep_objects: true }]);
+    expect(e.selfHidden[i('exterior')]).toBe(false);
+    expect(e.keptOnly[i('exterior')]).toBe(false);
+  });
+});
+
 describe('views edge cases', () => {
   it('rule order matters', () => {
     const v = resolveVisibility(idx, [{ show: 'room:kitchen' }, { hide: 'level:ground' }]);

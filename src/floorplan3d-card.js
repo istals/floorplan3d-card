@@ -13,7 +13,7 @@ import {
 } from './bindings.js';
 import { threeAdapter } from './manifest.js';
 import {
-  nodeIndex, resolveViews, resolveVisibility, primaryLevel, defaultFloors, levelOrders, isOverview, floorLevels, deviceState,
+  nodeIndex, resolveViews, resolveVisibility, shownHere, primaryLevel, defaultFloors, levelOrders, isOverview, floorLevels, deviceState,
   defaultViewId, viewCut, orderViews, unmatchedSelectors, sectionPlane, sectionCamera, zoomToFor, roomAt, exteriorShown, cameraToCard, topCameraToCard,
 } from './views.js';
 import { readSource, mowerTransform, overlayUrl } from './mower.js';
@@ -2185,7 +2185,7 @@ class Floorplan3dCard extends HTMLElement {
     const roomLevel = new Map(mb.manifest.rooms.map((r) => [r.id, r.level]));
     const visibleRooms = new Set();
     this._index.nodes.forEach((n, i) => {
-      if (st.effective[i] && n.tag && (n.tag.kind === 'room' || n.tag.kind === 'zone')) visibleRooms.add(n.tag.id);
+      if (shownHere(st.effective, i) && n.tag && (n.tag.kind === 'room' || n.tag.kind === 'zone')) visibleRooms.add(n.tag.id);
     });
     const ctx = {
       levelOrder: L.levelOrder, primaryOrder: st.primary ? L.levelOrder[st.primary] ?? null : null,

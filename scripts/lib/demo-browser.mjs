@@ -75,7 +75,7 @@ export async function openDemo(query = {}, viewport = { width: 1400, height: 560
     await page.waitForFunction(() => {
       const c = document.querySelector('floorplan3d-card');
       return c && c.shadowRoot && c.shadowRoot.querySelectorAll('.fp-marker').length > 0;
-    }, { timeout: 10000 });
+    }, { timeout: 30000 }); // a loaded machine can take > 10 s for the first frame
     await new Promise((r) => setTimeout(r, 500));
     return { page, errors, close, browser, base };
   } catch (e) {
