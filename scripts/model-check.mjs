@@ -3113,6 +3113,8 @@ if (args.list) {
   process.exit(0);
 }
 if (!args.shard && !args.only && args.jobs > 1) process.exit(await sections.runShards(import.meta.filename, args.jobs));
+// every shard writes screenshots, so create the folder before any section runs
+fs.mkdirSync(path.join(root, 'screenshots'), { recursive: true });
 await sections.run(selectGroups(sections.groups, args), {
   onError: (name, e) => { console.log(`FAIL ${name} threw: ${e && e.stack ? e.stack : e}`); failures.push(name); },
 });
