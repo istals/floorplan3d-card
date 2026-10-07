@@ -17,6 +17,22 @@ export function dockWord(mowerState, statusState = null) {
   return /charg/.test(`${String(mowerState || '').toLowerCase()} ${String(statusState || '').toLowerCase()}`) ? 'charging' : 'docked';
 }
 
+// ---------- mower + dock as one (docked) ----------
+// Docked with both a mower and a dock object: one object for taps and the popup -> { mower, dock } ids, else null.
+export function mowerDockGroup({ docked, mowerId, dockId }) {
+  return docked && mowerId && dockId && mowerId !== dockId ? { mower: mowerId, dock: dockId } : null;
+}
+// The object a tap on id stands for (the dock -> the mower while grouped).
+export const groupedTapId = (id, group) => (group && id === group.dock ? group.mower : id);
+// No tap target / dot of its own (the dock while grouped).
+export const groupedHidden = (id, group) => !!group && id === group.dock;
+// The mower popup's dock row: 'Charging' / 'Docked' with the battery (%) when known.
+export function dockRows(word, battery) {
+  const b = battery === null || battery === undefined || battery === '' ? null : Number(battery);
+  const w = word === 'charging' ? 'Charging' : 'Docked';
+  return [{ kind: 'info', label: 'Dock', value: Number.isFinite(b) ? `${w} · ${Math.round(b)} %` : w }];
+}
+
 // ---------- dock pose ----------
 // hints.front of the dock node ('+x' | '-x' | '+z' | '-z'), default its +Z: the local axis it faces.
 export function dockFrontAxis(hints) {

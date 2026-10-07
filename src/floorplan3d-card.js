@@ -24,7 +24,7 @@ import './mower-auto.js'; // registers the auto-mode kernel with the map worker
 import { iconMoments, momentHeading, momentsOf, smoothHeading, makeTemplate, matchTemplate, grayOf, norm360 } from './mower-heading.js';
 import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progressValue, connectivity, rain, deviceRows, findStatusEntity } from './mower-device.js';
 import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, planToPixel, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint, mapWorkSize, FETCH_TIMEOUT_MS } from './mower-image.js';
-import { isDocked, dockWord, trackWindow, fullSearch, layerDue, throttleStep, effectiveRefresh, LONG_TASK_MS, mowerStatusText, rememberPosition, lastPosition } from './mower-track.js';
+import { isDocked, dockWord, mowerDockGroup, groupedTapId, groupedHidden, dockRows, trackWindow, fullSearch, layerDue, throttleStep, effectiveRefresh, LONG_TASK_MS, mowerStatusText, rememberPosition, lastPosition } from './mower-track.js';
 import { ObjectLayer } from './objects/layer.js';
 import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
 import { DebugOverlay } from './debug-overlay.js';
@@ -910,6 +910,14 @@ class Floorplan3dCard extends HTMLElement {
           if (mi.mowed) extra.push({ kind: 'info', label: 'Mowed', value: mi.mowed });
           const wt = this._warningText();
           if (wt) extra.unshift({ kind: 'info', label: wt.label, value: wt.value });
+          // docked: mower and dock are one object, the dock's rows (charging / docked, battery) join
+          const grp = this._dockGroup();
+          if (grp && grp.mower === id) {
+            const dk = this._dockedNow(), mst = o.binding && o.binding.entity && this._hass.states[o.binding.entity];
+            let bat = mst && mst.attributes ? mst.attributes.battery_level ?? null : null;
+            if (bat === null && o.binding && o.binding.entity) { const r = deviceRows(this._hass, o.binding.entity).find((x) => x.key === 'battery'); bat = r ? parseFloat(r.value) : null; }
+            extra.push(...dockRows(dk.word, bat));
+          }
           // the mower's device entities (progress, rain, signal, zone ...): popup item 'device'
           const pl = this._objectActions(id, o).popup || (o.obj.ui && o.obj.ui.popup) || typeOf('mower').defaults.popup;
           if (Array.isArray(pl) && pl.includes('device') && o.binding && o.binding.entity) {
@@ -968,14 +976,15 @@ class Floorplan3dCard extends HTMLElement {
     const on = mode !== 'off' && !!layer.model && !this._editing && !!this._hass;
     if (hints.setVisible(on)) this._view.markDirty();
     if (!on) return;
-    const key = [layer.stats.evaluated, layer._labelSig, this._viewState, this._floorOnly, this._bindings, this._groups, mode, this._mode];
+    const grp = this._dockGroup();
+    const key = [layer.stats.evaluated, layer._labelSig, this._viewState, this._floorOnly, this._bindings, this._groups, mode, this._mode, grp ? grp.dock : null];
     if (this._hintKey && key.every((x, i) => x === this._hintKey[i])) return;
     this._hintKey = key;
     const levelShown = this._levelShown(), states = this._hass.states, groups = this._groups || {};
     const items = [];
     for (const a of layer.anchors()) {
       const o = layer.objectAt(a.id), b = o && o.binding;
-      if (!b || b.hidden) continue;
+      if (!b || b.hidden || groupedHidden(a.id, grp)) continue; // docked: the mower's dot stands for the dock too
       const own = this._objectHasOwnActions(a.id, o);
       if (!b.missing && !actionTarget(o.obj, b, groups) && !own) continue;
       if (!levelShown(o.obj.level) || !nodeShown(o.obj.node)) continue;
@@ -1367,6 +1376,15 @@ class Floorplan3dCard extends HTMLElement {
     this._iconHeadRaw = angle;
     this._headSt = smoothHeading(this._headSt, norm360(angle + off + ((cfg.overlay && cfg.overlay.rotation) || 0)));
     this._iconHead = { angle: this._headSt.angle, source };
+  }
+
+  // Docked with a mower and a dock object: { mower, dock } ids (one object for taps, dots and the popup), else null.
+  _dockGroup() {
+    const l = this._objects;
+    if (!l || !l.model || !this._hass) return null;
+    const mowerId = l.mowerId();
+    if (!mowerId) return null;
+    return mowerDockGroup({ docked: this._dockedNow().docked, mowerId, dockId: l.dockId() });
   }
 
   // The mower's docked state: lawn_mower docked / charging or its "Mower status" sensor. -> { docked, word }
@@ -2512,9 +2530,10 @@ class Floorplan3dCard extends HTMLElement {
     }
     // nearest first; one hidden behind visible model geometry (a lamp behind a facade wall) is skipped
     const byId = new Map(pts.map((p) => [p.id, p]));
+    const grp = all ? null : this._dockGroup(); // docked (view mode): a tap on the dock is a tap on the mower
     for (const id of screenByDistance(pts, x, y, radius)) {
       const p = byId.get(id);
-      if (!this._view.pointHidden(p.world, p.node)) return id;
+      if (!this._view.pointHidden(p.world, p.node)) return groupedTapId(id, grp);
     }
     return null;
   }

@@ -1282,7 +1282,8 @@ sections.add('demo-objects', { group: 'lamps', query: { model: '1', view: '3d' }
   check('lights: off -> no pool light in the scene (sub-group hidden), object labels still shown', SL.pool === 0 && SL.labels > 0, JSON.stringify(SL));
   await page.evaluate(`${card}.setConfig({ ...${card}._config, lights: 'auto' })`);
   await idle(page);
-  check('lights: auto again -> pool lights back', (await look()).lit > 0 && (await sceneLights()).pool === 12);
+  const poolSize = await page.evaluate(`${card}._objects.pool.points.length + ${card}._objects.pool.spots.length`); // shadow slots (render recipe, device cap) + 4 points + 4 spots
+  check('lights: auto again -> pool lights back', (await look()).lit > 0 && (await sceneLights()).pool === poolSize, String(poolSize));
   // Objects tab: every row bound (no "entity not found"); the group controller field
   await page.evaluate('window.__setDemoSun(30, 180)');
   const sr = `${card}.shadowRoot`;
@@ -1340,6 +1341,43 @@ sections.add('demo-objects', { group: 'lamps', query: { model: '1', view: '3d' }
 });
 
 // 1w. wall washes for every lit lamp, tap hints, marker shapes
+// 3b. docked: mower and dock are one object (one tap dot; a tap on the dock opens the mower popup with the dock row);
+// mowing: two objects again
+sections.add('mower-dock-one', { group: 'lamps', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass && ${card}._objects.parts.size > 0 && ${card}._bindings && ${card}._bindings.has('dock')`, { timeout: 30000 });
+  await page.evaluate('window.__demoMowerPaused = true');
+  await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=exterior]').click()`);
+  await settle(page, card);
+  await page.evaluate(`${card}._layout.tap_hints = 'always'`); // every dot drawn
+  const setState = (state, attrs) => page.evaluate(`(() => { const c = ${card}, st = c._hass.states, s = st['lawn_mower.demo'];
+    c.hass = { ...c._hass, states: { ...st, 'lawn_mower.demo': { ...s, state: ${JSON.stringify(state)}, attributes: { ...s.attributes, ...${JSON.stringify(attrs || {})} } } } }; })()`);
+  const st = () => page.evaluate(`(() => { const c = ${card}, l = c._objects; c._syncHints();
+    const at = (id) => { const a = l.anchors().find((x) => x.id === id); return a ? c._view.projectWorld(a.world) : null; };
+    const d = at('dock'), m = at('mower');
+    return { group: c._dockGroup(), dots: c._hints.items.map((x) => x.id), dockHit: d ? c._objectHit(d[0], d[1], 6) : 'no-dock', mowerHit: m ? c._objectHit(m[0], m[1], 6) : 'no-mower', d, m }; })()`);
+  await setState('mowing');
+  await idle(page);
+  const mow = await st();
+  check('mowing: mower and dock are two objects (two dots, own taps)', !mow.group && mow.dots.includes('dock') && mow.dots.includes('mower') && mow.dockHit !== 'mower', JSON.stringify(mow));
+  await setState('docked', { battery_level: 87 });
+  await idle(page);
+  const dk = await st();
+  check('docked: one object (the dock has no dot of its own)', !!dk.group && dk.group.dock === 'dock' && !dk.dots.includes('dock') && dk.dots.includes('mower'), JSON.stringify(dk));
+  check('docked: a tap on the dock is a tap on the mower', dk.dockHit === 'mower' && dk.mowerHit === 'mower', JSON.stringify(dk));
+  // a real tap where the dock is: the mower popup with the dock row
+  await page.evaluate(`${card}._popup.close()`);
+  await page.mouse.click(dk.d[0], dk.d[1]);
+  await page.waitForFunction(`!!${card}._popup.el`, { timeout: 3000 }).catch(() => {});
+  const pop = await page.evaluate(`(() => { const c = ${card}, el = c._popup.el; return el ? { id: c._popup._id, rows: [...el.querySelectorAll('.fp-pop-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()) } : null; })()`);
+  check('docked: tapping the dock opens the mower popup with "Dock Docked · 87 %"', !!pop && pop.id === 'mower' && pop.rows.some((t) => /^Dock\s*Docked · 87 %$/.test(t)), JSON.stringify(pop));
+  await page.evaluate(`${card}._popup.close()`);
+  await setState('mowing');
+  await idle(page);
+  const back = await st();
+  check('mowing again: two objects', !back.group && back.dots.includes('dock'), JSON.stringify(back));
+});
+
 sections.add('washes', { group: 'lamps', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model && ${card}._objects.parts.size > 0`, { timeout: 20000 });

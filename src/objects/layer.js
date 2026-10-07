@@ -173,16 +173,7 @@ export class ObjectLayer {
   // The dock object's pose on the plan: { x, y, heading } (anchor, front = its +Z or hints.front) or null.
   // A dock bound to the mower's entity wins over another one; hidden docks are ignored.
   dockPose() {
-    if (!this.model) return null;
-    const mw = this._mower();
-    let best = null;
-    for (const [id, p] of this.parts) {
-      if (p.obj.type !== 'dock' || !p.obj.node) continue;
-      const b = this.bindings.get(id);
-      if (b && b.hidden) continue;
-      const score = mw && b && b.entity === mw.entity ? 2 : 1;
-      if (!best || score > best.score) best = { p, score };
-    }
+    const best = this._dock();
     if (!best) return null;
     const { p } = best, root = this.model.root;
     root.updateWorldMatrix(true, false);
@@ -191,6 +182,26 @@ export class ObjectLayer {
     const dir = new THREE.Vector3(...dockFrontAxis(p.obj.hints)).applyQuaternion(q);
     const a = root.localToWorld(p.part.anchor.clone());
     return dockPose(a, dir);
+  }
+
+  // The dock object { id, p } (see dockPose) or null.
+  _dock() {
+    if (!this.model) return null;
+    const mw = this._mower();
+    let best = null;
+    for (const [id, p] of this.parts) {
+      if (p.obj.type !== 'dock' || !p.obj.node) continue;
+      const b = this.bindings.get(id);
+      if (b && b.hidden) continue;
+      const score = mw && b && b.entity === mw.entity ? 2 : 1;
+      if (!best || score > best.score) best = { id, p, score };
+    }
+    return best;
+  }
+
+  dockId() {
+    const d = this._dock();
+    return d ? d.id : null;
   }
 
   mowerId() {

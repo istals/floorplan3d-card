@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isDocked, dockWord, dockFrontAxis, dockPose, trackWindow, fullSearch, layerDue, tileHashes, changedTiles, tileRect, tilesOf,
-  throttleStep, effectiveRefresh, mowerStatusText, durationText, rememberPosition, lastPosition,
+  throttleStep, effectiveRefresh, mowerStatusText, durationText, rememberPosition, lastPosition, mowerDockGroup, groupedTapId, groupedHidden, dockRows,
 } from '../src/mower-track.js';
 
 describe('docked state', () => {
@@ -156,5 +156,30 @@ describe('last known position', () => {
     expect(lastPosition('b')).toBe(null);
     rememberPosition('a', null);
     expect(lastPosition('a')).toBe(null);
+  });
+});
+
+describe('mower and dock as one when docked', () => {
+  it('groups only when docked with both objects', () => {
+    expect(mowerDockGroup({ docked: true, mowerId: 'm', dockId: 'd' })).toEqual({ mower: 'm', dock: 'd' });
+    expect(mowerDockGroup({ docked: false, mowerId: 'm', dockId: 'd' })).toBeNull();
+    expect(mowerDockGroup({ docked: true, mowerId: null, dockId: 'd' })).toBeNull();
+    expect(mowerDockGroup({ docked: true, mowerId: 'm', dockId: null })).toBeNull();
+    expect(mowerDockGroup({ docked: true, mowerId: 'x', dockId: 'x' })).toBeNull();
+  });
+  it('a tap on the dock goes to the mower; the dock has no tap dot of its own', () => {
+    const g = { mower: 'm', dock: 'd' };
+    expect(groupedTapId('d', g)).toBe('m');
+    expect(groupedTapId('m', g)).toBe('m');
+    expect(groupedTapId('lamp', g)).toBe('lamp');
+    expect(groupedTapId('d', null)).toBe('d');
+    expect(groupedHidden('d', g)).toBe(true);
+    expect(groupedHidden('m', g)).toBe(false);
+    expect(groupedHidden('d', null)).toBe(false);
+  });
+  it('dock rows for the mower popup: charging / docked and the battery', () => {
+    expect(dockRows('charging', 85)).toEqual([{ kind: 'info', label: 'Dock', value: 'Charging · 85 %' }]);
+    expect(dockRows('docked', null)).toEqual([{ kind: 'info', label: 'Dock', value: 'Docked' }]);
+    expect(dockRows('docked', '100')).toEqual([{ kind: 'info', label: 'Dock', value: 'Docked · 100 %' }]);
   });
 });
