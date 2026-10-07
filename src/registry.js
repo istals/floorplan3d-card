@@ -147,6 +147,16 @@ const PICTURE_DOMAINS = new Set(['person', 'media_player', 'image', 'lawn_mower'
 const ALERT_RED = new Set(['smoke', 'gas', 'safety', 'moisture', 'carbon_monoxide']);
 const ALERT_YELLOW = new Set(['problem', 'tamper']);
 
+// Reload key of an entity picture: path + the cache query parameter (+ a stamp such as image_last_updated),
+// never the rotating access token. data: / blob: URLs are shown once.
+export function pictureKey(url, stamp = '') {
+  if (!url) return '';
+  if (/^(data|blob):/.test(url)) return 'data';
+  const [path, query = ''] = url.split('#')[0].split('?');
+  const cache = new URLSearchParams(query).get('cache') || '';
+  return `${path}|${cache}|${stamp || ''}`;
+}
+
 export function markerLook(hass, m) {
   const st = hass.states[m.entityId];
   const out = { shape: 'square', kind: 'info', info: true, alert: null, picture: null, value: '' };
@@ -156,7 +166,8 @@ export function markerLook(hass, m) {
   const pic = PICTURE_DOMAINS.has(d) && typeof a.entity_picture === 'string' && a.entity_picture;
   if (pic) {
     const url = /^(data|blob):/.test(pic) || !hass.hassUrl ? pic : hass.hassUrl(pic);
-    return { ...out, shape: 'circle', kind: 'picture', info: false, picture: url };
+    const stamp = d === 'image' ? String(a.image_last_updated || st.state || '') : '';
+    return { ...out, shape: 'circle', kind: 'picture', info: false, picture: url, pictureStamp: stamp };
   }
   if (d === 'binary_sensor') {
     const dc = a.device_class;

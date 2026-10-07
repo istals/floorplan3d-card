@@ -5,7 +5,7 @@ import { FloorplanView } from './view.js';
 import { EditMode } from './edit-mode.js';
 import './card-editor.js';
 import { LayoutStore } from './storage.js';
-import { buildMarkers, registrySignature, iconFor, isActive, displayValue, areaName, markerLook } from './registry.js';
+import { buildMarkers, registrySignature, iconFor, isActive, displayValue, areaName, markerLook, pictureKey } from './registry.js';
 import { mergeFloors, roomFloorId, markerPositions, lightGlow, roomLabel, roomLabelMode } from './layout.js';
 import {
   resolveLevels, resolveRoomAreas, modelRooms, combineRooms, levelFloorOverrides, bindingDiff, snapshotDiff, levelsFromFloorMap,
@@ -687,6 +687,7 @@ class Floorplan3dCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._fetchLabels(hass);
     if (this._view && this._view.model && this._skyMode === 'auto') this._applySky(false);
     this._applyWeather();
     if (!this._layout && !this._loading) this._load();
@@ -695,6 +696,20 @@ class Floorplan3dCard extends HTMLElement {
 
   get hass() {
     return this._hass;
+  }
+
+  // hass.labels is missing on some HA versions: ask the label registry once (non-admins may be refused), cache the names.
+  _fetchLabels(hass) {
+    if (hass.labels || this._labelsTried || typeof hass.callWS !== 'function') return;
+    this._labelsTried = true;
+    Promise.resolve().then(() => hass.callWS({ type: 'config/label_registry/list' })).then((list) => {
+      if (!Array.isArray(list)) return;
+      const out = {};
+      for (const l of list) if (l && l.label_id) out[l.label_id] = { name: l.name };
+      this._labels = out;
+      this._bindKey = null;
+      this._schedule();
+    }).catch(() => {});
   }
 
   connectedCallback() {
@@ -2349,10 +2364,10 @@ class Floorplan3dCard extends HTMLElement {
     }).join('') + '|' + Object.values(groups).map((g) => (g && g.entity && states[g.entity] ? 1 : 0)).join('');
     const mowerEntity = mowerTabEntity(l.mower && l.mower.entity, this._hass.entities);
     // HA labels (default tags) live in the entity registry: hass.entities / hass.labels identity
-    const key = [model, lo, groups, exists, mowerEntity && states[mowerEntity] ? mowerEntity : '', this._hass.entities, this._hass.labels];
+    const key = [model, lo, groups, exists, mowerEntity && states[mowerEntity] ? mowerEntity : '', this._hass.entities, this._hass.labels || this._labels];
     if (this._bindKey && key.every((x, i) => x === this._bindKey[i])) return false;
     this._bindKey = key;
-    this._bindings = bindObjects(objs, lo, states, { mowerEntity, hass: this._hass });
+    this._bindings = bindObjects(objs, lo, states, { mowerEntity, hass: this._hass.labels || !this._labels ? this._hass : Object.create(this._hass, { labels: { value: this._labels } }) });
     this._groups = effectiveGroups(groups, states); // controllers HA doesn't know are ignored
     this._objects.setBindings(this._bindings, this._groups);
     if (this._tagIndex() && this._index) { // tag: view rules follow the new tags
@@ -2874,9 +2889,8 @@ class Floorplan3dCard extends HTMLElement {
 
   // Marker shape / kind classes and the entity picture (registry.js markerLook); DOM writes only on a change.
   _applyLook(el, look) {
-    // a picture counts by its path: HA's rotating access tokens / cache busters do not reload it every update,
-    // a data: URL (a live image) is shown once
-    const pic = look.picture ? (look.picture.startsWith('data:') ? 'data' : look.picture.split('?')[0]) : '';
+    // a picture counts by path + cache hash (registry.js pictureKey): rotating access tokens do not reload it
+    const pic = look.picture ? pictureKey(look.picture, look.pictureStamp) : '';
     const key = `${look.shape}|${look.kind}|${look.alert || ''}|${pic}`;
     if (el._fpLook === key) return;
     el._fpLook = key;

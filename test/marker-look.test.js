@@ -45,3 +45,14 @@ describe('markerLook', () => {
     expect(markerLook(hass({}), m('sensor.gone'))).toMatchObject({ shape: 'square', kind: 'info' });
   });
 });
+
+import { pictureKey } from '../src/registry.js';
+describe('pictureKey', () => {
+  const u = (t, c) => `/api/media_player_proxy/media_player.tv?token=${t}&cache=${c}`;
+  it('a new cache hash reloads', () => expect(pictureKey(u('a', 'h1'))).not.toBe(pictureKey(u('a', 'h2'))));
+  it('a new token only does not', () => expect(pictureKey(u('a', 'h1'))).toBe(pictureKey(u('b', 'h1'))));
+  it('image stamp reloads, data is constant', () => {
+    expect(pictureKey('/api/image_proxy/image.x?token=a', '1')).not.toBe(pictureKey('/api/image_proxy/image.x?token=b', '2'));
+    expect(pictureKey('data:image/png;base64,AA')).toBe(pictureKey('data:image/png;base64,BB'));
+  });
+});
