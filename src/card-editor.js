@@ -1,7 +1,7 @@
 // Visual editor for the card options (Lovelace "Show visual editor"), built on HA's ha-form.
 // Rooms, devices, mower and model are edited on the card itself (its Edit button).
 
-const DEFAULTS = { layout_key: 'default', height: '520px', group_by: 'device', wall_height: 1.0, view: '3d', room_labels: 'size', zoom_to: 'center', occlusion: true, lights: 'auto', merge: true, sky_bodies: true, clouds: true };
+const DEFAULTS = { layout_key: 'default', height: '520px', group_by: 'device', wall_height: 1.0, view: '3d', room_labels: 'size', zoom_to: 'center', occlusion: true, lights: 'auto', render: 'model', merge: true, sky_bodies: true, clouds: true };
 
 export const SCHEMA = [
   { name: 'height', selector: { text: {} } },
@@ -13,6 +13,7 @@ export const SCHEMA = [
       { name: 'group_by', selector: { select: { mode: 'dropdown', options: [{ value: 'device', label: 'One marker per device' }, { value: 'entity', label: 'One marker per entity' }] } } },
       { name: 'zoom_to', selector: { select: { mode: 'dropdown', options: [{ value: 'center', label: 'Centre of the view' }, { value: 'cursor', label: 'Mouse cursor' }] } } },
       { name: 'lights', selector: { select: { mode: 'dropdown', options: [{ value: 'auto', label: 'Real lights' }, { value: 'off', label: 'Glow only (weak devices)' }] } } },
+      { name: 'render', selector: { select: { mode: 'dropdown', options: [{ value: 'model', label: 'From the model (render recipe)' }, { value: 'default', label: 'Card defaults' }] } } },
       { name: 'room_labels', selector: { select: { mode: 'dropdown', options: [{ value: 'size', label: 'Name and size' }, { value: 'name', label: 'Name only' }, { value: 'none', label: 'None' }] } } },
     ],
   },
@@ -52,6 +53,7 @@ const LABELS = {
   room_labels: 'Room labels',
   zoom_to: 'Zoom towards',
   lights: 'Model lamps',
+  render: 'Render settings',
   layout_key: 'Layout name',
   model: 'Model URL (.glb)',
   model_rotation: 'Model rotation',
@@ -70,6 +72,7 @@ const HELPERS = {
   floor: 'Empty: the first floor that has rooms',
   zoom_to: 'Centre: zoom and rotate around the view\'s rotation centre (Edit → Views)',
   lights: 'With a 3D model: lamps light the house (auto) or only glow (off)',
+  render: 'With a 3D model: use its render recipe (exposure, camera, shadows, day / night light) or ignore it',
   layout_key: 'Cards with the same name share one plan. Letters, digits, - and _.',
   model: 'e.g. /local/house.glb. Leave empty to upload a model on the card (Edit → Model).',
 };

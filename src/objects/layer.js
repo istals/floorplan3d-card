@@ -1,5 +1,6 @@
 // Model objects on the plan: per-object looks (types.js) and a fixed pool of real lights.
-// The pool is created once (8 point + 4 spot) so shaders never recompile; the first 4 point
+// The pool is created once per model load (N shadow point + 4 point + 4 spot; N = min(the render recipe's
+// lampShadows.max, the device cap), default 4) so shaders never recompile at runtime; the first N point
 // slots always cast shadows and get the budget's shadow picks. The pool lives in its own sub-group:
 // shown only with a model and `lights` not off (hiding it drops the lights from the shaders).
 // Shadow maps are rendered per light (shadow.autoUpdate = false): only lit shadow slots whose
@@ -14,7 +15,7 @@ import { WashLayer, resolveWash, washSize, placeWashes, washOpacity, clearOfWall
 const WASH_TYPES = new Set(['light', 'light_strip']);
 const WASH_SLICE_MS = 8; // wash placements (ray casts) per pass; the rest follow in the next task
 
-const POINTS = 8, SPOTS = 4, SHADOWS = 4;
+const FREE_POINTS = 4, SPOTS = 4;
 const DEG = Math.PI / 180;
 
 const shown = (node) => { for (let n = node; n; n = n.parent) if (!n.visible) return false; return true; };
@@ -27,13 +28,42 @@ export class ObjectLayer {
     this.lights = group;
     view.objectsGroup.add(group);
     this.pool = { points: [], spots: [] };
-    for (let i = 0; i < POINTS; i++) {
+    this._buildPool(view.lampShadowCount ? view.lampShadowCount() : 4);
+    // wall washes for every lit lamp (shared materials, compiled once; see wash.js)
+    this.washes = new WashLayer(view.objectsGroup, view.modelClip ? [view.modelClip] : null);
+    this._washSig = null;
+    view.objectsGroup.visible = false; // objects (and their lights) only while a model is loaded
+    group.visible = false;
+    this._lightsOn = true;
+    this.model = null;
+    this.parts = new Map(); // id -> { obj, type, part, chain, result, inputs }
+    this.bindings = new Map();
+    this.groups = {};
+    this._budgetSig = null;
+    this._slots = new Map(); // fixture id -> { light, shadow, factor }
+    this._placeSig = null;
+    this.stats = { updates: 0, evaluated: 0, budget: 0, shadowRequests: 0 }; // counters for the headless checks
+    view.objectLayer = this; // the view resets us when it drops the model
+  }
+
+  // The real light pool: `shadows` shadow-casting points, 4 more points and 4 spots. Rebuilt only when the
+  // shadow count changes (at a model load); lamp shadow map size / bias from the view's render settings.
+  _buildPool(shadows) {
+    const group = this.lights;
+    if (this.pool.points.length && shadows === this._nShadow) { this._shadowLook(); return; }
+    for (const l of [...this.pool.points, ...this.pool.spots]) {
+      if (l.shadow && l.shadow.map) l.shadow.map.dispose();
+      group.remove(l);
+      if (l.target) group.remove(l.target);
+      l.dispose();
+    }
+    if (this._slots) this._slots.clear();
+    this._nShadow = shadows;
+    this.pool = { points: [], spots: [] };
+    for (let i = 0; i < shadows + FREE_POINTS; i++) {
       const l = new THREE.PointLight(0xffffff, 0, 0, 2);
-      if (i < SHADOWS) {
+      if (i < shadows) {
         l.castShadow = true; // never toggled later (a toggle recompiles every shader)
-        const sm = view.test ? 256 : 512; // headless test mode: smaller lamp shadow maps
-        l.shadow.mapSize.set(sm, sm);
-        l.shadow.bias = -0.004;
         l.shadow.camera.near = 0.15;
         l.shadow.autoUpdate = false; // re-rendered only when flagged (needsUpdate)
       }
@@ -45,22 +75,27 @@ export class ObjectLayer {
       this.pool.spots.push(l);
       group.add(l, l.target);
     }
-    // wall washes for every lit lamp (shared materials, compiled once; see wash.js)
-    this.washes = new WashLayer(view.objectsGroup, view.modelClip ? [view.modelClip] : null);
-    this._washSig = null;
-    view.objectsGroup.visible = false; // objects (and their lights) only while a model is loaded
-    group.visible = false;
-    this._lightsOn = true;
-    this._shadowKeys = new Array(SHADOWS).fill(null); // per shadow slot: fixture@position its map was rendered for
-    this.model = null;
-    this.parts = new Map(); // id -> { obj, type, part, chain, result, inputs }
-    this.bindings = new Map();
-    this.groups = {};
-    this._budgetSig = null;
-    this._slots = new Map(); // fixture id -> { light, shadow, factor }
-    this._placeSig = null;
-    this.stats = { updates: 0, evaluated: 0, budget: 0, shadowRequests: 0 }; // counters for the headless checks
-    view.objectLayer = this; // the view resets us when it drops the model
+    this._shadowKeys = new Array(shadows).fill(null); // per shadow slot: fixture@position its map was rendered for
+    this._shadowLook();
+  }
+
+  // Lamp shadow settings (render recipe lampShadows); a new map size drops the old map (re-created on demand).
+  _shadowLook() {
+    const ls = (this.view.render && this.view.render.lampShadows) || { mapSize: 512, bias: -0.004, normalBias: 0, radius: 1 };
+    const sm = this.view.test ? Math.min(256, ls.mapSize) : ls.mapSize; // headless test mode: smaller lamp shadow maps
+    for (const l of this.pool.points.slice(0, this._nShadow)) {
+      if (l.shadow.mapSize.x !== sm) {
+        l.shadow.mapSize.set(sm, sm);
+        if (l.shadow.map) { l.shadow.map.dispose(); l.shadow.map = null; }
+      }
+      l.shadow.bias = ls.bias;
+      l.shadow.normalBias = ls.normalBias;
+      l.shadow.radius = ls.radius;
+    }
+  }
+
+  get shadowSlots() {
+    return this._nShadow;
   }
 
   // keepLights: another model replaces this one (a reload), so the pool stays in the scene meanwhile
@@ -81,6 +116,7 @@ export class ObjectLayer {
     this._budgetSig = null;
     this._placeSig = null;
     this._poseSig = null;
+    if (model) this._buildPool(this.view.lampShadowCount ? this.view.lampShadowCount() : this._nShadow);
     this._shadowKeys.fill(null);
     if (model) {
       const ctx = { root: model.root, view: this.view, levels: model.manifest.levels || [] };
@@ -296,7 +332,7 @@ export class ObjectLayer {
       this.stats.budget++;
       // shadow maps: only lit shadow slots whose fixture or position changed (dark slots are never redrawn)
       const redraw = [];
-      this.pool.points.slice(0, SHADOWS).forEach((l, i) => {
+      this.pool.points.slice(0, this._nShadow).forEach((l, i) => {
         const key = this._shadowKey(l);
         if (key && key !== this._shadowKeys[i]) redraw.push(l);
         this._shadowKeys[i] = key;
@@ -404,7 +440,7 @@ export class ObjectLayer {
   // Dark slots forget their key, so they are redrawn once they light up.
   shadowsStale() {
     const out = [];
-    this.pool.points.slice(0, SHADOWS).forEach((l, i) => {
+    this.pool.points.slice(0, this._nShadow).forEach((l, i) => {
       if (this._shadowKeys[i] && this.lights.visible) out.push(l);
       else this._shadowKeys[i] = null;
     });
@@ -414,28 +450,28 @@ export class ObjectLayer {
   _assign(fixtures) {
     const prev = new Map([...this._slots].map(([id, s]) => [id, s.light]));
     this._darken();
-    const { real, shadows } = lightBudget(fixtures, { points: POINTS, spots: SPOTS, shadows: SHADOWS });
+    const { real, shadows } = lightBudget(fixtures, { points: this._nShadow + FREE_POINTS, spots: SPOTS, shadows: this._nShadow });
     const pts = this.pool.points;
-    const shadowSlots = pts.slice(0, SHADOWS), freeSlots = pts.slice(SHADOWS);
+    const shadowSlots = pts.slice(0, this._nShadow), freeSlots = pts.slice(this._nShadow);
     const order = [...real.keys()];
     // a fixture keeps the shadow slot it had (no needless shadow map redraws)
     const take = (id) => {
       const i = shadowSlots.indexOf(prev.get(id));
       return i >= 0 ? shadowSlots.splice(i, 1)[0] : null;
     };
-    // shadow picks first (slots 0..3; own slot, then any), then group lights and the rest into 4..7, then any shadow slot left
+    // shadow picks first (shadow slots; own slot, then any), then group lights and the rest into the free points, then any shadow slot left
     const picks = order.filter((x) => shadows.has(x));
     const kept = new Map(picks.map((id) => [id, take(id)]));
     for (const id of picks) this._slots.set(id, { light: kept.get(id) || shadowSlots.shift(), shadow: true, factor: real.get(id).factor });
     let spot = 0;
-    // group lights first, so they get the non-shadow slots 4..7 (group lights never cast shadows)
+    // group lights first, so they get the non-shadow slots (group lights never cast shadows)
     const rest = order.filter((id) => !shadows.has(id));
     rest.sort((a, b) => (real.get(b).grouped ? 1 : 0) - (real.get(a).grouped ? 1 : 0));
     for (const id of rest) {
       const { kind, factor } = real.get(id);
       if (kind === 'spot') { this._slots.set(id, { light: this.pool.spots[spot++], shadow: false, factor }); continue; }
       const light = freeSlots.shift() || take(id) || shadowSlots.shift();
-      this._slots.set(id, { light, shadow: pts.indexOf(light) < SHADOWS, factor });
+      this._slots.set(id, { light, shadow: pts.indexOf(light) < this._nShadow, factor });
     }
     const root = this.model.root;
     const placeSig = root.matrixWorld.elements.map((v) => v.toFixed(5)).join();

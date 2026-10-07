@@ -2,6 +2,7 @@
 // through an adapter, so the card (three.js nodes) and tools/check-model.mjs (glTF JSON) share it.
 import { normSection, normTopCamera } from './views.js';
 import { badTargets, aimWarning, aimsUp } from './objects/aim.js';
+import { normRender } from './render-recipe.js';
 
 export const KINDS = ['level', 'room', 'zone', 'object'];
 export const ROLES = ['storey', 'basement', 'exterior', 'roof'];
@@ -52,7 +53,7 @@ export function buildManifest(adapter) {
   const viewHolder = adapter.roots().find((r) => { const e = adapter.extras(r); return e && e.fp && Array.isArray(e.fp.views); });
   const isNum3 = (a) => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
   const strs = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string') : []);
-  for (const v of viewHolder ? adapter.extras(viewHolder).fp.views : []) {
+  for (const v of viewHolder !== undefined ? adapter.extras(viewHolder).fp.views : []) { // glTF node 0 is a holder too
     if (!v || typeof v.id !== 'string' || !ID_RE.test(v.id)) { m.warnings.push(`view "${v && v.id}": invalid id`); continue; }
     if (m.views.some((x) => x.id === v.id)) { m.warnings.push(`view "${v.id}": duplicate id`); continue; }
     const cam = v.camera && isNum3(v.camera.position) && isNum3(v.camera.target) ? { position: v.camera.position, target: v.camera.target } : null;
@@ -65,6 +66,12 @@ export function buildManifest(adapter) {
     else if (v.camera_top !== undefined) m.warnings.push(`view "${v.id}": invalid camera_top (needs center [x, y] and zoom > 0)`);
     m.views.push(view);
   }
+  // render recipe (extras.fp.render on a root): validated, warnings for invalid values
+  const renderHolder = adapter.roots().find((r) => { const e = adapter.extras(r); return e && e.fp && e.fp.render !== undefined; });
+  const rr = normRender(renderHolder !== undefined ? adapter.extras(renderHolder).fp.render : undefined);
+  m.render = rr.recipe;
+  m.renderKeys = rr.keys;
+  m.warnings.push(...rr.warnings);
 
   const add = (node, tag, ctx, path) => {
     const where = `${tag.kind} "${tag.id}"`;

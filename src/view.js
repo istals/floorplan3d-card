@@ -14,11 +14,16 @@ import { outdoorShown, sectionLevels, unionBox, pivotCamera, rayPlaneY, orthoZoo
 import { GroundCache } from './surface.js';
 import { mergeGroups, namedGroups, mergedName } from './merge.js';
 import { moonLight, moonLitRight, domeRadius, SUN_MIN_Y, SUN_DISC_M, MOON_DISC_M } from './sky.js';
+import { mergeRender, recipeFar, skyLights, deviceShadowCap, lampShadowSlots } from './render-recipe.js';
 import { cloudLight, cloudCount, coverageChanged, cloudSlots, cloudAzEl, dirFromAzEl, azElFromDir, cloudFade, cloudNear } from './weather.js';
 import {
   castsShadow, shadowInfo, isCoplanarOverlay, coplanarWinners, depthRange, depthChanged, isOccluded, sunDirection, ghostMaterial, pickable,
 } from './render-rules.js';
 
+const TONE = {
+  None: THREE.NoToneMapping, Linear: THREE.LinearToneMapping, Reinhard: THREE.ReinhardToneMapping, Cineon: THREE.CineonToneMapping,
+  ACESFilmic: THREE.ACESFilmicToneMapping, AgX: THREE.AgXToneMapping, Neutral: THREE.NeutralToneMapping,
+};
 const TEX_KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap'];
 
 // Plan rectangle of a world-space box (used for rooms tagged without an outline).
@@ -282,7 +287,11 @@ export class FloorplanView {
     // test mode: { drift } (checks of the cloud drift turn it back on); null in real use
     this.test = testMode() ? { drift: false } : null;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    this.renderer.setPixelRatio(this.test ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    // render settings: the card's defaults, replaced by the model's fp.render recipe while one is loaded
+    this.render = mergeRender(null);
+    this.renderOption = 'model'; // card option render: model | default (ignore the recipe)
+    this.renderFrom = null; // { keys } while the loaded model's recipe is in use
+    this.renderer.setPixelRatio(this._pixelRatio());
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.localClippingEnabled = true; // model cut-away
     this.labelRenderer = new CSS2DRenderer();
@@ -659,7 +668,8 @@ export class FloorplanView {
           if (shadowInfo(o).layers.some((l) => /^(terrain|floor)$/i.test(l))) floorYs.push(b.max.y);
         });
         if (!all.isEmpty()) floorYs.push(all.min.y);
-        const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+        this._useRecipe(manifest);
+        const aniso = Math.min(this.render.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
         root.traverse((o) => {
           if (!o.isMesh) return;
           const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -1021,8 +1031,55 @@ export class FloorplanView {
     this._occBoxes = null; this._surfMeshes = null; this._ground.clear(); this._mowerGround.clear();
     this._cancelOcclusion();
     this._clearOcclusion();
-    if (!keepLook) this._applyLook();
+    if (!keepLook) { this.renderFrom = null; this._setRender(mergeRender(null)); this._applyLook(); }
     this.dirty = true;
+  }
+
+  // Card option render: 'model' (the model's fp.render recipe) or 'default' (ignore it). Applied at the next model load.
+  // A change with a model loaded re-applies the look now (the lamp pool size follows at the next load).
+  setRenderOption(opt) {
+    const next = opt === 'default' ? 'default' : 'model';
+    if (next === this.renderOption) return;
+    this.renderOption = next;
+    if (!this.model) return;
+    this._useRecipe(this.model.manifest);
+    if (this.objectLayer) this.objectLayer._shadowLook();
+    this._applyLook();
+  }
+
+  // Pixel ratio: 1 in test mode, else the device's up to the recipe's pixelRatioMax.
+  _pixelRatio() {
+    return this.test ? 1 : Math.min(window.devicePixelRatio || 1, this.render.pixelRatioMax);
+  }
+
+  // Lamp shadow maps this device affords (see deviceShadowCap).
+  shadowCap() {
+    const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    return deviceShadowCap({ touch, dpr: window.devicePixelRatio || 1, cores: navigator.hardwareConcurrency });
+  }
+
+  // Shadow-capable lamp slots for the loaded settings: min(recipe max, device cap).
+  lampShadowCount() {
+    return lampShadowSlots(this.render.lampShadows.max, this.shadowCap());
+  }
+
+  // The loaded model's recipe (unless render: default) -> this.render; renderer pixel ratio and camera fov / near.
+  _useRecipe(manifest) {
+    const recipe = this.renderOption === 'default' ? null : manifest.render;
+    this.renderFrom = recipe ? { keys: manifest.renderKeys || Object.keys(recipe).length } : null;
+    this._setRender(mergeRender(recipe));
+  }
+
+  _setRender(render) {
+    this.render = render;
+    const pr = this._pixelRatio();
+    if (this.renderer.getPixelRatio() !== pr) {
+      this.renderer.setPixelRatio(pr);
+      if (this.size) this.resize(this.size.w, this.size.h);
+      if (this.onPixelRatio) this.onPixelRatio(pr);
+    }
+    const cam = this.persp;
+    if (cam.fov !== render.camera.fov) { cam.fov = render.camera.fov; cam.updateProjectionMatrix(); }
   }
 
   setDaylight(day) {
@@ -1050,12 +1107,13 @@ export class FloorplanView {
 
   _applyLights() {
     const t = Math.max(0, Math.min(1, this.sky.night)), hemi = this.hemi, sun = this.sun;
-    hemi.color.setHex(0xc4d6ff);
-    hemi.groundColor.setHex(0x2a2520);
+    const k = skyLights(this.render, t); // the recipe's day / night colours and intensities
+    hemi.color.setHex(k.hemiSky);
+    hemi.groundColor.setHex(k.hemiGround);
     const L = cloudLight(this.weather.applied || 0, t);
-    hemi.intensity = (0.9 + (0.14 - 0.9) * t) * L.hemi;
-    sun.color.setHex(0xfff0dc);
-    sun.intensity = 2.6 * (1 - t) * (this.sky.sun ?? 1) * L.sun;
+    hemi.intensity = k.hemiIntensity * L.hemi;
+    sun.color.setHex(k.sunColor);
+    sun.intensity = k.sunIntensity * (this.sky.sun ?? 1) * L.sun;
     // softer, fainter sun shadow under clouds: uniforms only (radius has no effect with PCFSoftShadowMap)
     sun.shadow.radius = L.shadowRadius;
     sun.shadow.intensity = L.shadowIntensity;
@@ -1257,8 +1315,10 @@ export class FloorplanView {
     const r = this.renderer, day = this.model ? this.daylight : true, sun = this.sun, hemi = this.hemi;
     this._modelLook = !!this.model;
     if (this.model) {
-      r.toneMapping = THREE.ACESFilmicToneMapping;
-      r.toneMappingExposure = 1.25;
+      const rd = this.render;
+      r.toneMapping = TONE[rd.toneMapping] ?? THREE.ACESFilmicToneMapping;
+      r.toneMappingExposure = rd.exposure;
+      r.outputColorSpace = rd.outputColorSpace === 'srgb-linear' ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
       r.shadowMap.enabled = true;
       r.shadowMap.autoUpdate = false; // re-rendered on demand (needsUpdate), not every frame
       this._shadowDirty();
@@ -1266,14 +1326,18 @@ export class FloorplanView {
       this._applyLights();
       sun.castShadow = true; // stays on (toggling recompiles shaders); night = intensity 0
       sun.shadow.autoUpdate = false; // redrawn only when flagged, and only while the sun is up
-      const sm = this.test ? 512 : 2048;
-      sun.shadow.mapSize.set(sm, sm);
-      sun.shadow.bias = -0.0005;
-      sun.shadow.normalBias = 0.02; // against acne on roofs
+      const sm = this.test ? Math.min(512, rd.sun.shadowMapSize) : rd.sun.shadowMapSize;
+      if (sun.shadow.mapSize.x !== sm) {
+        sun.shadow.mapSize.set(sm, sm);
+        if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } // re-created at the new size
+      }
+      sun.shadow.bias = rd.sun.bias;
+      sun.shadow.normalBias = rd.sun.normalBias; // against acne on roofs
       this._fitShadow();
     } else {
       r.toneMapping = THREE.NoToneMapping;
       r.toneMappingExposure = 1;
+      r.outputColorSpace = THREE.SRGBColorSpace;
       r.shadowMap.enabled = false;
       r.setClearColor(0x000000, 0);
       hemi.color.setHex(0xffffff);
@@ -2462,7 +2526,13 @@ export class FloorplanView {
       centre: p.distanceTo(b.centre), radius: b.radius, ortho,
     });
     const d = this._dome;
-    if (d && this._skyOn && this.model && !ortho) next.far = Math.max(next.far, Math.round((p.distanceTo(d.centre) + d.radius + SUN_DISC_M) * 1050) / 1000); // the dome stays in front of far
+    let needed = Math.round((p.distanceTo(b.centre) + Math.min(b.radius, 1e5)) * 1050) / 1000;
+    if (d && this._skyOn && this.model && !ortho) {
+      const dome = Math.round((p.distanceTo(d.centre) + d.radius + SUN_DISC_M) * 1050) / 1000; // the dome stays in front of far
+      next.far = Math.max(next.far, dome);
+      needed = Math.max(needed, dome);
+    }
+    if (!ortho && this.model && this.render.camera) next.far = recipeFar(next.far, needed, this.render.camera.far); // the recipe's far: an upper bound only
     if (!depthChanged({ near: cam.near, far: cam.far }, next)) return;
     cam.near = next.near;
     cam.far = next.far;

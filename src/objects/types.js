@@ -101,10 +101,12 @@ function claimGlow(part, glow) {
   entry.owners.add(part);
 }
 
-function prepareLight(obj, { root }, pool) {
+function prepareLight(obj, { root, view }, pool) {
   const hints = hintDefaults(obj.hints);
   const glow = obj.node ? findGlow(obj.node, obj.glow || 'glow') : null;
-  const part = { obj, glow, hints, pool, level: 0, color: null, anchor: null };
+  // glow emissive per brightness: the render recipe's glowIntensityPerBrightness (default 3)
+  const k = view && view.render && Number.isFinite(view.render.glowIntensityPerBrightness) ? view.render.glowIntensityPerBrightness : 3;
+  const part = { obj, glow, hints, pool, level: 0, color: null, anchor: null, glowK: k };
   claimGlow(part, glow);
   part.anchor = obj.node ? anchorOf(obj, glow, root, hints.offset) : new THREE.Vector3();
   return part;
@@ -118,7 +120,7 @@ function paint(glow) {
   const level = best ? best.level : 0, c = (best && best.color) || [0, 0, 0];
   for (const m of entry.clones) {
     if (m.emissive) m.emissive.setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace);
-    m.emissiveIntensity = level * 3 * entry.scale;
+    m.emissiveIntensity = level * (best ? best.glowK ?? 3 : 3) * entry.scale;
   }
 }
 

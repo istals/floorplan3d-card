@@ -129,6 +129,7 @@ export function checkGlb(buffer) {
 
   return {
     ok: errors.length === 0, errors, warnings, summary: summarize(m),
+    render: m.render ? { keys: m.renderKeys, recipe: m.render } : null,
     levels: m.levels.map((l) => ({ id: l.id, role: l.role, order: l.order, elevation: l.elevation })),
     rooms: m.rooms.map((r) => ({ kind: r.kind, id: r.id, level: r.level, area: (r.suggest && r.suggest.area) || null })),
   };
@@ -159,6 +160,7 @@ function main(argv) {
   if (r.summary) {
     const objs = Object.entries(r.summary.objects).map(([t, n]) => `${n} ${t}`).join(', ') || 'none';
     console.log(`${file}: ${r.summary.levels} levels, ${r.summary.rooms} rooms, ${r.summary.zones} zones, objects: ${objs}`);
+    if (r.render) console.log(`  render recipe: ${r.render.keys} key(s) (${Object.keys(r.render.recipe).join(', ')})`);
     for (const l of r.levels) console.log(`  level ${l.id} (${l.role}${l.order !== null ? ', order ' + l.order : ''}${l.elevation !== null ? ', elevation ' + l.elevation : ''})`);
   }
   for (const e of r.errors) console.log('ERROR ' + e);

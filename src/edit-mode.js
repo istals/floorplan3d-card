@@ -2309,6 +2309,8 @@ export class EditMode {
     let out = `<div class="sub">In the model</div><p class="hint">${s(manifest.levels.length, 'level')},
       ${s(manifest.rooms.filter((r) => r.kind === 'room').length, 'room')}, ${s(manifest.rooms.filter((r) => r.kind === 'zone').length, 'zone')},
       ${s(objCount, 'object')}${objCount ? ' (object controls come in a later version)' : ''}. Click a part of the model to find it here.</p>`;
+    const rf = this.view.renderFrom;
+    out += `<p class="dim" data-info="render-recipe">Render recipe: ${rf ? `from model (${s(rf.keys, 'key')})` : 'default'}</p>`;
     const ms = this.view.mergeStats;
     if (ms && ms.before) {
       const a = ms.after, b = ms.before;

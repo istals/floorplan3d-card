@@ -37,6 +37,7 @@ function boot(params) {
       ...(params.get('merge') === '0' ? { merge: false } : {}), // ?merge=0: every model part its own mesh
       ...(params.get('logos') === '1' ? { badges: { integration: true } } : {}), // ?logos=1: integration logos on
       ...(params.get('debug') === '1' ? { debug: true } : {}), // ?debug=1: the performance overlay
+      ...(params.get('render') ? { render: params.get('render') } : {}), // ?render=default: ignore the model's render recipe
     });
   }
   push(createMockHass({ onChange: push }));

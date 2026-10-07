@@ -432,6 +432,35 @@ sections.add('model', { group: 'model', query: { model: '1', view: '3d' }, viewp
 });
 
 // 1w. weather: clouds on the dome, sun / shadow / fill follow the cloud coverage, slow drift without recompiles
+// 1b. render recipe (fp.render of the demo house): exposure, fov, lamp shadow pool, Model tab line; render: default ignores it
+const renderState = (page) => page.evaluate(`(() => { const c = ${card}, v = c._view, l = c._objects;
+  return { exposure: v.renderer.toneMappingExposure, fov: v.persp.fov, from: v.renderFrom, shadows: l.shadowSlots,
+    points: l.pool.points.length, cast: l.pool.points.filter((x) => x.castShadow).length, cap: v.shadowCap(),
+    mapSize: l.pool.points[0].shadow.mapSize.x, bias: l.pool.points[0].shadow.bias, sunBias: v.sun.shadow.bias, far: v.persp.far }; })()`);
+sections.add('render-recipe', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._objects.model`, { timeout: 30000 });
+  await idle(page);
+  const r = await renderState(page);
+  check('render recipe: exposure 1.1 and fov 38 from the model', r.exposure === 1.1 && r.fov === 38 && r.from && r.from.keys === 11, JSON.stringify(r));
+  check('render recipe: lamp shadow slots = min(8, device cap), pool = slots + 4', r.shadows === Math.min(8, r.cap) && r.points === r.shadows + 4 && r.cast === r.shadows, JSON.stringify(r));
+  check('render recipe: lamp / sun shadow bias from the recipe (test mode map size)', r.bias === -0.0008 && r.sunBias === -0.0003 && r.mapSize === 256, JSON.stringify(r));
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+  await idle(page);
+  await page.evaluate(`[...${card}.shadowRoot.querySelectorAll('.panel button')].find((x) => x.textContent.trim() === 'Model')?.click()`);
+  await idle(page);
+  const line = await page.evaluate(`${card}.shadowRoot.querySelector('[data-info=render-recipe]')?.textContent || ''`);
+  check('Model tab: Render recipe: from model (11 keys)', line === 'Render recipe: from model (11 keys)', line);
+  await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
+});
+sections.add('render-default', { group: 'model', query: { model: '1', view: '3d', render: 'default' }, viewport: { width: 1400, height: 560 } }, async (s) => {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._objects.model`, { timeout: 30000 });
+  await idle(page);
+  const r = await renderState(page);
+  check('render: default ignores the recipe (exposure 1.25, fov 35, 4 lamp shadows)', r.exposure === 1.25 && r.fov === 35 && r.from === null && r.shadows === 4 && r.points === 8, JSON.stringify(r));
+});
+
 sections.add('weather', { group: 'model', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model`, { timeout: 30000 });

@@ -36,6 +36,17 @@ describe('checkGlb', () => {
     expect(r.levels[0]).toEqual({ id: 'ground', role: 'storey', order: 0, elevation: 0 });
   });
 
+  it('validates the render recipe (fp.render)', () => {
+    const r = checkGlb(glb({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [
+      { name: 'house', extras: fp({ render: { exposure: 9, camera: { fov: 40 }, toneMapping: 'Nope', bogus: 1 } }), children: [1] },
+      { name: 'ground', extras: fp({ kind: 'level', id: 'ground' }) },
+    ] }));
+    expect(r.ok).toBe(true);
+    expect(r.render).toEqual({ keys: 2, recipe: { exposure: 4, camera: { fov: 40 } } });
+    expect(r.warnings).toContain('render.exposure: 9 out of range 0.05..4, clamped');
+    expect(r.warnings.some((w) => /render.toneMapping/.test(w))).toBe(true);
+  });
+
   it('warns about a spot target shared by a group or too far from the lamp', () => {
     const up = (id, x) => ({ name: id, translation: [x, 0, 0], extras: fp({ kind: 'object', id, type: 'light', group: 'ups', hints: { beam: 'up', target: [6, 0.5, 0] } }) });
     const r = checkGlb(glb({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0, 3] }], nodes: [

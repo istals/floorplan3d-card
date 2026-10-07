@@ -495,6 +495,7 @@ class Floorplan3dCard extends HTMLElement {
     if (this.isConnected && !this._view) this.connectedCallback();
     else if (this._view) {
       this._view.setOcclusion(this._config.occlusion !== false);
+      this._view.setRenderOption(this._config.render);
       if (this._view.model) this._applySky(true); // sky_bodies
       this._weatherId = undefined; // option weather may have changed
       this._applyWeather();
@@ -894,6 +895,8 @@ class Floorplan3dCard extends HTMLElement {
     this._hints.setPixelRatio(this._view.renderer.getPixelRatio());
     this._view.onRender = () => { this._popup.position(); this._hintsNear(); };
     this._view.setOcclusion(this._config.occlusion !== false);
+    this._view.setRenderOption(this._config.render);
+    this._view.onPixelRatio = (pr) => this._hints.setPixelRatio(pr);
     this._view.setMode(this._mode);
     this._loadModel();
     this._edit = new EditMode(this);
