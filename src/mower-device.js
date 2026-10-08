@@ -97,13 +97,19 @@ export function connectivity(hass, mowerEntity) {
 }
 
 // Rain sensor of the device: { entity, wet, drying (minutes left or null), state } or null.
+// Sunseeker: sensor "Rain sensor" = dry | dry_countdown | wet; binary_sensor "Rain sensor active" only
+// says the sensor is enabled, and delay / countdown sensors are minutes, so neither is the status.
+const RAIN_SETTING = /\b(active|enabled?|delay|wait|countdown|left|duration)\b/;
 export function rain(hass, mowerEntity) {
   const { entities } = mowerDevice(hass, mowerEntity);
-  const eid = entities.find((e) => /^(sensor|binary_sensor)\./.test(e) && /rain/.test(label(hass, e)) && !/countdown/.test(label(hass, e)));
+  const rainy = entities.filter((e) => /rain/.test(label(hass, e)));
+  const attrs = (e) => hass.states[e].attributes || {};
+  const eid = rainy.find((e) => e.startsWith('sensor.') && !RAIN_SETTING.test(label(hass, e)) && !isNum(hass.states[e].state))
+    || rainy.find((e) => e.startsWith('binary_sensor.') && (attrs(e).device_class === 'moisture' || !RAIN_SETTING.test(label(hass, e))));
   if (!eid) return null;
   const st = hass.states[eid], s = lc(st.state);
-  const cd = entities.find((e) => e.startsWith('sensor.') && /rain/.test(label(hass, e)) && /countdown/.test(label(hass, e)));
-  const mins = cd && isNum(hass.states[cd].state) ? Number(hass.states[cd].state) : null;
+  const cd = rainy.find((e) => e.startsWith('sensor.') && /countdown|left/.test(label(hass, e)) && isNum(hass.states[e].state));
+  const mins = cd ? Number(hass.states[cd].state) : null;
   const wet = eid.startsWith('binary_sensor.') ? s === 'on' : /wet|rain/.test(s) && !/dry/.test(s);
   const drying = !wet && /countdown|drying/.test(s) ? mins ?? 0 : null;
   return { entity: eid, wet, drying, state: st.state };

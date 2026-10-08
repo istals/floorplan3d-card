@@ -56,6 +56,20 @@ describe('mower device auto-detection', () => {
     expect(rain(h, 'lawn_mower.robo')).toMatchObject({ wet: false, drying: 12 });
     const wet = hassOf([['lawn_mower.r', 'docked'], ['sensor.r_rain_sensor', 'Wet']]);
     expect(rain(wet, 'lawn_mower.r')).toMatchObject({ wet: true, drying: null });
+    // Sunseeker: "Rain sensor active" (enabled, on) and the minute sensors are not the status
+    const ss = hassOf([['lawn_mower.s', 'docked'], ['binary_sensor.s_rain_sensor_active', 'on', { friendly_name: 'S Rain sensor active' }],
+      ['sensor.s_rain_sensor', 'dry', { friendly_name: 'S Rain sensor' }], ['sensor.s_rain_sensor_countdown', '0', { friendly_name: 'S Rain sensor countdown' }],
+      ['sensor.s_rain_sensor_delay', '180', { friendly_name: 'S Rain sensor delay' }]]);
+    expect(rain(ss, 'lawn_mower.s')).toMatchObject({ entity: 'sensor.s_rain_sensor', wet: false, drying: null });
+    ss.states['sensor.s_rain_sensor'].state = 'dry_countdown'; ss.states['sensor.s_rain_sensor_countdown'].state = '25';
+    expect(rain(ss, 'lawn_mower.s')).toMatchObject({ wet: false, drying: 25 });
+    ss.states['sensor.s_rain_sensor'].state = 'wet';
+    expect(rain(ss, 'lawn_mower.s')).toMatchObject({ wet: true });
+    // only the "active" switch-like sensor: no rain status at all
+    const onlyActive = hassOf([['lawn_mower.a', 'docked'], ['binary_sensor.a_rain_sensor_active', 'on']]);
+    expect(rain(onlyActive, 'lawn_mower.a')).toBe(null);
+    const moist = hassOf([['lawn_mower.m', 'docked'], ['binary_sensor.m_rain', 'on', { device_class: 'moisture' }]]);
+    expect(rain(moist, 'lawn_mower.m')).toMatchObject({ wet: true });
     const dry = hassOf([['lawn_mower.r', 'docked'], ['sensor.r_rain_sensor', 'Dry']]);
     expect(rain(dry, 'lawn_mower.r')).toMatchObject({ wet: false, drying: null });
   });
