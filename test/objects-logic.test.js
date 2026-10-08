@@ -150,6 +150,8 @@ describe('lightBudget', () => {
     // short pool: the middle alone would stand out, so none
     const r = lightBudget([f('s1', { max: 1 }), f('s2', { max: 1 })].concat(small), { points: 5 });
     expect([...r.real.keys()].sort()).toEqual(['s1', 's2']);
+    // a group of one lamp is just that lamp
+    expect([...lightBudget([f('solo', { group: 'g', wash: true })]).real.keys()]).toEqual(['solo']);
     // one lamp without a wash: the old rule (middle at 1.5)
     const mixed = small.map((x, i) => (i ? x : { ...x, wash: false }));
     expect(lightBudget([f('s1', { max: 1 }), f('s2', { max: 1 })].concat(mixed), { points: 5 }).real.get('g2').factor).toBe(1.5);

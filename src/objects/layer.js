@@ -324,7 +324,7 @@ export class ObjectLayer {
       fixtures.push({
         id, lit: lightsOn && !!p.result.lit, visible: visibleLevel(p.obj.level) && shown(p.obj.node),
         group: budgetGroup(p.obj, binding, this.groups), max: h.max, beam: h.beam, castShadow: h.castShadow,
-        wash: h.beam !== 'spot' && this.washKindOf(id) !== 'none',
+        wash: h.beam !== 'spot' && this._setWash(id),
       });
     }
     // the model was placed elsewhere: pool positions move with it
@@ -369,6 +369,13 @@ export class ObjectLayer {
   washKindOf(id) {
     const r = this._washOf(id);
     return r ? r.kind : null;
+  }
+
+  // A "Light on wall" chosen for the lamp or its tags (not the model's default beam): the budget lights such a
+  // group evenly (lightBudget, fixture.wash).
+  _setWash(id) {
+    const r = this._washOf(id);
+    return !!r && r.set && r.kind !== 'none';
   }
 
   // { kind, set: true when the object or one of its tags has a setting } or null.
