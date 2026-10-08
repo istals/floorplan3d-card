@@ -42,7 +42,7 @@ Floor shape: ShapeGeometry rotated -90° about X.
   "mower": { "entity": "device_tracker.mower_position", "source": "gps", "x_attr": "x", "y_attr": "y",
              "floor_id": "ground", "calibration": [{ "src": [45.0, 10.0], "plan": [10, -5] }],
              "overlay": { "entity": "image.mower_map", "x": 0, "y": 0, "rotation": 0, "width": 30,
-                          "opacity": 0.6, "refresh": 10 }, "trail": true } }
+                          "opacity": 0.6, "refresh": 10 } } }
 ```
 Floors auto-sync from HA floors (`hass.floors`, elevation = level * 3). Room floor defaults to
 the area's floor_id.
@@ -78,7 +78,7 @@ Edit mode (side panel, tabs Rooms / Devices / Mower / Data):
 - Mower: pick entity, source gps/xy, attribute names, floor. Calibration: "Add point" takes
   current reading, then click where the mower really is. Overlay: image/camera entity,
   sliders x / y / rotation / width / opacity + drag-to-move tool; camera refreshes every N s.
-  Live marker (mdi:robot-mower) + session trail line.
+  Live marker (mdi:robot-mower).
 - Data: export / import layout JSON, show which storage backend is active (warn if not shared).
 - Click vs orbit: pointer move < 5 px counts as a click. Disable OrbitControls while dragging.
 - Render loop only while connected; render when controls change or state dirty.

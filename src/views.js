@@ -658,7 +658,7 @@ export function exteriorShown(index, effective, levels) {
   return index.nodes.some((n, i) => shownHere(effective, i) && ext.has(n.levelId));
 }
 
-// Whether the mower's surroundings show (its map, marker and trail): any exterior-role level, or the
+// Whether the mower's surroundings show (its map and marker): any exterior-role level, or the
 // level holding the lawn under the map, with a shown node (per-node flags when a view applies them, else
 // the level nodes). null without such levels: the HA floor rule applies.
 export function outdoorShown(levels, index = null, flags = null, groundLevel = null) {

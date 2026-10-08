@@ -333,7 +333,7 @@ export class FloorplanView {
     this.markerGroup = new THREE.Group();
     this.glowGroup = new THREE.Group();
     this.overlayGroup = new THREE.Group(); // editor graphics, drawn on top
-    this.mowerGroup = new THREE.Group(); // map image + trail
+    this.mowerGroup = new THREE.Group(); // map image, warning
     this.stemGroup = new THREE.Group(); // edit mode: marker -> floor stems
     this.scene.add(this.staticGroup, this.mowerGroup, this.glowGroup, this.markerGroup, this.overlayGroup, this.stemGroup);
     this.stems = new Map(); // id -> { line, disc }
@@ -341,7 +341,6 @@ export class FloorplanView {
     this._stemRes = null; // shared geometries + materials of the current stems
     this.mapPlane = null;
     this.onMapImage = null; // (image, width, height) -> processed { canvas, width, height } | null
-    this.trail = null;
     this.warning = null; // { sprite, kind, floorId, timer }
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
@@ -1435,7 +1434,7 @@ export class FloorplanView {
     return this._ground.get(x, y, this.model.id, (cx, cy) => this._groundRay(cx, cy));
   }
 
-  // Ground under the mower (marker, model node, warning, trail): a ray down from 1.5 m over the map overlay's
+  // Ground under the mower (marker, model node, warning): a ray down from 1.5 m over the map overlay's
   // ground (else the floor's elevation), at most MOWER_RAY_M long, so roofs, eaves, carports and tree canopies
   // over the mower are ignored. Falls back to the ray from above the model when that finds nothing.
   mowerGround(x, y, floorId) {
@@ -1472,7 +1471,7 @@ export class FloorplanView {
     return { y: hit.point[1], level: level ? level.id : null };
   }
 
-  // Map, marker and trail of the mower: with a model, shown wherever the outdoors (an exterior level, or
+  // Map and marker of the mower: with a model, shown wherever the outdoors (an exterior level, or
   // the level holding the lawn) shows, whatever the mower's HA floor; else the floor rule.
   _mowerShows(floorId) {
     if (this.model) {
@@ -1638,50 +1637,6 @@ export class FloorplanView {
 
   _mapShown(plane) {
     return !plane.userData.hidden && this._mowerShows(plane.userData.floorId);
-  }
-
-  // Mower trail: plan points [[x, y], ...] on one floor, or null. One Line and one material for the
-  // view's life (a new material per update would compile a new shader each time): the points go into a
-  // reused position buffer (grown when full), drawRange says how many; null / < 2 points draws none.
-  setTrail(points, floorId) {
-    const n = points && points.length > 1 ? points.length : 0;
-    if (!n && (!this.trail || !this.trail.geometry.drawRange.count)) return;
-    if (!this.trail) {
-      this.trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthTest: false }));
-      this.trail.renderOrder = 3;
-      this.trail.frustumCulled = false; // the buffer is larger than the drawn part: no stale bounds
-      this.trail.userData.helper = true;
-      this.mowerGroup.add(this.trail);
-    }
-    const line = this.trail;
-    let attr = line.geometry.getAttribute('position');
-    if (n && (!attr || attr.count < n)) {
-      const cap = Math.max(64, n, attr ? attr.count * 2 : 0);
-      const geo = new THREE.BufferGeometry();
-      attr = new THREE.BufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage);
-      geo.setAttribute('position', attr);
-      line.geometry.dispose();
-      line.geometry = geo;
-    }
-    // each point on the ground under it (the lawn, whatever the HA floor's elevation), 4 cm up
-    for (let i = 0; i < n; i++) {
-      const [x, y] = points[i];
-      attr.setXYZ(i, x, this.mowerHeight(x, y, floorId) + 0.04, -y);
-    }
-    if (n) attr.needsUpdate = true;
-    line.geometry.setDrawRange(0, n);
-    line.material.color.set(this.theme.primary || 0x03a9f4); // a uniform: no recompile
-    line.userData.floorId = floorId;
-    line.visible = !!n && this._mowerShows(floorId);
-    this.dirty = true;
-  }
-
-  _disposeTrail() {
-    if (!this.trail) return;
-    this.mowerGroup.remove(this.trail);
-    this.trail.geometry.dispose();
-    this.trail.material.dispose();
-    this.trail = null;
   }
 
   // Warning over the mower: { kind: 'error' | 'stuck', x, y, floorId } or null. A world-size sprite 0.6 m
@@ -1949,7 +1904,7 @@ export class FloorplanView {
     st.line.position.set(world.x, floor, world.z);
     st.line.scale.set(1, Math.max(h, 1e-4), 1);
     st.line.userData.height = h;
-    st.disc.position.set(world.x, floor + 0.05, world.z); // above room fills (+0.02), glows, trail
+    st.disc.position.set(world.x, floor + 0.05, world.z); // above room fills (+0.02), glows
     st.line.visible = st.disc.visible && h > 0.01;
   }
 
@@ -2248,7 +2203,6 @@ export class FloorplanView {
       st.line.visible = shown && st.line.userData.height > 0.01;
     }
     for (const o of this.overlayGroup.children) if (!o.isCSS2DObject) o.visible = this._shows(o.userData.floorId);
-    if (this.trail) this.trail.visible = this.trail.geometry.drawRange.count > 0 && this._mowerShows(this.trail.userData.floorId);
     if (this.warning) this._warningVisible();
     if (this.mowerChip) this.mowerChip.obj.visible = this._mowerShows(this.mowerChip.floorId);
     if (this.model) {
@@ -2808,7 +2762,6 @@ export class FloorplanView {
     if (this.objectLayer) this.objectLayer.dispose();
     this.onObjectsInvalidate = null;
     this.setMapOverlay(null);
-    this._disposeTrail();
     this.setMowerWarning(null);
     for (const s of Object.values(this.skySprites)) {
       if (!s) continue;

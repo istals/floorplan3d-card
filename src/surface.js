@@ -138,7 +138,7 @@ export function surfaceKey(kind, floorId, p, roomId = '') {
   return `${kind}|${floorId}|${roomId}|${mm(p.x)},${mm(p.y)},${mm(p.z)}`;
 }
 
-// Ground under the mower (marker, trail, model, map): one ray per GROUND_CELL square, cast at the cell
+// Ground under the mower (marker, model, map): one ray per GROUND_CELL square, cast at the cell
 // centre and remembered (misses too) until the model placement key changes or clear().
 export const GROUND_CELL = 0.5;
 export class GroundCache {

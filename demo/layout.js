@@ -39,6 +39,5 @@ export const DEMO_LAYOUT = {
       { src: [45.0 + 4 / 111320, 10.0], plan: [16.5, 5.5] },
     ],
     overlay: { entity: 'image.sunseeker_map', x: 16.5, y: 1.5, rotation: 0, width: 9, opacity: 0.55, refresh: 10 },
-    trail: true,
   },
 };

@@ -17,7 +17,7 @@ position over its map.
   circles act, rounded squares show readings, diamonds are alarms, pictures for people and players
 - Edit mode for admins: draw rooms, doors, floors, pin and hide devices, import/export
 - One layout shared by every user and device (stored by the companion integration)
-- Robot mower: live position, trail, map image or camera overlay, point calibration
+- Robot mower: live position, map image or camera overlay, point calibration
 - Optional 3D model of the house (.glb) under the plan: views per storey (upper storeys and the
   roof hidden), click a part to hide it in a view, saved cameras, pick a room's outline from the
   model, and a Day / Night button for lighting
@@ -263,7 +263,7 @@ In the **Mower** tab:
    lifts or lowers it. Model objects (the mower, furniture) draw over it.
    **Show the map only in edit mode** hides it in view mode; the live-map detection keeps working.
 
-The mower's own marker follows the live position and draws a trail for the current session.
+The mower's own marker follows the live position.
 
 A pulsing **warning** appears over the mower (marker or model, also in top view): red when the mower
 entity's state is `error` or the **Error entity** reports a problem; yellow *Stuck?* when the state

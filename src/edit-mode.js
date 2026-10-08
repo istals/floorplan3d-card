@@ -565,7 +565,7 @@ export class EditMode {
   }
 
   setMower(patch) {
-    const cur = this.layout.mower || { entity: '', source: 'gps', x_attr: 'x', y_attr: 'y', floor_id: this.floors[0].id, calibration: [], overlay: null, trail: true };
+    const cur = this.layout.mower || { entity: '', source: 'gps', x_attr: 'x', y_attr: 'y', floor_id: this.floors[0].id, calibration: [], overlay: null };
     this.commit({ ...this.layout, mower: { ...cur, ...patch } });
     this.render();
   }
@@ -1531,7 +1531,6 @@ export class EditMode {
       ${m.source === 'xy' ? `<div class="row"><label>x attribute <input data-field="mower-xattr" value="${esc(m.x_attr || 'x')}"></label>
         <label>y attribute <input data-field="mower-yattr" value="${esc(m.y_attr || 'y')}"></label></div>` : ''}
       <label>Floor <select data-field="mower-floor">${floorOpts}</select></label>
-      <label class="check"><input type="checkbox" data-field="mower-trail" ${m.trail !== false ? 'checked' : ''}> Show trail (this session)</label>
       <div class="sub">Warning</div>
       <label>Error entity (optional) <input list="fp-err-ents" data-field="mower-error-entity" value="${esc(m.error_entity || '')}" placeholder="binary_sensor.mower_error"></label>
       ${datalist('fp-err-ents', errIds)}
@@ -1542,7 +1541,6 @@ export class EditMode {
     if (!m.entity) return out;
 
     if (m.source !== 'image') out += this._calibrationHtml(m, cal, err, fitName);
-    else if (this.card._trail && this.card._trail.length) out += '<div class="row"><button data-act="trail-clear">Clear trail</button></div>';
     out += this._overlayHtml(m, picIds, datalist);
     if (m.source === 'image') out += this._mowerImageSection(m);
     else out += this._autoSection(m);
@@ -1643,8 +1641,7 @@ export class EditMode {
     out += '<ul class="plain">' + cal.map((c, i) => `<li>${i + 1}. (${c.src.map((v) => (m.source === 'xy' ? fmt(v) : v.toFixed(6))).join(', ')}) → (${fmt(c.plan[0])}, ${fmt(c.plan[1])})
       <button class="link" data-act="cal-del" data-i="${i}">Remove</button></li>`).join('') + '</ul>';
     if (cal.length >= 3) out += `<p class="dim">Fit error ${fmt(err)} m</p>`;
-    out += `<div class="row"><button data-act="cal-add" class="${this.calibrating ? '' : 'primary'}" ${this.calibrating ? 'disabled' : ''}>Add point</button>
-      ${this.card._trail && this.card._trail.length ? '<button data-act="trail-clear">Clear trail</button>' : ''}</div>
+    out += `<div class="row"><button data-act="cal-add" class="${this.calibrating ? '' : 'primary'}" ${this.calibrating ? 'disabled' : ''}>Add point</button></div>
       <p class="hint">"Add point" takes the current reading, then you click where the mower really is. One point aligns
       a GPS track north-up, two fix rotation and scale, three or more also correct skew. Spread points far apart.</p>`;
     return out;
@@ -2564,7 +2561,6 @@ export class EditMode {
         return;
       }
       case 'cal-del': this.setMower({ calibration: (this.mower().calibration || []).filter((_, i) => i !== Number(btn.dataset.i)) }); return;
-      case 'trail-clear': this.card.clearTrail(); break;
       case 'ov-move': this.closePicker(); this.overlayMove = !this.overlayMove; this.calibrating = null; this.colorPick = false; this.aligning = null; break;
       case 'ov-remove': this.closePicker(); this.overlayMove = false; this.aligning = null; this.setMower({ overlay: null }); return;
       case 'ov-align': {
@@ -2750,8 +2746,6 @@ export class EditMode {
     } else if (f === 'badge') {
       this.commit({ ...this.layout, badges: { ...(this.layout.badges || {}), [el.dataset.key]: el.checked } });
       this.render();
-    } else if (f === 'mower-trail') {
-      this.setMower({ trail: el.checked });
     } else if (f === 'ov-edit-only') {
       this.setOverlay({ edit_only: el.checked });
     } else if (f === 'ov-hide-icon') {

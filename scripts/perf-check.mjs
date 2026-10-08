@@ -25,7 +25,7 @@ try {
   check('benchmark frames rendered ahead', n > 10, String(n));
   await ev('window.__setRobotFrame(0)');
   await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' }, dock: { entity: 'lawn_mower.robo' } },
-    mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [], trail: true,
+    mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [],
     overlay: { entity: 'camera.robo_live_map', x: 16.5, y: 1.5, rotation: 0, width: 17, opacity: 0.6, refresh: 2 } } }); })()`);
   check('mower found on the 1600 px map', await until(`(() => { const r = ${card}._imageResult; return !!${card}._imageBlob && !!r && !r.missing && !r.error; })()`, 'the first detection', 60000),
     JSON.stringify(await ev(`${card}._imageResult`)));

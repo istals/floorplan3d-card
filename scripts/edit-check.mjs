@@ -236,7 +236,6 @@ try {
   check('mower tab shows live reading on plan', !!reading && Math.abs(Number(reading[1]) - 45) < 0.01 && Math.abs(Number(reading[2]) - 10) < 0.01
     && live.includes('on plan'), live.trim());
   check('mower marker follows live position', await ev(`(() => { const c = ${card}; const p = c._positions.get(c._mowerMarkerId); return !!p && p.live && Math.hypot(p.x - 16.5, p.y - 1.5) < 4.5; })()`));
-  check('trail drawn', await ev(`!!${card}._view.trail && ${card}._trail.length > 1`));
   check('map overlay loaded', await ev(`!!${card}._view.mapPlane && !!${card}._view.mapPlane.material.map`));
   const cal0 = (await layout()).mower.calibration.length;
   check('add calibration point', await panelClick('Add point'));

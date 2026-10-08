@@ -57,8 +57,6 @@ const NIGHT_MOON = [160, 35]; // manual Night: moon azimuth / elevation
 const CLICK_SLOP_PX = 5;
 const WARN_ID = '__mower_warning__'; // tap target of the warning when the mower is a marker, not a model object
 const OBJECT_HIT_PX = { touch: 52, mouse: 30 };
-const TRAIL_STEP_M = 0.15;
-const TRAIL_MAX = 3000;
 const MOWER_Z = 0.15;
 const MATCH_MIN = 0.5; // mower picture match score (NCC) trusted for position and heading
 const MODEL_API = '/api/floorplan3d/model';
@@ -1170,7 +1168,7 @@ class Floorplan3dCard extends HTMLElement {
       b.states = h.states;
       b.badges = l.badges;
       this._refreshStates();
-      this._refreshMower(mower);
+      this._refreshMower();
     }
     this._updateObjects();
     this._popup.update();
@@ -1183,13 +1181,11 @@ class Floorplan3dCard extends HTMLElement {
     return m && this._floors.some((f) => f.id === m.floor_id) ? m.floor_id : this._floors[0].id;
   }
 
-  // Live mower: move its marker, extend the trail, refresh the map overlay.
-  _refreshMower(configChanged) {
+  // Live mower: move its marker, refresh the map overlay.
+  _refreshMower() {
     const cfg = this._layout.mower;
     if (!cfg || !cfg.entity) {
-      this._trail = [];
       this._mowerLive = null;
-      this._view.setTrail(null);
       this._view.setMapOverlay(null);
       this._setCameraTimer(0);
       this._setImageTimer(0);
@@ -1239,20 +1235,6 @@ class Floorplan3dCard extends HTMLElement {
       } else if (!prev || prev.x !== pos.x || prev.y !== pos.y || prev.z !== pos.z || prev.floorId !== floorId) {
         this._view.moveMarker(id, pos.x, pos.y, pos.z, floorId); // only when it actually moved
       }
-    }
-    if (configChanged) this._trail = [];
-    if (cfg.trail !== false) {
-      const t = (this._trail = this._trail || []);
-      const last = t[t.length - 1];
-      if (p && (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) >= TRAIL_STEP_M)) {
-        t.push(p);
-        if (t.length > TRAIL_MAX) t.splice(0, t.length - TRAIL_MAX);
-        this._view.setTrail(t, floorId);
-      } else if (configChanged) {
-        this._view.setTrail(t, floorId);
-      }
-    } else {
-      this._view.setTrail(null);
     }
     this._refreshMapOverlay();
     this._updateMowerWarning();
@@ -1673,7 +1655,7 @@ class Floorplan3dCard extends HTMLElement {
     queueMicrotask(() => {
       this._mowerRefreshQueued = false;
       if (!this._view || !this._layout || !this._layout.mower) return;
-      this._refreshMower(false);
+      this._refreshMower();
       if (this._editing && this._edit) this._edit.onStates();
     });
   }
@@ -1825,7 +1807,7 @@ class Floorplan3dCard extends HTMLElement {
     const now = this._layout && this._layout.mower;
     if (!now || now.source !== 'image') return;
     this._imageResult = result;
-    if (this._view) this._refreshMower(false);
+    if (this._view) this._refreshMower();
     if (this._editing && this._edit) this._edit.onStates();
     if (this._imageAgain) {
       this._imageAgain = false;
@@ -1870,10 +1852,6 @@ class Floorplan3dCard extends HTMLElement {
     return headingMinStep(m && m.source, m && m.overlay && m.overlay.width, b && b.sampleW);
   }
 
-  clearTrail() {
-    this._trail = [];
-    this._view.setTrail(null);
-  }
 
   // One pass per loaded map picture (view.onMapImage): a single readback at working size, mower
   // detection on it (when the icon is on the overlay's own picture; a new picture only, re-runs on the
@@ -1912,7 +1890,7 @@ class Floorplan3dCard extends HTMLElement {
           queueMicrotask(() => {
             this._mowerRefreshQueued = false;
             if (!this._view || !this._layout || !this._layout.mower) return;
-            this._refreshMower(false);
+            this._refreshMower();
             if (this._editing && this._edit) this._edit.onStates();
           });
         }

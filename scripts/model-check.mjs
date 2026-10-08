@@ -676,10 +676,9 @@ sections.add('merge', { group: 'objects', query: { model: '1', view: '3d' }, vie
     return { live: live.size, created: created.length, transient: created.filter((id) => !live.has(id)).length, otherNew: created.filter((id) => other.has(id)).length }; })()`);
   await sleep(1000);
   await programs();
-  await sleep(10000); // the demo mower moves every 500 ms: trail, marker, map
+  await sleep(10000); // the demo mower moves every 500 ms: marker, map
   const moving = await programs();
-  check('mower moving for 10 s: no new shader programs (the trail keeps its material)', moving.created === 0
-    && await page.evaluate(`!!${card}._view.trail && ${card}._view.trail.geometry.drawRange.count > 1`), JSON.stringify(moving));
+  check('mower moving for 10 s: no new shader programs', moving.created === 0, JSON.stringify(moving));
   const on = await stats();
   check('merge: fewer meshes and draw calls, same triangles', on.enabled && on.after.meshes < on.before.meshes && on.after.calls < on.before.calls
     && on.after.triangles === on.before.triangles && on.merged > 0, JSON.stringify(on));
@@ -2456,7 +2455,7 @@ sections.add('surfaces', { group: 'mower', query: { model: '1', view: '3d', heig
   allErrors.push(...s.errors);
 });
 
-// 2i. mower on the lawn: map, marker, trail and model at the model's ground (any HA floor elevation),
+// 2i. mower on the lawn: map, marker and model at the model's ground (any HA floor elevation),
 // shown with the outdoors, align by points (Cancel restores, Done keeps), edit-only
 sections.add('mower-lawn', { group: 'mower', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 700 } }, async (s) => {
   const { page } = s;
@@ -2480,22 +2479,20 @@ sections.add('mower-lawn', { group: 'mower', query: { model: '1', view: '3d' }, 
   const elev = await ev(`${card}._view.floorElevation('garden_f')`);
   check('map overlay stays on the lawn with the floor at 7 m', elev === 7 && y - lawn >= 0 && y - lawn <= 0.05, `elevation ${elev}, plane ${y}`);
   check('map shown in the ground view (exterior visible), whatever the HA floor', await ev(`${card}._view.mapPlane.visible`));
-  // the demo model's mower object stands on the lawn, its trail lies on it
+  // the demo model's mower object stands on the lawn
   const mowerY = `(() => { const o = ${card}._objects.objectAt('mower'); return o && o.obj.node ? o.obj.node.getWorldPosition(o.obj.node.position.clone()).y : null; })()`;
   check('mower model on the lawn with the floor at 7 m', await until(`(() => { const y = ${mowerY}; return y !== null && y < 1; })()`, 'the mower model on the lawn'), String(await ev(mowerY)));
-  check('trail drawn on the lawn', await until(`(() => { const t = ${card}._view.trail; if (!t) return false; const a = t.geometry.attributes.position, n = a ? Math.min(a.count, t.geometry.drawRange.count) : 0;
-    for (let i = 0; i < n; i++) if (Math.abs(a.getY(i) + t.position.y - 0.04) > 0.03) return false; return n > 1; })()`, 'the trail', 15000));
   // without the model's mower object: the live marker, on the lawn too
   await ev(`(() => { const c = ${card}; c._commit({ ...c._layout, objects: { ...(c._layout.objects || {}), mower: { hidden: true } } }); })()`);
   const markerY = `(() => { const c = ${card}, o = c._mowerMarkerId && c._view.markerObjects.get(c._mowerMarkerId); return o ? o.obj.position.y : null; })()`;
   check('mower marker on the lawn with the floor at 7 m', await until(`(() => { const y = ${markerY}; return y !== null && y < 1.5; })()`, 'the mower marker'), String(await ev(markerY)));
   check('mower marker shown with the exterior', await ev(`(() => { const c = ${card}; const o = c._view.cssObjects.find((x) => x.kind === 'marker' && x.id === c._mowerMarkerId); return !!o && o.obj.visible; })()`));
-  // a view without the exterior hides map, marker and trail
+  // a view without the exterior hides map and marker
   await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, views: { ...(l.views || {}), indoor: { added: true, label: 'Indoor', rules: [{ hide: 'all' }, { show: 'level:level0' }] } } }); })()`);
   await until(`!!${card}._views && ${card}._views.some((v) => v.id === 'indoor')`, 'the indoor view');
   await ev(`${card}._setView('indoor', { instant: true })`);
-  check('indoor view hides map, marker and trail', await until(`(() => { const c = ${card}, v = c._view; const m = v.cssObjects.find((x) => x.kind === 'marker' && x.id === c._mowerMarkerId);
-    return !v.mapPlane.visible && (!v.trail || !v.trail.visible) && (!m || !m.obj.visible); })()`, 'the indoor view to hide the mower'));
+  check('indoor view hides map and marker', await until(`(() => { const c = ${card}, v = c._view; const m = v.cssObjects.find((x) => x.kind === 'marker' && x.id === c._mowerMarkerId);
+    return !v.mapPlane.visible && (!m || !m.obj.visible); })()`, 'the indoor view to hide the mower'));
   await ev(`${card}._setView('ground', { instant: true })`);
   check('ground view shows them again', await until(`${card}._view.mapPlane.visible`, 'the map in the ground view'));
   await commitMower({}, { height_offset: 0.3 });
@@ -2671,7 +2668,7 @@ sections.add('mower-auto', { group: 'mower', query: { model: '1', view: '3d' }, 
   const until = (expr, label, timeout = 10000) => page.waitForFunction(expr, { timeout }).then(() => true, () => { console.log(`     (timed out waiting for ${label})`); return false; });
   await until(`!!${card}._view.model`, 'the model', 20000);
   await ev('window.__demoMowerPaused = true');
-  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' } }, mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [], trail: true,
+  await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' } }, mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [],
     overlay: { entity: 'camera.robo_live_map', x: 16.5, y: 1.5, rotation: 0, width: 9, opacity: 0.6, refresh: 2 } } }); })()`);
   check('auto mode: static map and mower picture detected', await until(`(() => { const a = ${card}.mowerAuto(); return !!a && a.static === 'image.robo_map' && a.picture === 'image.robo_mower_image'; })()`, 'auto mode'));
   const T = 0.7;
@@ -2772,7 +2769,7 @@ sections.add('mower-docked', { group: 'mower', query: { model: '1', view: '3d' }
   // mowing first (the map's dock icon and the icon size are learned), then home to the dock
   await ev(`window.__setRobotAt(300, 600, 0.3)`);
   await ev(`(() => { const c = ${card}, l = c._layout; c._commit({ ...l, objects: { ...(l.objects || {}), mower: { entity: 'lawn_mower.robo' }, dock: { entity: 'lawn_mower.robo' } },
-    mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [], trail: true,
+    mower: { entity: 'lawn_mower.robo', source: 'image', floor_id: l.mower.floor_id, calibration: [],
     overlay: { entity: 'camera.robo_live_map', x: 16.5, y: 1.5, rotation: 0, width: 9, opacity: 0.6, refresh: 2 } } }); })()`);
   const near = (x, y, r = 4) => `(() => { const b = ${card}._imageBlob; return !!b && Math.hypot(b.px - ${x}, b.py - ${y}) < ${r}; })()`;
   check('mowing: found by its picture', await until(`${near(300, 600)} && ${card}._imageBlob.matched`, 'the mowing mower', 20000), JSON.stringify(await ev(`${card}._imageBlob`)));
