@@ -44,18 +44,21 @@ function fromSource(ui) {
 }
 
 /**
- * { tap, hold, double_tap, popup }: each action normalised ({ action, ... }); double_tap null when there
+ * { tap, hold, double_tap, popup, popupSource }: each action normalised ({ action, ... }); double_tap null when there
  * is none (or it is `none`): taps on that target are then never delayed. Later sources win:
  * type defaults < model fp.ui < layout.objects[id].ui < YAML `actions:` (device:<id> < tag:<name> < <entity_id> < object:<id>).
+ * popupSource: where the popup list came from ('type' | 'model' | 'layout' | 'yaml'); type / model lists are
+ * extended by the bound light's capabilities (popupRows), layout / YAML lists are taken as written.
  * tags: the object's tags in order (a later tag wins over an earlier one).
  */
 export function resolveActions({ modelUi, layoutUi, yaml, kind = 'object', id, entityId, deviceId, typeDefaults, tags } = {}) {
   const y = plain(yaml) ? yaml : {};
   const tagKeys = kind === 'object' && Array.isArray(tags) ? tags.map((t) => `tag:${t}`) : [];
   const keys = [deviceId && `device:${deviceId}`, ...tagKeys, entityId, kind === 'object' && id && `object:${id}`].filter(Boolean);
+  const names = ['type', 'model', 'layout', ...keys.map(() => 'yaml')];
   const sources = [typeDefaults, modelUi, layoutUi, ...keys.map((k) => y[k])].map(fromSource);
-  const out = { tap: { action: 'none' }, hold: { action: 'none' }, double_tap: null, popup: ['state'] };
-  for (const s of sources) Object.assign(out, s);
+  const out = { tap: { action: 'none' }, hold: { action: 'none' }, double_tap: null, popup: ['state'], popupSource: 'type' };
+  sources.forEach((s, i) => { Object.assign(out, s); if (s.popup) out.popupSource = names[i]; });
   if (out.double_tap && out.double_tap.action === 'none') out.double_tap = null;
   return out;
 }

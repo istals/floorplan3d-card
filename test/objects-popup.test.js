@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { popupRows, actionTarget } from '../src/objects/popup.js';
+import { popupRows, actionTarget, rowsKey, effectOrder, wheelHs, wheelPoint, rgbToHs } from '../src/objects/popup.js';
 import { resolveActions } from '../src/actions.js';
 import { typeOf } from '../src/objects/types.js';
 import { chainState } from '../src/objects/logic.js';
@@ -193,5 +193,100 @@ describe('object actions / actionTarget', () => {
     // controller not usable either: the own entity (the caller shows the popup)
     expect(actionTarget({ group: 'g' }, { entity: 'light.a' }, groups, { ...states, 'switch.g': st('unknown') })).toBe('light.a');
     expect(actionTarget({}, { entity: 'light.a' }, {}, states)).toBe('light.a');
+  });
+});
+
+describe('popupRows: automatic rows from the light', () => {
+  const full = {
+    supported_color_modes: ['hs', 'color_temp'], color_mode: 'hs', brightness: 200, hs_color: [120, 50], rgb_color: [128, 255, 128],
+    min_color_temp_kelvin: 2200, max_color_temp_kelvin: 6000, color_temp_kelvin: 3000, effect_list: ['Rainbow', 'Music 1', 'Sound'], effect: 'Rainbow',
+  };
+  const rowsFor = (attrs, popup, source) => {
+    const states = { 'light.a': st('on', attrs) };
+    const obj = { id: 'l1', type: 'light' };
+    return popupRows(obj, chainState(obj, { entity: 'light.a' }, {}, states), states, {}, popup, source);
+  };
+
+  it('a model list [toggle] gets brightness, colour, colour temperature and effect', () => {
+    for (const src of ['model', 'type']) {
+      const rows = rowsFor(full, ['toggle'], src);
+      expect(kinds(rows)).toEqual(['toggle', 'brightness', 'color', 'color_temp', 'effect']);
+    }
+    const rows = rowsFor(full, ['toggle'], 'model');
+    expect(rows[2]).toMatchObject({ entity: 'light.a', hs: [120, 50] });
+    expect(rows[3]).toMatchObject({ value: 3000, min: 2200, max: 6000 });
+    expect(rows[4]).toMatchObject({ value: 'Rainbow', options: ['Music 1', 'Sound', 'Rainbow'] });
+  });
+
+  it('a layout or YAML list is respected exactly; without a source too', () => {
+    expect(kinds(rowsFor(full, ['toggle'], 'layout'))).toEqual(['toggle']);
+    expect(kinds(rowsFor(full, ['toggle'], 'yaml'))).toEqual(['toggle']);
+    expect(kinds(rowsFor(full, ['toggle']))).toEqual(['toggle']);
+    expect(kinds(rowsFor(full, ['effect', 'color_temp', 'toggle'], 'layout'))).toEqual(['effect', 'color_temp', 'toggle']);
+  });
+
+  it('no duplicates; the other rows come after the light rows', () => {
+    const rows = rowsFor(full, ['state', 'effect', 'toggle', 'brightness'], 'model');
+    expect(kinds(rows)).toEqual(['toggle', 'brightness', 'color', 'color_temp', 'effect', 'state']);
+  });
+
+  it('an on / off light gets no brightness; a bare light only what it supports', () => {
+    expect(kinds(rowsFor({ supported_color_modes: ['onoff'] }, ['toggle'], 'model'))).toEqual(['toggle']);
+    expect(kinds(rowsFor({ supported_color_modes: ['brightness'] }, ['toggle'], 'model'))).toEqual(['toggle', 'brightness']);
+    expect(kinds(rowsFor({ supported_color_modes: ['color_temp'] }, ['toggle'], 'model'))).toEqual(['toggle', 'brightness', 'color_temp']);
+  });
+
+  it('colour temperature: range from the attributes, defaults 2000 / 6500, value null when unknown', () => {
+    const row = rowsFor({ supported_color_modes: ['color_temp'] }, ['toggle'], 'model').find((r) => r.kind === 'color_temp');
+    expect(row).toMatchObject({ value: null, min: 2000, max: 6500 });
+  });
+
+  it('effect row only with a non-empty effect_list', () => {
+    expect(kinds(rowsFor({ supported_color_modes: ['hs'], effect_list: [] }, ['toggle'], 'model'))).not.toContain('effect');
+    expect(kinds(rowsFor({ supported_color_modes: ['hs'] }, ['toggle'], 'model'))).not.toContain('effect');
+    expect(kinds(rowsFor({ supported_color_modes: ['hs'], effect_list: ['A'] }, ['toggle'], 'model'))).toContain('effect');
+  });
+
+  it('colour marker: from hs_color, else rgb_color; none in colour temperature mode or when off', () => {
+    const color = (attrs, state = 'on') => {
+      const states = { 'light.a': st(state, { supported_color_modes: ['hs', 'color_temp'], ...attrs }) };
+      const obj = { id: 'l1', type: 'light' };
+      return popupRows(obj, chainState(obj, { entity: 'light.a' }, {}, states), states).find((r) => r.kind === 'color').hs;
+    };
+    expect(color({ color_mode: 'hs', hs_color: [10, 90] })).toEqual([10, 90]);
+    expect(color({ color_mode: 'rgb', rgb_color: [255, 0, 0] })).toEqual([0, 100]);
+    expect(color({ color_mode: 'color_temp', hs_color: [10, 90] })).toBe(null);
+    expect(color({ color_mode: 'hs', hs_color: [10, 90] }, 'off')).toBe(null);
+  });
+
+  it('rowsKey changes with the row set and the option lists', () => {
+    const a = rowsKey(rowsFor(full, ['toggle'], 'model'));
+    expect(rowsKey(rowsFor(full, ['toggle'], 'layout'))).not.toBe(a);
+    expect(rowsKey(rowsFor({ ...full, effect_list: ['X'] }, ['toggle'], 'model'))).not.toBe(a);
+    expect(rowsKey(rowsFor({ ...full, max_color_temp_kelvin: 5000 }, ['toggle'], 'model'))).not.toBe(a);
+  });
+});
+
+describe('effectOrder / colour wheel maths', () => {
+  it('music-like effects first, the rest keep their order', () => {
+    expect(effectOrder(['Rainbow', 'Music Pulse', 'Fire', 'Sound', 'Mic']))
+      .toEqual(['Music Pulse', 'Sound', 'Mic', 'Rainbow', 'Fire']);
+    expect(effectOrder(null)).toEqual([]);
+    expect(effectOrder(['A', '', 3, 'B'])).toEqual(['A', 'B']);
+  });
+
+  it('wheelHs and wheelPoint are inverse; the edge clamps saturation', () => {
+    expect(wheelHs(10, 0, 10)).toEqual([0, 100]);
+    expect(wheelHs(0, 5, 10)).toEqual([90, 50]);
+    expect(wheelHs(-30, 0, 10)).toEqual([180, 100]);
+    expect(wheelHs(0, 0, 10)[1]).toBe(0);
+    const [x, y] = wheelPoint(90, 50, 10);
+    expect(x).toBeCloseTo(0); expect(y).toBeCloseTo(5);
+  });
+
+  it('rgbToHs', () => {
+    expect(rgbToHs([255, 0, 0])).toEqual([0, 100]);
+    expect(rgbToHs([0, 255, 0])).toEqual([120, 100]);
+    expect(rgbToHs([255, 255, 255])).toEqual([0, 0]);
   });
 });

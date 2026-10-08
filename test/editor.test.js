@@ -253,6 +253,16 @@ describe('setObjectUi', () => {
   });
 });
 
+describe('setObjectUi popup', () => {
+  it('stores the popup list as ui.popup and removes it again', () => {
+    let l = setObjectUi({}, 'lamp', 'popup', ['toggle']);
+    expect(l.objects.lamp).toEqual({ ui: { popup: ['toggle'] } });
+    l = setObjectUi(l, 'lamp', 'tap', { action: 'none' });
+    l = setObjectUi(l, 'lamp', 'popup', null);
+    expect(l.objects.lamp.ui).toEqual({ tap_action: { action: 'none' } });
+  });
+});
+
 describe('sliderValue', () => {
   it('clamps to min / max and rounds to the step grid from min', () => {
     expect(sliderValue('12.37', 1, 200, 0.1)).toBe(12.4);

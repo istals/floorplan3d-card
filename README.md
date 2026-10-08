@@ -473,6 +473,11 @@ has no marker: the object is the control.
   and a row per tag controller and why a lamp is dark ("Facade switch is off"). A tap on an object
   that can't act does nothing but say why: "Not reachable (offline)" or "Turn on first: <controller>"
   (hold still opens the popup).
+  The popup rows follow the light: besides the listed rows it adds brightness (with 10 / 30 / 60 / 100 %
+  buttons), a colour wheel (tap or drag, sent on release; the warm white button sits next to it), a colour
+  temperature slider in Kelvin and an effect select (music effects first) when the bound light supports
+  them. A list from the layout or the YAML `popup:` is taken as written (it may name `color_temp` and
+  `effect` too). In the Objects tab, the **Popup** select per object chooses *Automatic* or *Only on / off*.
   Esc or a tap outside closes it. Taps near an object (30 px, 52 px on touch) hit the object
   before markers. Other objects: mower popup (state, battery, start / dock), climate (temperature,
   mode), EV charger (state, power, energy); `fp.ui` in the model, the Objects tab or the card YAML

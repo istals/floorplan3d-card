@@ -275,6 +275,10 @@ don't flicker (z-fighting).
   `power`, `energy`, `temperature`, `mode`, `start_dock` (mower start / dock). Rows that don't apply
   to the bound entity are left out. Grouped fixtures also show the group controller and why a
   fixture is dark ("Facade switch is off").
+  The list from the model (or the type) is extended automatically by the bound light's capabilities:
+  `brightness`, `color`, `color_temp` and `effect` rows appear when the `light.*` entity supports them,
+  so `"popup": ["toggle"]` on a smart bulb still gets the colour wheel, Kelvin slider and effect list.
+  A list set in the Objects tab or the card YAML is taken exactly as written.
   Links at the bottom: `history`, `logbook`, `statistics` and `{ "label": "…", "navigate": "/…" }`
   or `{ "label": "…", "url": "https://…" }`.
 

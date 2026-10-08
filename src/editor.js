@@ -306,8 +306,9 @@ export function setObject(layout, id, patch) {
 export function setObjectUi(layout, id, which, action) {
   const cur = ((layout.objects || {})[id] || {}).ui || {};
   const ui = { ...cur };
-  if (action) ui[`${which}_action`] = action;
-  else delete ui[`${which}_action`];
+  const key = which === 'popup' ? 'popup' : `${which}_action`; // popup: the row list (['toggle'] = only on / off)
+  if (action) ui[key] = action;
+  else delete ui[key];
   return setObject(layout, id, { ui: Object.keys(ui).length ? ui : undefined });
 }
 

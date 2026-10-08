@@ -929,6 +929,93 @@ sections.add('objects-tap', { group: 'objects', query: { model: '1', view: '3d' 
 
 // 1b2. HA-style actions from the card YAML: navigate on tap, perform-action on hold, double tap on one
 // object never delays single taps on another, missing target -> message, confirmation, popup links, markers
+// 1c. light popup: rows from the bound light's capabilities (smart bulb: colour, colour temperature, effects)
+sections.add('light-popup', { group: 'objects', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
+  const { page } = s;
+  await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 30000 });
+  await page.evaluate(`${card}.shadowRoot.querySelector('.chip[data-view=ground]').click()`);
+  await settle(page, card);
+  await idle(page);
+  const sr = `${card}.shadowRoot`;
+  const lamp = 'light.demo_kitchen';
+  // the model lists only the toggle (fp.ui.popup) for this lamp: the light's capabilities still add rows
+  await page.evaluate(`${card}._objects.objectAt('lamp_kitchen').obj.ui = { popup: ['toggle'] }`);
+  const open = async () => {
+    await page.evaluate(`(() => { const c = ${card}; const a = c._objects.anchors().find((x) => x.id === 'lamp_kitchen'); c._popup.open(c._objects.objectAt('lamp_kitchen').obj, a.world); })()`);
+    await idle(page);
+  };
+  const rows = () => page.evaluate(`[...${sr}.querySelectorAll('.fp-popup .fp-pop-row')].map((r) => r.className.replace('fp-pop-row ', ''))`);
+  const lastCall = () => page.evaluate('JSON.stringify(window.__serviceCalls[window.__serviceCalls.length - 1])');
+  const nCalls = () => page.evaluate('(window.__serviceCalls || []).length');
+  await open();
+  const r0 = await rows();
+  check('model list [toggle] + smart bulb: toggle, brightness, wheel, Kelvin, effect rows', r0.join() === 'toggle,brightness,color,color_temp,effect', r0.join());
+  check('brightness has 4 preset buttons', (await page.evaluate(`${sr}.querySelectorAll('.fp-popup .fp-presets button').length`)) === 4);
+  const sizes = await page.evaluate(`(() => { const c = ${sr}.querySelector('.fp-popup canvas.fp-wheel'); const b = c.getBoundingClientRect();
+    const g = c.getContext('2d'); const px = g.getImageData(c.width / 2 + 40, c.height / 2, 1, 1).data; return { w: b.width, h: b.height, a: px[3] }; })()`);
+  check('colour wheel is 132 px and drawn', sizes.w === 132 && sizes.h === 132 && sizes.a > 0, JSON.stringify(sizes));
+  check('the colour temperature row shows "3000 K"', (await page.evaluate(`${sr}.querySelector('.fp-popup .color_temp .fp-pop-value').textContent`)) === '3000 K');
+  const eff = await page.evaluate(`[...${sr}.querySelectorAll('.fp-popup .effect option')].map((o) => o.value).join('|')`);
+  check('effects: music-like first', eff === '|Music pulse|Sound reactive|Rainbow|Candle', eff);
+  await page.screenshot({ path: path.join(root, 'screenshots', 'light-popup.png') });
+  // a pointer down / up on the wheel: one light.turn_on with hs_color; pointer events never reach the stage
+  const n0 = await nCalls();
+  const wheel = await page.evaluate(`(() => { const b = ${sr}.querySelector('.fp-popup canvas.fp-wheel').getBoundingClientRect(); return { x: b.left + b.width * 0.8, y: b.top + b.height / 2 }; })()`);
+  await page.evaluate(`window.__stagePointer = 0; ${sr}.querySelector('.stage').addEventListener('pointerdown', () => { window.__stagePointer++; })`);
+  await page.mouse.move(wheel.x, wheel.y);
+  await page.mouse.down();
+  await page.mouse.move(wheel.x + 2, wheel.y + 2, { steps: 3 });
+  check('dragging on the wheel sends nothing yet', (await nCalls()) === n0);
+  await page.mouse.up();
+  await idle(page);
+  const hc = JSON.parse(await lastCall());
+  check('release on the wheel: one light.turn_on with hs_color', (await nCalls()) === n0 + 1 && hc[0] === 'light' && hc[1] === 'turn_on' && hc[2].entity_id === lamp
+    && Array.isArray(hc[2].hs_color) && hc[2].hs_color.length === 2 && hc[2].hs_color[1] > 50 && hc[2].hs_color[0] < 40, JSON.stringify(hc));
+  check('the wheel gesture did not reach the stage', (await page.evaluate('window.__stagePointer')) === 0);
+  check('the marker shows the colour; popup still open', await page.evaluate(`!${sr}.querySelector('.fp-popup .fp-wheel-dot').hidden`) && (await rows()).length === 5);
+  // colour temperature: one call on release
+  const n1 = await nCalls();
+  await page.evaluate(`(() => { const r = ${sr}.querySelector('.fp-popup .color_temp input'); r.value = '4500'; r.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  check('the Kelvin slider only previews while moving', (await nCalls()) === n1 && (await page.evaluate(`${sr}.querySelector('.fp-popup .color_temp .fp-pop-value').textContent`)) === '4500 K');
+  await page.evaluate(`${sr}.querySelector('.fp-popup .color_temp input').dispatchEvent(new Event('change', { bubbles: true }))`);
+  check('Kelvin slider release: one color_temp_kelvin call', (await lastCall()) === JSON.stringify(['light', 'turn_on', { entity_id: lamp, color_temp_kelvin: 4500 }]) && (await nCalls()) === n1 + 1, await lastCall());
+  // presets and effect
+  await page.evaluate(`${sr}.querySelector('.fp-popup .fp-presets button[data-pct="30"]').click()`);
+  check('preset 30 % sends brightness_pct', (await lastCall()) === JSON.stringify(['light', 'turn_on', { entity_id: lamp, brightness_pct: 30 }]), await lastCall());
+  await page.evaluate(`(() => { const e = ${sr}.querySelector('.fp-popup .effect select'); e.value = 'Candle'; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await idle(page);
+  check('choosing an effect sends light.turn_on with effect', (await lastCall()) === JSON.stringify(['light', 'turn_on', { entity_id: lamp, effect: 'Candle' }]), await lastCall());
+  check('the effect select shows the new effect', (await page.evaluate(`${sr}.querySelector('.fp-popup .effect select').value`)) === 'Candle');
+  await page.keyboard.press('Escape');
+  await idle(page);
+  // layout list [toggle] is respected: edit mode, Objects tab, Popup "Only on / off"
+  await page.evaluate(`${sr}.querySelector('button.edit').click()`);
+  await idle(page);
+  await page.evaluate(`[...${sr}.querySelectorAll('.tabs button')].find((b) => b.textContent.trim() === 'Objects').click()`);
+  await idle(page);
+  await page.evaluate(`${card}._edit.selectObject('lamp_kitchen')`);
+  await idle(page);
+  const popSel = `${sr}.querySelector('select[data-field=obj-popup][data-id=lamp_kitchen]')`;
+  const opts = await page.evaluate(`(() => { const s = ${popSel}; return s && [...s.options].map((o) => o.textContent).join('|'); })()`);
+  check('Objects tab has a Popup select: Automatic / Only on / off', opts === 'Automatic|Only on / off', String(opts));
+  await page.evaluate(`(() => { const s = ${popSel}; s.value = 'toggle'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await idle(page);
+  const saved = await page.evaluate(`JSON.stringify(${card}._layout.objects.lamp_kitchen.ui)`);
+  check('Only on / off saves ui.popup = [toggle] in the layout', saved === '{"popup":["toggle"]}', saved);
+  await page.evaluate(`${sr}.querySelector('button.edit').click()`); // leave edit mode
+  await idle(page);
+  await open();
+  check('with the layout list only the toggle row remains', (await rows()).join() === 'toggle', (await rows()).join());
+  await page.keyboard.press('Escape');
+  await idle(page);
+  await page.evaluate(`${sr}.querySelector('button.edit').click()`);
+  await idle(page);
+  await page.evaluate(`(() => { const s = ${popSel}; s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await idle(page);
+  const back = await page.evaluate(`JSON.stringify((${card}._layout.objects || {}).lamp_kitchen || null)`);
+  check('Automatic removes the key again', !/popup/.test(back), back);
+});
+
 sections.add('actions', { group: 'objects', query: { model: '1', view: '3d' }, viewport: { width: 1400, height: 560 } }, async (s) => {
   const { page } = s;
   await page.waitForFunction(`!!${card}._view.model && !!${card}._hass`, { timeout: 30000 });

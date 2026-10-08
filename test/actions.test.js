@@ -70,6 +70,17 @@ describe('resolveActions', () => {
     expect(r.popup).toEqual(['history']);
   });
 
+  it('popupSource: where the popup list came from', () => {
+    const base = { kind: 'object', id: 'x' };
+    expect(resolveActions({ ...base, typeDefaults: light }).popupSource).toBe('type');
+    expect(resolveActions({ ...base }).popupSource).toBe('type');
+    expect(resolveActions({ ...base, typeDefaults: light, modelUi: { popup: ['toggle'] } }).popupSource).toBe('model');
+    expect(resolveActions({ ...base, typeDefaults: light, modelUi: { popup: ['toggle'] }, layoutUi: { popup: ['toggle'] } }).popupSource).toBe('layout');
+    expect(resolveActions({ ...base, typeDefaults: light, layoutUi: { popup: ['toggle'] }, yaml: { 'object:x': { popup: ['state'] } } }).popupSource).toBe('yaml');
+    // a layout ui without a popup list leaves the model's source
+    expect(resolveActions({ ...base, typeDefaults: light, modelUi: { popup: ['toggle'] }, layoutUi: { tap_action: 'none' } }).popupSource).toBe('model');
+  });
+
   it('a double_tap_action none means no double tap', () => {
     const r = resolveActions({ layoutUi: { double_tap_action: { action: 'none' } }, kind: 'object', id: 'x', typeDefaults: light });
     expect(r.double_tap).toBe(null);

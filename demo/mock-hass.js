@@ -252,7 +252,11 @@ device('bath2_heater', 'Floor heating', 'bathroom_2', [['climate.bathroom_2', 'h
 // bound to the demo model's objects (demo/house.glb): with ?model=1 these have no markers, the model is the control
 device('demo_living_lamp', 'Living ceiling lamp', 'living_room', [light('light.demo_living', true, 200, [255, 200, 140])]);
 device('demo_hall_lamp', 'Hall ceiling lamp', 'hall', [light('light.demo_hall', false)]);
-device('demo_kitchen_lamp', 'Kitchen ceiling lamp', 'kitchen', [light('light.demo_kitchen', true, 255)]);
+// a smart bulb: colour, colour temperature and effects (the popup adds those rows from the capabilities)
+device('demo_kitchen_lamp', 'Kitchen ceiling lamp', 'kitchen', [['light.demo_kitchen', 'on', {
+  brightness: 255, supported_color_modes: ['hs', 'color_temp'], color_mode: 'color_temp', color_temp_kelvin: 3000,
+  min_color_temp_kelvin: 2200, max_color_temp_kelvin: 6000, effect_list: ['Rainbow', 'Music pulse', 'Candle', 'Sound reactive'], effect: null,
+}]]);
 device('demo_strip', 'Kitchen strip', 'kitchen', [light('light.demo_strip', true, 150, [120, 200, 255])]);
 device('demo_facade', 'Facade lamps', 'terrace', [[...light('light.demo_facade', true, 230), { labels: ['outdoor'] }]]);
 device('demo_facade_switch', 'Facade switch', 'hall', [['switch.demo_facade', 'on']]); // tag controller (layout.tags.facade)
@@ -320,6 +324,9 @@ export function createMockHass({ onChange }) {
         if (on) attrs.brightness = data.brightness ?? attrs.brightness ?? 255;
         else delete attrs.brightness;
         if (on && data.rgb_color) attrs.rgb_color = data.rgb_color;
+        if (on && data.hs_color) { attrs.hs_color = data.hs_color; attrs.color_mode = 'hs'; }
+        if (on && data.color_temp_kelvin) { attrs.color_temp_kelvin = data.color_temp_kelvin; attrs.color_mode = 'color_temp'; }
+        if (on && data.effect) attrs.effect = data.effect;
       }
       update({ [s.entity_id]: { ...s, state: on ? 'on' : 'off', attributes: attrs } });
     },

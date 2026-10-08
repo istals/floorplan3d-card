@@ -170,7 +170,26 @@ const STYLE = `
   .fp-pop-row.brightness .fp-pop-label { flex: none; }
   .fp-pop-row.brightness input { flex: 1; min-width: 0; accent-color: var(--primary-color); }
   .fp-pop-row.brightness.off input { opacity: .5; }
-  .fp-pop-row.color { flex-wrap: wrap; gap: 6px; padding: 4px 0; }
+  .fp-pop-row.brightness { flex-wrap: wrap; }
+  .fp-presets { display: flex; gap: 4px; width: 100%; }
+  .fp-presets button, .fp-pop-row.effect select { font: inherit; font-size: 12px; padding: 3px 4px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--divider-color, rgba(0,0,0,.12)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+  .fp-presets button { flex: 1; min-width: 0; }
+  .fp-pop-row.effect select { flex: 1; min-width: 0; max-width: 150px; }
+  .fp-pop-row.color_temp { flex-wrap: wrap; }
+  .fp-pop-row.color_temp .fp-pop-label { flex: none; }
+  .fp-pop-row.color_temp .fp-pop-value { flex: 1; text-align: right; }
+  .fp-kelvin { width: 100%; height: 10px; margin: 4px 0; border-radius: 5px; -webkit-appearance: none; appearance: none; touch-action: none;
+    background: linear-gradient(90deg, #ffa43c, #ffe2b8 45%, #fff 60%, #cfe0ff); }
+  .fp-kelvin::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--card-background-color, #fff);
+    border: 2px solid var(--primary-color); }
+  .fp-kelvin::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--card-background-color, #fff); border: 2px solid var(--primary-color); }
+  .fp-wheel-box { position: relative; width: 132px; height: 132px; flex: none; }
+  canvas.fp-wheel { display: block; border-radius: 50%; touch-action: none; cursor: crosshair; }
+  .fp-wheel-dot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; box-sizing: border-box;
+    border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); pointer-events: none; }
+  .fp-wheel-dot[hidden] { display: none; }
+  .fp-pop-row.color { flex-wrap: wrap; gap: 8px; padding: 4px 0; align-items: flex-end; }
   .fp-swatch { width: 22px; height: 22px; border-radius: 50%; padding: 0; cursor: pointer;
     border: 1.5px solid var(--divider-color, rgba(0,0,0,.15)); }
   .fp-swatch.on { outline: 2px solid var(--primary-color); outline-offset: 1px; }
@@ -949,7 +968,7 @@ class Floorplan3dCard extends HTMLElement {
             for (const r of deviceRows(this._hass, o.binding.entity)) if (!skip.has(r.key)) extra.push({ kind: 'info', label: r.label, value: r.value });
           }
         }
-        return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, extra,
+        return { obj: { ...o.obj, label: this.objectLabel(o.obj) }, chain: o.chain, states: this._hass.states, groups: this._groups, popup: this._objectActions(id, o).popup, popupSource: this._objectActions(id, o).popupSource, extra,
           badge: this._objectBadge(o.binding && o.binding.entity), dark: !!(this._built.theme && this._built.theme.dark) };
       },
     });

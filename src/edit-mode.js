@@ -1471,6 +1471,10 @@ export class EditMode {
       const msg = cur && validateAction(cur);
       if (msg) warn += `<div class="badge warn">${esc(label)}: ${esc(msg)}</div>`;
     }
+    // Popup rows: Automatic (type / model list plus the light's capabilities) or only on / off
+    const only = Array.isArray((ui || {}).popup) && ui.popup.length === 1 && ui.popup[0] === 'toggle';
+    sels += `<label class="act">Popup<select data-field="obj-popup" data-id="${id}">
+      <option value="">Automatic</option><option value="toggle"${only ? ' selected' : ''}>Only on / off</option></select></label>`;
     return `<div class="oacts">${sels}</div>${fields}${warn}`;
   }
 
@@ -2675,6 +2679,9 @@ export class EditMode {
     } else if (f === 'obj-entity') {
       const v = el.value.trim();
       this.commit(E.setObject(this.layout, el.dataset.id, { entity: v === '' ? undefined : v.toLowerCase() === 'none' ? null : v }));
+      this.render();
+    } else if (f === 'obj-popup') {
+      this.commit(E.setObjectUi(this.layout, el.dataset.id, 'popup', el.value ? ['toggle'] : null));
       this.render();
     } else if (f === 'obj-act' || f === 'obj-act-field') {
       this._setObjAction(el);
