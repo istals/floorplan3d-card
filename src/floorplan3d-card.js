@@ -40,7 +40,7 @@ import { resolveActions, actionCall, TapSequencer } from './actions.js';
 import { pointInPolygon, signedArea } from './placement.js';
 import { surfaceKind, surfaceKey, surfaceSearch, chooseSurface, nearPolygon, worldOf, planOf } from './surface.js';
 
-const VERSION = '0.4.8';
+const VERSION = '0.4.9';
 const NONE = Object.freeze({}); // stable stand-in for a missing layout.objects / groups (binding cache key)
 // HA frontend navigation: push the path and tell the router.
 function navigate(path, replace = false) {
@@ -345,7 +345,7 @@ const STYLE = `
   .panel .lg { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
   .panel .lg .fp-logo { width: 16px; height: 16px; object-fit: contain; }
   .panel .entin { position: relative; display: block; }
-  .panel .entin .lg { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); }
+  .panel .entin .lg { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); pointer-events: none; }
   .panel .entin > input { width: 100%; box-sizing: border-box; padding-left: 28px; }
   .fp-marker.selected .fp-dot { outline: 3px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
   .has-model .fp-dot { width: 22px; height: 22px; --mdc-icon-size: 14px;
