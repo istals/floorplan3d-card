@@ -340,7 +340,6 @@ export class FloorplanView {
     this._stemsOn = false;
     this._stemRes = null; // shared geometries + materials of the current stems
     this.mapPlane = null;
-    this.stripeArrow = null;
     this.onMapImage = null; // (image, width, height) -> processed { canvas, width, height } | null
     this.trail = null;
     this.warning = null; // { sprite, kind, floorId, timer }
@@ -1501,7 +1500,6 @@ export class FloorplanView {
         this.dirty = true;
       }
       this._mapGround = null;
-      this.setStripeArrow(null);
       return;
     }
     if (!this.mapPlane) {
@@ -1610,7 +1608,6 @@ export class FloorplanView {
       mat.needsUpdate = true;
     }
     plane.visible = this._mapShown(plane);
-    if (this.stripeArrow) this.stripeArrow.visible = plane.visible;
     this.dirty = true;
   }
 
@@ -1637,37 +1634,6 @@ export class FloorplanView {
   reprocessMap() {
     if (this.mapPlane && this.mapPlane.userData.external) { if (this.onMapReprocess) this.onMapReprocess(); return; }
     if (this.mapPlane && this.mapPlane.userData.loaded) this._applyMapImage(this.mapPlane);
-  }
-
-  // Stripe direction arrow on the lawn: { x, y, angle (degrees ccw from east), length } or null.
-  // A double-headed line just above the map.
-  setStripeArrow(a) {
-    const plane = this.mapPlane;
-    const sig = a && plane ? [a.x, a.y, Math.round(a.angle * 10), a.length, plane.position.y, plane.visible].join('|') : '';
-    if (this.stripeArrow && this.stripeArrow.userData.sig === sig) return;
-    if (this.stripeArrow) {
-      this.mowerGroup.remove(this.stripeArrow);
-      this.stripeArrow.geometry.dispose();
-      this.stripeArrow.material.dispose();
-      this.stripeArrow = null;
-      this.dirty = true;
-    }
-    if (!sig) return;
-    const r = (a.angle * Math.PI) / 180, L = a.length / 2, hd = Math.min(0.6, a.length * 0.15);
-    const pt = (d, side) => {
-      const c = Math.cos(r), s = Math.sin(r);
-      return new THREE.Vector3(a.x + c * d - s * side, plane.position.y + 0.05, -(a.y + s * d + c * side));
-    };
-    const pts = [pt(-L, 0), pt(L, 0)];
-    for (const e of [1, -1]) pts.push(pt(e * L, 0), pt(e * (L - hd), hd * 0.6), pt(e * L, 0), pt(e * (L - hd), -hd * 0.6));
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    // depth tested: the house and objects hide it; a helper (no picking / placement)
-    this.stripeArrow = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: true }));
-    this.stripeArrow.renderOrder = 3;
-    this.stripeArrow.userData = { sig, helper: true };
-    this.stripeArrow.visible = plane.visible;
-    this.mowerGroup.add(this.stripeArrow);
-    this.dirty = true;
   }
 
   _mapShown(plane) {
@@ -2310,7 +2276,6 @@ export class FloorplanView {
       c.obj.element.classList.toggle('fp-faded', st ? !!st.faded : !!this.model && this.visibleFloor === 'all' && c.floorId !== top);
     }
     if (this.mapPlane && this.mapPlane.material.map) this.mapPlane.visible = this._mapShown(this.mapPlane);
-    if (this.stripeArrow) this.stripeArrow.visible = !!this.mapPlane && this.mapPlane.visible;
     // shadow map and occlusion only when their inputs changed (not on every state update)
     const model = this._modelSig();
     if (model !== this._shadowSig) {

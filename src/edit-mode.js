@@ -1683,7 +1683,7 @@ export class EditMode {
   }
 
   // Map picture processing: picked colours (background transparent, mowed stripes, shaded no-mow),
-  // the mower icon hidden, clipped to a zone, the stripe direction arrow.
+  // the mower icon hidden, clipped to a zone.
   _mapProcessingHtml(m, o, slider) {
     let out = '<div class="sub">Map picture</div>';
     if (this.card.mowerAuto(m)) {
@@ -1710,9 +1710,6 @@ export class EditMode {
       <option value="auto" ${zsel === 'auto' ? 'selected' : ''}>Automatic (${esc(auto ? auto.id : 'none at the map centre')})</option>
       <option value="none" ${zsel === 'none' ? 'selected' : ''}>None</option>
       ${zones.map((z) => `<option value="${esc(z.id)}" ${zsel === z.id ? 'selected' : ''}>${esc(z.id)}</option>`).join('')}</select></label>`;
-    if (colorList(o, 'mowed').length) {
-      out += `<label class="check"><input type="checkbox" data-field="ov-stripe-arrow" ${o.stripe_arrow ? 'checked' : ''}> Show the stripe direction on the lawn</label>`;
-    }
     out += `<p class="hint">Pick colours by clicking them on the map. Without a background colour the picture is drawn as it is.
       The zone clip applies once a colour is picked or the icon is hidden.</p>`;
     return out;
@@ -2759,8 +2756,6 @@ export class EditMode {
       this.setOverlay({ edit_only: el.checked });
     } else if (f === 'ov-hide-icon') {
       this.setOverlay({ hide_icon: el.checked });
-    } else if (f === 'ov-stripe-arrow') {
-      this.setOverlay({ stripe_arrow: el.checked });
     } else if (f === 'ov-zone') {
       this.setOverlay({ zone: el.value === 'auto' ? null : el.value });
     } else if (f === 'ov-entity') {

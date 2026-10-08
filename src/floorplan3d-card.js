@@ -23,7 +23,7 @@ import { errorKind, errorText, stuckStep, stuckDueIn, STUCK_DEFAULT_MIN } from '
 import './mower-auto.js'; // registers the auto-mode kernel with the map worker
 import { iconMoments, momentHeading, momentsOf, smoothHeading, makeTemplate, matchTemplate, grayOf, norm360 } from './mower-heading.js';
 import { findStaticMap, findMowerPicture, findErrorEntity, findProgress, progressValue, connectivity, rain, deviceRows, findStatusEntity } from './mower-device.js';
-import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, planToPixel, readImagePixels, MapProcessor, mowedShare, stripeBearing, insidePoint, mapWorkSize, FETCH_TIMEOUT_MS } from './mower-image.js';
+import { colorList, findBlob, stepTrack, headingMinStep, pixelToPlan, planToPixel, readImagePixels, MapProcessor, mowedShare, stripeBearing, mapWorkSize, FETCH_TIMEOUT_MS } from './mower-image.js';
 import { isDocked, dockWord, mowerDockGroup, groupedTapId, groupedHidden, dockRows, trackWindow, fullSearch, layerDue, throttleStep, effectiveRefresh, LONG_TASK_MS, mowerStatusText, rememberPosition, lastPosition } from './mower-track.js';
 import { ObjectLayer } from './objects/layer.js';
 import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
@@ -1945,7 +1945,6 @@ class Floorplan3dCard extends HTMLElement {
   _mapStatsChanged() {
     if (this._popup) this._popup.update();
     if (this._editing && this._edit) this._edit.onStates();
-    if (this._view) this._stripeArrow();
   }
 
   // Processing settings of the overlay (null: none set, the picture is drawn as loaded).
@@ -2001,15 +2000,6 @@ class Floorplan3dCard extends HTMLElement {
     };
   }
 
-  _stripeArrow() {
-    const o = this._layout && this._layout.mower && this._layout.mower.overlay;
-    const st = this._mapStats;
-    if (!o || !o.stripe_arrow || !st || st.angle == null) { this._view.setStripeArrow(null); return; }
-    const z = this.mapZone(o);
-    const c = z ? insidePoint(z.polygon) : [o.x || 0, o.y || 0];
-    this._view.setStripeArrow({ x: c[0], y: c[1], angle: st.angle + (Number(o.rotation) || 0), length: Math.min(4, (o.width || 20) / 3) });
-  }
-
   _refreshMapOverlay() {
     const cfg = this._layout.mower;
     const o = cfg && cfg.overlay;
@@ -2049,7 +2039,6 @@ class Floorplan3dCard extends HTMLElement {
       this._mapProcKey = pk;
       if (!first) this._reprocessMap();
     }
-    this._stripeArrow();
   }
 
   _setCameraTimer(seconds) {

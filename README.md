@@ -338,7 +338,7 @@ processed once before it is drawn on the lawn (large pictures on a copy at most 
 - With a mowed colour, the mower popup and the Mower tab show **Stripes** (the stripe direction as
   a compass axis against true north, using the model's north and alignment, e.g. `60° (NE–SW)`) and
   **Mowed** (mowed pixels / zone pixels without no-mow areas and the icon; without a zone,
-  mowed / (mowed + background)). **Show the stripe direction on the lawn** adds an arrow inside the zone.
+  mowed / (mowed + background)).
 - The picture is read once per refresh; the pixel work runs in a background worker where the browser
   supports it.
 

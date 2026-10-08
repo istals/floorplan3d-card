@@ -2655,8 +2655,6 @@ sections.add('mower-lawn', { group: 'mower', query: { model: '1', view: '3d' }, 
   await tick();
   await processed(450);
   check('same-size refreshes reuse the canvas texture', (await ev(`${card}._view.mapPlane.material.map.uuid`)) === tex1);
-  await commitMower({}, { stripe_arrow: true });
-  check('stripe arrow on the lawn, depth tested, inside the zone', await until(`(() => { const a = ${card}._view.stripeArrow; return !!a && a.visible && a.material.depthTest && a.userData.helper; })()`, 'the stripe arrow'));
   await ev(`${card}._view.setCamera({ position: [17.5, 24, 6], target: [17.5, 0, -1.5] }, { instant: true })`);
   await settle(page, card);
   await page.screenshot({ path: path.join(root, 'screenshots', 'mower-map-processed.png') });
