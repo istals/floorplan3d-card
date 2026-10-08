@@ -150,6 +150,8 @@ export function lightLevel(s) {
 
 // Groups up to this size light each lamp (one real light per fixture) while the pool has room.
 // Group lights never take a shadow slot when a non-shadow one is free (`grouped` in the result).
+// A group whose lamps all throw a wall wash (fixture.wash) is lit evenly or not at all: its washes carry
+// the look, so one lamp with a real light (the middle fixture) would stand out from the others.
 export const SMALL_GROUP = 6;
 export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {}) {
   const cand = [];
@@ -164,8 +166,12 @@ export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {
     return sorted[Math.floor((sorted.length - 1) / 2)];
   };
   // every group competes with its middle fixture (factor 1.5); small groups may be expanded below
+  const even = new Set(); // groups lit per lamp or not at all
   for (const list of groups.values()) {
+    const washed = list.every((f) => f.wash);
+    if (washed && list.length > SMALL_GROUP) continue;
     const c = { f: middle(list), factor: 1.5, grouped: true };
+    if (washed) even.add(c.f.id);
     if (list.length <= SMALL_GROUP) small.push({ list, mid: c.f, max: Math.max(...list.map((f) => f.max || 0)) });
     cand.push(c);
   }
@@ -196,7 +202,9 @@ export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {
     for (const f of rest) { const kind = kindOf(f); take(kind); real.set(f.id, { kind, factor: 1, grouped: true }); }
     gp += needP;
     real.get(mid.id).factor = 1;
+    even.delete(mid.id);
   }
+  for (const id of even) real.delete(id); // a washed group that did not fit lamp by lamp: washes only
   return { real, shadows: shadowSet };
 }
 

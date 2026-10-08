@@ -324,6 +324,7 @@ export class ObjectLayer {
       fixtures.push({
         id, lit: lightsOn && !!p.result.lit, visible: visibleLevel(p.obj.level) && shown(p.obj.node),
         group: budgetGroup(p.obj, binding, this.groups), max: h.max, beam: h.beam, castShadow: h.castShadow,
+        wash: h.beam !== 'spot' && this.washKindOf(id) !== 'none',
       });
     }
     // the model was placed elsewhere: pool positions move with it
