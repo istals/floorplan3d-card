@@ -342,6 +342,11 @@ const STYLE = `
     border: 1px solid var(--divider-color, rgba(0,0,0,.2)); background: var(--card-background-color, #fff);
     color: var(--primary-text-color); min-width: 0; }
   .panel .row label { flex: 1; }
+  .panel .lg { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+  .panel .lg .fp-logo { width: 16px; height: 16px; object-fit: contain; }
+  .panel .entin { position: relative; display: block; }
+  .panel .entin .lg { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); }
+  .panel .entin > input { width: 100%; box-sizing: border-box; padding-left: 28px; }
   .fp-marker.selected .fp-dot { outline: 3px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
   .has-model .fp-dot { width: 22px; height: 22px; --mdc-icon-size: 14px;
     background: color-mix(in srgb, var(--card-background-color, #fff) 85%, transparent); }

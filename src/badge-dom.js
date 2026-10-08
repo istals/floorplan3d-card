@@ -1,12 +1,13 @@
 // Badge DOM shared by markers and the object popup: logo (lazy <img>), status dot, battery chip.
-import { brandUrl } from './badges.js';
+import { brandUrl, integrationName } from './badges.js';
 
 // platforms whose icon.png failed: never requested again (no broken image, no repeated 404s)
 const failed = new Set();
 const darkFailed = new Set();
 
 
-function setLogo(box, platform, dark) {
+// Shows the platform's logo as the box's first child (removed when none / failed). readable: title = integration name.
+export function setLogo(box, platform, dark, readable = false) {
   let img = box.querySelector('img.fp-logo');
   if (!platform || failed.has(platform)) { if (img) img.remove(); return; }
   const useDark = dark && !darkFailed.has(platform);
@@ -28,7 +29,7 @@ function setLogo(box, platform, dark) {
   if (img.dataset.platform === platform && img.dataset.dark === (useDark ? '1' : '0')) return;
   img.dataset.platform = platform;
   img.dataset.dark = useDark ? '1' : '0';
-  img.title = platform;
+  img.title = readable ? integrationName(platform) : platform;
   img.src = src;
 }
 

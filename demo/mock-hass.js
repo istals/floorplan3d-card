@@ -273,6 +273,9 @@ for (const [eid, e] of Object.entries(entities)) {
   if (p && !e.platform) e.platform = p;
   if (e.device_id === 'front_lock') e.platform = 'zwave_js';
 }
+// sensors from other integrations (edit-mode entity pickers show the integration)
+entities['sensor.kettle_power'].platform = 'sonoff';
+entities['sensor.kitchen_temperature'].platform = 'tuya';
 // weather (no device, no marker): clouds and light follow cloud_coverage; ?clouds=60 starts cloudy
 const demoClouds = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('clouds')) || 0;
 states['weather.demo'] = { entity_id: 'weather.demo', state: demoClouds ? 'partlycloudy' : 'sunny', attributes: { friendly_name: 'Demo weather', cloud_coverage: demoClouds } };

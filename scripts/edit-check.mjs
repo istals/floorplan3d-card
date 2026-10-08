@@ -237,6 +237,27 @@ try {
     && live.includes('on plan'), live.trim());
   check('mower marker follows live position', await ev(`(() => { const c = ${card}; const p = c._positions.get(c._mowerMarkerId); return !!p && p.live && Math.hypot(p.x - 16.5, p.y - 1.5) < 4.5; })()`));
   check('map overlay loaded', await ev(`!!${card}._view.mapPlane && !!${card}._view.mapPlane.material.map`));
+  // integration names and logos in the entity pickers
+  const logoOf = (field) => ev((f) => { const i = document.querySelector('floorplan3d-card').shadowRoot.querySelector(`.panel input[data-field="${f}"]`);
+    const img = i && i.previousElementSibling && i.previousElementSibling.querySelector('img.fp-logo');
+    return img ? { src: img.src, title: img.title, box: i.previousElementSibling.getBoundingClientRect().width } : null; }, field);
+  check('datalist option labelled with the integration', await ev(`[...${card}.shadowRoot.querySelectorAll('#fp-err-ents option')].some((o) => o.value === 'sensor.kettle_power' && o.label.endsWith(' \u00b7 Sonoff'))`));
+  const setEnt = (v) => ev((x) => { const i = document.querySelector('floorplan3d-card').shadowRoot.querySelector('.panel input[data-field="mower-error-entity"]'); i.value = x; i.dispatchEvent(new Event('input', { bubbles: true })); }, v);
+  await setEnt('sensor.kettle_power');
+  let lg = await logoOf('mower-error-entity');
+  check('entity input shows the integration logo', !!lg && lg.src.includes('/sonoff/') && lg.title === 'Sonoff' && lg.box === 16, JSON.stringify(lg));
+  await setEnt('sensor.kitchen_temperature');
+  lg = await logoOf('mower-error-entity');
+  check('logo follows the entity', !!lg && lg.src.includes('/tuya/') && lg.title === 'Tuya', JSON.stringify(lg));
+  await setEnt('sensor.living_humidity');
+  check('no platform: no logo', (await logoOf('mower-error-entity')) === null);
+  await setEnt('sensor.kettle_power');
+  await ev(`${card}.shadowRoot.querySelector('.panel input[data-field="mower-error-entity"]').previousElementSibling.querySelector('img').dispatchEvent(new Event('error'))`);
+  check('logo load error removes the image, input intact', (await logoOf('mower-error-entity')) === null
+    && await ev(`!!${card}.shadowRoot.querySelector('.panel input[data-field="mower-error-entity"]')`));
+  await panelClick('Devices');
+  check('devices list rows have a logo box', await ev(`${card}.shadowRoot.querySelectorAll('.panel ul.list li .lg').length === ${card}.shadowRoot.querySelectorAll('.panel ul.list li').length`));
+  await panelClick('Mower');
   const cal0 = (await layout()).mower.calibration.length;
   check('add calibration point', await panelClick('Add point'));
   check('calibrating', !!(await ev(`${card}._edit.calibrating`)));

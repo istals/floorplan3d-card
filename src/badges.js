@@ -35,6 +35,26 @@ export function platformOf(entities, eid) {
   return e && typeof e.platform === 'string' && e.platform ? e.platform : null;
 }
 
+const INTEGRATION_NAMES = {
+  sonoff: 'Sonoff', tuya: 'Tuya', smartthings: 'SmartThings', hue: 'Philips Hue', zha: 'Zigbee (ZHA)', mqtt: 'MQTT',
+  esphome: 'ESPHome', shelly: 'Shelly', template: 'Template', group: 'Group',
+};
+
+// Readable integration name from a platform id (small map, else "my_thing" -> "My Thing").
+export function integrationName(platform) {
+  if (!platform || typeof platform !== 'string') return '';
+  if (INTEGRATION_NAMES[platform]) return INTEGRATION_NAMES[platform];
+  return platform.split('_').filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+// <datalist> option label: "<friendly name> · <Integration>" (just the name without a platform).
+export function entityOptionLabel(hass, eid) {
+  const st = hass && hass.states && hass.states[eid];
+  const name = (st && st.attributes && st.attributes.friendly_name) || eid;
+  const plat = platformOf(hass && hass.entities, eid);
+  return plat ? `${name} · ${integrationName(plat)}` : String(name);
+}
+
 export function brandUrl(platform, dark = false) {
   return `https://brands.home-assistant.io/_/${encodeURIComponent(platform)}/${dark ? 'dark_icon' : 'icon'}.png`;
 }

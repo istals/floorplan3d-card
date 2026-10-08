@@ -106,6 +106,8 @@ the last step).
 
 ![Edit mode](docs/images/edit-rooms.png)
 
+Entity pickers and device lists in edit mode name the integration ("Lamp · Philips Hue" in the suggestions) and show its 16 px logo, so the same device from two integrations is easy to tell apart.
+
 **Rooms.** Every HA area is listed as *drawn* or *missing*. Click **Draw** and click the
 corners of the room on the plan. Points snap to 5 cm, to existing corners within 25 cm (so
 neighbouring rooms share walls exactly), and line up with nearby corners. Click the first point

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { badgeOptions, deviceIndex, platformOf, brandUrl, batteryLevel, problemOn, statusKind, badgeInfo } from '../src/badges.js';
+import { badgeOptions, deviceIndex, platformOf, brandUrl, integrationName, entityOptionLabel, batteryLevel, problemOn, statusKind, badgeInfo } from '../src/badges.js';
 
 const S = (entity_id, state, attributes = {}) => ({ entity_id, state, attributes });
 
@@ -86,5 +86,28 @@ describe('badgeInfo', () => {
   });
   it('entity without a device', () => {
     expect(badgeInfo(hass, { entityId: 'sensor.f_bat' }).battery).toBe(9);
+  });
+});
+
+describe('integration names and option labels', () => {
+  it('maps common platforms, title-cases the rest', () => {
+    expect(integrationName('sonoff')).toBe('Sonoff');
+    expect(integrationName('smartthings')).toBe('SmartThings');
+    expect(integrationName('hue')).toBe('Philips Hue');
+    expect(integrationName('zha')).toBe('Zigbee (ZHA)');
+    expect(integrationName('zwave_js')).toBe('Zwave Js');
+    expect(integrationName('my_custom_thing')).toBe('My Custom Thing');
+    expect(integrationName('')).toBe('');
+    expect(integrationName(null)).toBe('');
+  });
+  it('option label: friendly name plus integration, name only without a platform', () => {
+    const hass = {
+      states: { 'light.a': S('light.a', 'on', { friendly_name: 'Lamp' }), 'sensor.b': S('sensor.b', '1') },
+      entities: { 'light.a': { platform: 'sonoff' }, 'sensor.b': {} },
+    };
+    expect(entityOptionLabel(hass, 'light.a')).toBe('Lamp \u00b7 Sonoff');
+    expect(entityOptionLabel(hass, 'sensor.b')).toBe('sensor.b');
+    expect(entityOptionLabel(hass, 'nope.x')).toBe('nope.x');
+    expect(entityOptionLabel({}, 'a.b')).toBe('a.b');
   });
 });

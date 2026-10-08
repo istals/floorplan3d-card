@@ -19,6 +19,8 @@ import { actionTarget } from './objects/popup.js';
 import { typeOf } from './objects/types.js';
 import { resolveWash, WASH_DIRS } from './objects/wash.js';
 import { resolveActions, validateAction } from './actions.js';
+import { platformOf, entityOptionLabel } from './badges.js';
+import { setLogo } from './badge-dom.js';
 import { surfaceKind, surfaceSearch, stickSurface, nearestDistance, needsStick, worldOf, planOf } from './surface.js';
 
 const DENSE_TRIS = 150000;
@@ -79,6 +81,9 @@ export class EditMode {
     this.panel.addEventListener('click', (e) => this._onPanelClick(e));
     this.panel.addEventListener('change', (e) => this._onPanelChange(e));
     this.panel.addEventListener('input', (e) => this._onPanelInput(e));
+    const syncLogo = (e) => { if (e.target.matches && e.target.matches('.entin > input[list]')) this._syncLogo(e.target); };
+    this.panel.addEventListener('input', syncLogo);
+    this.panel.addEventListener('change', syncLogo);
     // rebuilding the panel under a dragged slider would drop the drag: hold renders until release
     this.panel.addEventListener('pointerdown', (e) => { if (e.target.type === 'range') this._sliding = true; });
     const release = () => this._releaseSlider();
@@ -1127,6 +1132,7 @@ export class EditMode {
       <div class="tabs">${tabs.map(([id, label]) => `<button data-act="tab" data-id="${id}" class="${this.tab === id ? 'on' : ''}">${label}</button>`).join('')}</div>
       <div class="tab-body">${msg}${body}</div>
       <div class="foot"><span class="save-state">${this._saveText()}</span><span>${esc(this._backendLabel())}</span></div>`;
+    this._decorateLogos();
     const newBody = this.panel.querySelector('.tab-body');
     if (newBody && scroll) newBody.scrollTop = scroll;
     if (focusKey) {
@@ -1134,6 +1140,41 @@ export class EditMode {
         .find((x) => x.dataset[focusKey[0]] === focusKey[1] && (x.dataset.id || '') === focusKey[2]);
       if (el) el.focus({ preventScroll: true });
     }
+  }
+
+  // <option> of an entity datalist: value = entity id, label = "<name> · <Integration>"
+  _entOption(eid) {
+    return `<option value="${esc(eid)}" label="${esc(entityOptionLabel(this.hass, eid))}">`;
+  }
+
+  // fixed 16 px box in a list row; _decorateLogos fills it with the entity's integration logo
+  _logoBox(eid) {
+    return `<span class="lg" data-lg="${esc((eid && platformOf(this.hass.entities, eid)) || '')}"></span>`;
+  }
+
+  // Integration logos in the panel: list rows (.lg) and a box inside every entity input (input[list]).
+  _decorateLogos() {
+    const dark = !!(this.card._built && this.card._built.theme && this.card._built.theme.dark);
+    for (const box of this.panel.querySelectorAll('.lg[data-lg]')) setLogo(box, box.dataset.lg, dark, true);
+    for (const inp of this.panel.querySelectorAll('input[list]')) {
+      if (inp.getAttribute('list') === 'fp-tag-names') continue;
+      let wrap = inp.parentNode;
+      if (!wrap.classList || !wrap.classList.contains('entin')) {
+        wrap = document.createElement('span');
+        wrap.className = 'entin';
+        wrap.innerHTML = '<span class="lg"></span>';
+        inp.parentNode.insertBefore(wrap, inp);
+        wrap.append(inp);
+      }
+      this._syncLogo(inp);
+    }
+  }
+
+  _syncLogo(inp) {
+    const box = inp.previousElementSibling;
+    if (!box || !box.classList.contains('lg')) return;
+    const dark = !!(this.card._built && this.card._built.theme && this.card._built.theme.dark);
+    setLogo(box, platformOf(this.hass.entities, inp.value.trim()), dark, true);
   }
 
   _backendLabel() {
@@ -1307,7 +1348,7 @@ export class EditMode {
     if (unplaced.length) {
       out += '<ul class="list">';
       for (const x of unplaced) {
-        out += `<li><span class="name">${esc(x.name)}<span class="dim"> · ${x.areaId ? esc(areaName(this.hass, x.areaId)) : 'no area'}</span></span>
+        out += `<li>${this._logoBox(x.entityId)}<span class="name">${esc(x.name)}<span class="dim"> · ${x.areaId ? esc(areaName(this.hass, x.areaId)) : 'no area'}</span></span>
           <button data-act="place" data-id="${esc(x.id)}">Place</button></li>`;
       }
       out += '</ul>';
@@ -1318,7 +1359,7 @@ export class EditMode {
       out += '<ul class="list">';
       for (const id of hidden) {
         const x = byId.get(id) || all.find((y) => y.entityId === id);
-        out += `<li><span class="name">${esc(x ? x.name : id)}</span><button data-act="unhide" data-id="${esc(id)}">Unhide</button></li>`;
+        out += `<li>${this._logoBox(x && x.entityId)}<span class="name">${esc(x ? x.name : id)}</span><button data-act="unhide" data-id="${esc(id)}">Unhide</button></li>`;
       }
       out += '</ul>';
     } else out += '<p class="dim">Nothing hidden.</p>';
@@ -1350,7 +1391,7 @@ export class EditMode {
       return d ? ids.filter((id) => d.includes(id.split('.')[0])) : ids;
     };
     const types = [...new Set(objs.map((o) => (DOMAINS[o.type] ? o.type : 'other')))];
-    const datalists = types.map((t) => `<datalist id="fp-obj-${t}">${listFor(t).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`).join('');
+    const datalists = types.map((t) => `<datalist id="fp-obj-${t}">${listFor(t).map((x) => this._entOption(x)).join('')}</datalist>`).join('');
     const lo = this.layout.objects || {};
     const lgAll = layoutTags(this.layout);
     // "Light on wall" (the wash): object > tag > model; the default option names what applies without a setting
@@ -1377,7 +1418,7 @@ export class EditMode {
       // Test only where a tap could toggle something (not hidden, own entity or a known group controller)
       const testable = !b.hidden && !!actionTarget(o, b, this.card._groups || {});
       return `<li class="obj${sel ? ' sel' : ''}${b.hidden ? ' hid' : ''}" data-obj="${esc(o.id)}">
-        <div class="orow"><input type="checkbox" class="opick" data-field="obj-pick" data-id="${esc(o.id)}" ${this.objPicked.has(o.id) ? 'checked' : ''} title="Select for Add tag / Remove tag" aria-label="Select"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon><span class="name">${esc(this.card.objectLabel(o))}</span>${badge}
+        <div class="orow"><input type="checkbox" class="opick" data-field="obj-pick" data-id="${esc(o.id)}" ${this.objPicked.has(o.id) ? 'checked' : ''} title="Select for Add tag / Remove tag" aria-label="Select"><ha-icon icon="${ICONS[t] || 'mdi:cube-outline'}"></ha-icon>${this._logoBox(b.entity)}<span class="name">${esc(this.card.objectLabel(o))}</span>${badge}
           ${testable ? `<button data-act="obj-test" data-id="${esc(o.id)}" title="Toggle it like a tap in the view">Test</button>` : ''}
           <label class="check"><input type="checkbox" data-field="obj-hidden" data-id="${esc(o.id)}" ${b.hidden ? 'checked' : ''}> Hide</label></div>
         <input class="olabel" data-field="obj-label" data-id="${esc(o.id)}" value="${esc(saved.label || '')}" placeholder="${esc(o.label || o.id)}" title="Label (empty: the model's)" aria-label="Label">
@@ -1426,7 +1467,7 @@ export class EditMode {
       const lg = layoutTags(this.layout);
       const gl = ids.filter((id) => /^(light|switch|input_boolean)\./.test(id));
       out += `<div class="sub">Tags</div><p class="hint">A tag's controller must be on too: an object is lit only while its own entity and the controllers of all its tags are on. Objects sharing a controller tag share the real-light budget. Views and card YAML <code>actions:</code> accept <code>tag:&lt;name&gt;</code>. Light on wall: the wash a lit lamp throws on the wall next to it (an object's own setting wins over its tags', a tag's over the model's).</p>
-        <datalist id="fp-grp-ents">${gl.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
+        <datalist id="fp-grp-ents">${gl.map((x) => this._entOption(x)).join('')}</datalist>`;
       out += allTags.map((g) => {
         const e = (lg[g] && lg[g].entity) || '', gl2 = (lg[g] && lg[g].label) || '';
         const n = objs.filter((o) => tagsOf(o).includes(g)).length;
@@ -1519,7 +1560,7 @@ export class EditMode {
     const posIds = ids.filter((id) => /^(device_tracker|sensor|lawn_mower|vacuum)\./.test(id));
     const picIds = ids.filter((id) => /^(image|camera)\./.test(id));
     const errIds = ids.filter((id) => /^(binary_sensor|sensor)\./.test(id));
-    const datalist = (id, list) => `<datalist id="${id}">${list.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
+    const datalist = (id, list) => `<datalist id="${id}">${list.map((x) => this._entOption(x)).join('')}</datalist>`;
     const floorOpts = this.floors.map((f) => `<option value="${esc(f.id)}" ${f.id === this.card._mowerFloor() ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
     const cal = m.calibration || [];
     const err = calibrationError(cal, m.source === 'xy' ? 'xy' : 'gps');
@@ -1572,7 +1613,7 @@ export class EditMode {
       : det.static ? 'Auto mode is off: the colour picks below are used.' : 'No static map found: pick the colours below, or set the static map.'}</p>`;
     out += `<label>Static map <input list="fp-img-ents" data-field="mower-static" value="${esc(m.static_entity ?? '')}" placeholder="${esc(m.static_entity === undefined && det.static ? `auto: ${det.static}` : 'image.mower_map')}"></label>`;
     out += `<label>Mower picture <input list="fp-img-ents" data-field="mower-picture" value="${esc(m.picture_entity ?? '')}" placeholder="${esc(m.picture_entity === undefined && det.picture ? `auto: ${det.picture}` : 'image.mower_mower_image')}"></label>`;
-    out += `<datalist id="fp-img-ents">${imgs.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
+    out += `<datalist id="fp-img-ents">${imgs.map((x) => this._entOption(x)).join('')}</datalist>`;
     if (det.static) out += `<label class="check"><input type="checkbox" data-field="mower-auto-off" ${m.auto === false ? 'checked' : ''}> Use colour picks instead</label>`;
     return out;
   }
