@@ -382,9 +382,10 @@ Untagged models still load and show whole.
 Loading: the plan (rooms, markers) shows at once, with a progress bar while the model downloads.
 The browser keeps the model file (Cache Storage, or IndexedDB when HA is served over plain http),
 so the next load skips the download until the model changes (a new upload, or new ETag /
-Last-Modified of a `/local/` file). The last render of each view is kept as a small picture and
-shown until the model is ready (only that view's picture, never another view's). A download that
-takes over 60 s stops with an error; a cached copy that fails to load is dropped and downloaded
+Last-Modified of a `/local/` file). While the model loads, the card draws the floor plan as a line
+drawing: the room outlines of the last loaded model (or your drawn rooms, or a simple house when
+nothing is known yet) are traced in step with the download, with the progress text under it, and
+fade out when the model is ready. A download that takes over 60 s stops with an error; a cached copy that fails to load is dropped and downloaded
 again once. Everything stays in this browser; clearing site data removes it.
 
 In **Edit → Model** you choose which HA floor each level belongs to and assign each room to an

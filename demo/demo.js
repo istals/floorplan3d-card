@@ -43,7 +43,7 @@ function boot(params) {
   push(createMockHass({ onChange: push }));
 }
 
-// The card's local caches (snapshots and model blobs in IndexedDB, Cache Storage models).
+// The card's local caches (model blobs in IndexedDB, Cache Storage models).
 async function clearCardCaches() {
   try { if (typeof caches !== 'undefined') await caches.delete('floorplan3d-models'); } catch (e) { /* insecure context */ }
   await new Promise((resolve) => {
@@ -66,7 +66,7 @@ async function clearCardCaches() {
 
 // Headless checks: a fresh demo without a page load. Drops the cards (their WebGL contexts too), the
 // mock, test globals, local storage and (unless opts.keepCaches) the card's caches, then boots again
-// for the query ({ key: value }).
+// for the query ({ key: value }). keepCaches also keeps the remembered load drawing.
 window.__demoReset = async (query = {}, opts = {}) => {
   if (!opts.keepCaches) await clearCardCaches();
   for (const c of cards) {
@@ -76,7 +76,13 @@ window.__demoReset = async (query = {}, opts = {}) => {
   }
   resetMockHass();
   for (const k of Object.keys(window)) if (k.startsWith('__') && k !== '__demoReset') delete window[k];
-  try { localStorage.clear(); sessionStorage.clear(); } catch (e) { /* blocked */ }
+  try {
+    // the remembered load drawing is a cache too
+    const kept = opts.keepCaches ? Object.entries(localStorage).filter(([k]) => k.startsWith('fp3d-outline:')) : [];
+    localStorage.clear();
+    sessionStorage.clear();
+    for (const [k, v] of kept) localStorage.setItem(k, v);
+  } catch (e) { /* blocked */ }
   document.querySelector('#log').textContent = '';
   const q = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== null));
   history.replaceState(null, '', `${location.pathname}?${q}`);

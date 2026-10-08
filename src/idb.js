@@ -1,4 +1,4 @@
-// Tiny IndexedDB wrapper for the card's local caches (snapshots, model blobs). Every call resolves
+// Tiny IndexedDB wrapper for the card's local caches (model blobs). Every call resolves
 // (null / [] / false) instead of throwing: private windows, blocked storage or no IndexedDB at all.
 const DB = 'floorplan3d';
 const STORES = ['snapshots', 'models'];

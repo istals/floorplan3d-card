@@ -11,6 +11,7 @@ import { Sections, parseArgs, selectGroups } from './lib/sections.mjs';
 import { inverseTransformPoint, transformPoint } from '../src/bindings.js';
 import { alignModelPoint } from '../src/views.js';
 import { pixelToPlan } from '../src/mower-image.js';
+import { fitOutline, HOUSE_OUTLINE } from '../src/load-outline.js';
 
 const failures = [];
 const check = (name, ok, detail = '') => {
@@ -3102,7 +3103,7 @@ sections.add('export', { group: 'upload', query: null }, async (s) => {
 }
 
 // 6. model loading: progress text, local model cache (second load without the glb download), the
-// snapshot placeholder shown before the model, IndexedDB fallback without Cache Storage
+// plan drawing shown while loading, IndexedDB fallback without Cache Storage
 sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' } }, async (s) => {
   const { page } = s;
   const gets = [];
@@ -3111,13 +3112,16 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
   try {
     await page.evaluate((q) => window.__demoReset(q), { test: '1', model: '1', view: '3d' }); // loaded again, now watched
     await page.waitForFunction(`!!${card}._view.model && ${card}._loadUI.readyAt !== null`, { timeout: 20000 });
+    let shown = null;
     let st = await page.evaluate(`(() => { const c = ${card}, ui = c._loadUI; return { log: ui.log, barHidden: ui.bar.hidden, cached: c._modelFromCache }; })()`);
     check('progress: download, then "Preparing model…", then gone', st.log.some((t) => /^Downloading [\d.]+ \/ [\d.]+ MB$/.test(t)) && st.log.includes('Preparing model…') && st.barHidden, JSON.stringify(st));
     check('first load downloads the glb', gets.includes('GET') && st.cached === false, JSON.stringify(gets));
-    const saved = await page.evaluate(`${card}._loadUI.capture()`);
-    const snaps = await page.evaluate(`new Promise((r) => { const q = indexedDB.open('floorplan3d'); q.onsuccess = () => { const a = q.result.transaction('snapshots').objectStore('snapshots').getAll(); a.onsuccess = () => { r(a.result.filter((x) => x.blob).map((x) => ({ key: x.key, type: x.blob.type, size: x.size }))); q.result.close(); }; }; })`);
-    check('snapshot stored as a JPEG per layout / view / mode', saved === true && snaps.some((x) => x.key.startsWith('default|') && x.key.endsWith('|3d') && x.type === 'image/jpeg' && x.size > 1000), JSON.stringify(snaps));
-    // the same demo again, caches kept; the model's HEAD answered late so the placeholder has time to show
+    const outline = await page.evaluate(`localStorage.getItem('fp3d-outline:default')`);
+    const stored = outline && JSON.parse(outline);
+    check('after a load the room outlines are remembered per layout key', Array.isArray(stored) && stored.length > 2 && stored.every((p) => p.length >= 3) && outline.length < 20480, String(outline).slice(0, 120));
+    const gone = await page.evaluate(`!${card}.shadowRoot.querySelector('.fp-loadplan') && !${card}._stage.querySelector('.fp-loadplan')`);
+    check('after the load the drawing overlay is gone', gone);
+    // the same demo again, caches kept; the model's HEAD answered late so the drawing has time to show
     gets.length = 0;
     await page.setRequestInterception(true);
     const delay = (r) => {
@@ -3128,18 +3132,32 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
     page.on('request', delay);
     try {
       await page.evaluate((q) => window.__demoReset(q, { keepCaches: true }), { test: '1', model: '1', view: '3d' });
+      await page.waitForFunction(`!!${card}.shadowRoot.querySelector('.fp-loadplan .draw')`, { timeout: 20000 });
+      await page.evaluate(`(() => { // record how the camera moves once the model is there
+        const v = ${card}._view, rec = window.__camRec = { moves: [], tween: false };
+        const mv = v._moveCamera.bind(v);
+        v._moveCamera = (pos, target, instant) => { rec.moves.push({ instant: !!instant || !v._framed, model: !!v.model }); return mv(pos, target, instant); };
+        const tick = () => { if (v.model && v._tween) rec.tween = true; if (!rec.stop) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      })()`);
+      shown = await page.evaluate(`(() => { const e = ${card}.shadowRoot.querySelector('.fp-loadplan'); const d = e.querySelector('.draw').getAttribute('d'); return { d, vis: getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 50, text: e.querySelector('.txt').textContent, parent: e.parentElement.className }; })()`);
       await page.waitForFunction(`!!${card}._view.model && ${card}._loadUI.readyAt !== null`, { timeout: 20000 });
     } finally {
       page.off('request', delay);
       await page.setRequestInterception(false);
     }
-    st = await page.evaluate(`(() => { const c = ${card}, ui = c._loadUI; return { log: ui.log, cached: c._modelFromCache, shown: ui.snapShownAt, ready: ui.readyAt }; })()`);
+    st = await page.evaluate(`(() => { const c = ${card}, ui = c._loadUI; return { log: ui.log, cached: c._modelFromCache }; })()`);
     check('second load: the model from the cache, no glb download', st.cached === true && !gets.includes('GET'), JSON.stringify({ gets, cached: st.cached }));
-    check('second load: snapshot shown before the model was ready', st.shown !== null && st.shown < st.ready, JSON.stringify(st));
+    const house = fitOutline(HOUSE_OUTLINE).d;
+    check('second load: the drawing is visible over the stage with a non-empty path', shown && shown.vis && /^M[\d. ]+L/.test(shown.d) && /stage/.test(shown.parent), JSON.stringify(shown));
+    check('second load: the remembered outline is drawn, not the house fallback', shown && shown.d && house !== shown.d, JSON.stringify({ d: shown && shown.d.slice(0, 60), house: house && house.slice(0, 60) }));
+    const cam = await page.evaluate(`(() => { window.__camRec.stop = true; return window.__camRec; })()`);
+    check('first camera pose after a load is applied instantly (no fly-in)', cam.moves.filter((m) => m.model).every((m) => m.instant) && !cam.tween && cam.moves.length > 0, JSON.stringify(cam));
+    check('second load: the progress text is under the drawing', shown && shown.text.length > 0, JSON.stringify(shown));
     check('second load: no download progress, only "Preparing model…"', !st.log.some((t) => t.startsWith('Downloading')) && st.log.includes('Preparing model…'), JSON.stringify(st.log));
-    await page.waitForFunction(`${card}._loadUI.img.hidden`, { timeout: 5000 }).catch(() => {});
-    const after = await page.evaluate(`(() => { const c = ${card}; return { hidden: c._loadUI.img.hidden, controls: c._view.controls.enabled }; })()`);
-    check('snapshot cross-faded away, controls enabled again', after.hidden && after.controls, JSON.stringify(after));
+    await page.waitForFunction(`!${card}.shadowRoot.querySelector('.fp-loadplan')`, { timeout: 5000 }).catch(() => {});
+    const after = await page.evaluate(`(() => { const c = ${card}, v = c._view; return { gone: !${card}.shadowRoot.querySelector('.fp-loadplan'), controls: v.controls.enabled, tween: !!v._tween }; })()`);
+    check('drawing faded out and removed, controls enabled, no camera animation running', after.gone && after.controls && !after.tween, JSON.stringify(after));
     // plain http on the LAN: no Cache Storage -> the model blob in IndexedDB
     const idb = await page.evaluate(`(async () => {
       const c = ${card};
@@ -3162,7 +3180,7 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
       window.__fpModelTimeoutMs = 300;
       let aborted = false;
       const fetchFn = ({ signal }) => new Promise((res, rej) => signal.addEventListener('abort', () => { aborted = true; rej(new Error('aborted')); }));
-      ui._showSnap('data:,'); // controls held as while a snapshot shows
+      ui.loading(); // the drawing is up as during a real load
       const err = await v.setModel({ id: 'stall', name: 'stall.glb', data: () => c._modelBytes(location.origin + '/stall.glb', null, fetchFn) });
       ui.done(!!v.model && !err, err || '');
       window.__fpModelTimeoutMs = undefined;

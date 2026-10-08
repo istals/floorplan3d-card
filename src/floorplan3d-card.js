@@ -29,7 +29,7 @@ import { ObjectLayer } from './objects/layer.js';
 import { TapHints, tapHintsMode, reachability, hintAlpha, TOUCH_SHOW_MS } from './objects/hints.js';
 import { DebugOverlay } from './debug-overlay.js';
 import { ModelLoadUI, LOAD_STYLE } from './load-ui.js';
-import { rememberStartView } from './snapshot.js';
+import { loadOutline, saveOutline, pickOutline } from './load-outline.js';
 import { loadModelBuffer, layoutModelVersion, headerVersion, evictModel } from './model-cache.js';
 import { bindObjects, mowerTabEntity, effectiveGroups, layoutTags, nightFactor, sunVector, sunStrength, clampSunDir, screenByDistance, attachedPosition } from './objects/logic.js';
 import { moonPosition, sunPosition, sliderDate, snapMinutes, hhmm, tzMinutes, SCRUB_IDLE_MS } from './sky.js';
@@ -617,8 +617,8 @@ class Floorplan3dCard extends HTMLElement {
     const prevModel = this._view.model;
     const fresh = !!opts && !this._view.isModelLoaded(opts) && !this._view.isModelLoading(opts);
     if (fresh) {
+      if (!prevModel) this._loadUI.loading(); // the plan drawing until the model is there
       this._loadUI.progress('Loading model…');
-      if (!prevModel) this._loadUI.loading(); // the last render of this view as a placeholder
     }
     this._view.setModel(opts).then((err) => {
       if (fresh || err || !opts) this._loadUI.done(!!this._view.model && !err, err || '');
@@ -816,7 +816,7 @@ class Floorplan3dCard extends HTMLElement {
 
   disconnectedCallback() {
     if (this._view) this._view.stop();
-    if (this._loadUI) this._loadUI.scheduler.cancel();
+    if (this._loadUI) this._loadUI.dispose();
     this._endGesture();
     this._taps.cancel();
     this._closeConfirm();
@@ -925,12 +925,16 @@ class Floorplan3dCard extends HTMLElement {
     this._editBtn.addEventListener('click', () => this._toggleEdit());
     this._view = new FloorplanView(this._stage);
     this._loadUI = new ModelLoadUI({
-      stage: this._stage, view: this._view,
-      // before the model has loaded its views are unknown: null = the remembered start view (exact match only)
-      key: () => (this._config ? { layout: this._config.layout_key, view: this._view && this._view.model ? this._viewId : (this._config.view_id || null), mode: this._mode } : null),
-      canCapture: () => this.isConnected && !this._editing && this._view.size.w > 1 && !this._section,
+      stage: this._stage,
+      // the last loaded model's rooms of this layout, else the drawn rooms (null: the house fallback)
+      outline: () => {
+        if (!this._config) return null;
+        const saved = loadOutline(this._config.layout_key);
+        if (saved) return saved;
+        const drawn = pickOutline((this._layout && this._layout.rooms) || []);
+        return drawn.length ? drawn : null;
+      },
     });
-    this._view.onCameraChange = () => this._loadUI.changed();
     this._view.onMapImage = (img, w, h) => this._onMapImage(img, w, h);
     // auto mode: settings or the mower picture changed -> the current picture again, searched in full
     this._view.onMapReprocess = () => { this._forceFull = true; this._extUrl = null; if (this._layout && this._layout.mower) this._refreshMapOverlay(); };
@@ -2085,6 +2089,11 @@ class Floorplan3dCard extends HTMLElement {
     this._floors = mergeFloors(h, { ...this._layout, floors: [...overrides, ...(this._layout.floors || [])] });
     this._modelRooms = mb ? modelRooms(mb.manifest.rooms, mb.levels, mb.rooms, align) : [];
     // every model room / zone outline in card plan, for roomless markers (pins) by position
+    if (this._view.model && this._outlineModel !== this._view.model) { // the next load draws these while it waits
+      this._outlineModel = this._view.model;
+      const polys = pickOutline(this._modelRooms);
+      if (polys.length) saveOutline(this._config.layout_key, polys);
+    }
     this._zones = mb ? mb.manifest.rooms.filter((r) => Array.isArray(r.outline) && r.outline.length > 2)
       .map((r) => ({ id: r.id, level: r.level, polygon: r.outline.map((p) => transformPoint(p, align)) })) : [];
     if (mb) {
@@ -2134,12 +2143,6 @@ class Floorplan3dCard extends HTMLElement {
         viewId: this._config.view_id, floor: this._config.floor, fallback: this._view.model ? null : withRooms.id,
       }, (v) => this._stateFor(v).floors);
       this._floorOnly = null;
-    }
-    // the view picked right after a model loads is where the next load starts: its snapshot (only that one) shows
-    const vm = this._view.model;
-    if (vm && this._viewId && this._startModel !== vm) {
-      this._startModel = vm;
-      rememberStartView(this._config.layout_key, this._viewId).catch(() => {});
     }
   }
 
@@ -2341,7 +2344,6 @@ class Floorplan3dCard extends HTMLElement {
     else if (!this._view.model || wasSection) this._view.fit({ instant });
     this._syncToolbar();
     if (this._editing) this._edit.onViewChanged();
-    this._loadUI.changed();
   }
 
   // First view after load / model change: its saved camera, else frame it.
@@ -3064,7 +3066,6 @@ class Floorplan3dCard extends HTMLElement {
     }
     this._syncToolbar();
     if (this._editing && this._edit.tab === 'views') this._edit.render();
-    this._loadUI.changed();
   }
 
   // Time scrubber: minutes today (0..1440, 15 min steps) or null = live sun.sun. settle false (dragging):

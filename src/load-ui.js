@@ -1,44 +1,54 @@
-// Model loading UI of the card: the slim progress bar at the bottom of the stage and the snapshot
-// placeholder (last render of this layout / view / mode, shown behind the canvas until the model is
-// ready, then cross-faded), plus the snapshot capture after the camera settles.
-import { SnapshotScheduler, snapshotSize, loadSnapshot, saveSnapshot, SNAPSHOT_QUALITY } from './snapshot.js';
+// Model loading UI of the card: the slim progress bar at the bottom of the stage and the plan drawing
+// shown over the empty stage while the model loads (room outlines traced in step with the download).
 import { progressText } from './model-cache.js';
+import { idbAll, idbDelete } from './idb.js';
+import { fitOutline, HOUSE_OUTLINE } from './load-outline.js';
 
 export const LOAD_STYLE = `
   .stage { isolation: isolate; }
-  .fp-snap { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1;
-    pointer-events: none; opacity: 1; transition: opacity .3s ease; }
-  .fp-snap.fading { z-index: 1; opacity: 0; }
-  .fp-snap[hidden], .fp-progress[hidden] { display: none; }
+  .fp-progress[hidden], .fp-loadplan[hidden] { display: none; }
   .fp-progress { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; }
   .fp-progress .bar { height: 3px; background: var(--primary-color, #03a9f4); width: 0; transition: width .2s linear; }
   .fp-progress.busy .bar { width: 100%; opacity: .45; }
   .fp-progress span { position: absolute; right: 8px; bottom: 6px; font-size: 11px; padding: 2px 8px; border-radius: 10px;
     background: var(--card-background-color, #fff); color: var(--secondary-text-color, #727272);
     border: 1px solid var(--divider-color, rgba(0,0,0,.12)); }
+  .fp-progress.plan span { display: none; }
   .fp-progress.error span { color: var(--error-color, #db4437); }
+  .fp-loadplan { position: absolute; inset: 0; z-index: 3; pointer-events: none;
+    background: color-mix(in srgb, var(--card-background-color, #fff) 88%, transparent); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; opacity: 1; transition: opacity .3s ease; }
+  .fp-loadplan.fading { opacity: 0; }
+  .fp-loadplan svg { width: 60%; height: 60%; min-height: 0; overflow: visible; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .fp-loadplan .base { stroke: var(--divider-color, rgba(0,0,0,.12)); stroke-width: .8; }
+  .fp-loadplan .draw { stroke: var(--primary-color, #03a9f4); stroke-width: 1; transition: stroke-dashoffset .2s linear; }
+  .fp-loadplan.busy .draw { animation: fp-trace 2.4s ease-in-out infinite; }
+  .fp-loadplan .txt { font-size: 12px; color: var(--secondary-text-color, #727272); min-height: 1.2em; }
+  @keyframes fp-trace { from { stroke-dashoffset: var(--start); } to { stroke-dashoffset: var(--end); } }
+  @media (prefers-reduced-motion: reduce) {
+    .fp-loadplan.busy .draw { animation: none; stroke-dasharray: none; opacity: .5; }
+    .fp-loadplan, .fp-loadplan .draw { transition: none; }
+  }
 `;
 
+let purged = false; // snapshots of earlier versions: removed once per page load
+
 export class ModelLoadUI {
-  // host: { stage, view, key(): { layout, view, mode } | null, canCapture(): boolean }
-  constructor(host, { debounce, minInterval } = {}) {
+  // host: { stage, outline(): [polygon] | null (remembered or drawn rooms, plan metres) }
+  constructor(host) {
     this.host = host;
-    this.img = document.createElement('img');
-    this.img.className = 'fp-snap';
-    this.img.alt = '';
-    this.img.hidden = true;
     this.bar = document.createElement('div');
     this.bar.className = 'fp-progress';
     this.bar.hidden = true;
     this.bar.innerHTML = '<div class="bar"></div><span></span>';
-    host.stage.prepend(this.img);
     host.stage.append(this.bar);
+    this.plan = null; // the drawing overlay while a model loads
     this.log = []; // the texts shown (headless checks)
-    this.snapShownAt = null;
     this.readyAt = null;
-    this._url = null;
-    this._gen = 0;
-    this.scheduler = new SnapshotScheduler(() => this.capture(), { debounce, minInterval });
+    if (!purged) {
+      purged = true;
+      idbAll('snapshots').then((all) => (all.length ? idbDelete('snapshots', all.map((r) => r.key)) : null));
+    }
   }
 
   // progress: text, frac (0..1, null: busy without a known share), error
@@ -48,12 +58,14 @@ export class ModelLoadUI {
     this.bar.hidden = false;
     this.bar.classList.toggle('busy', frac === null && !error);
     this.bar.classList.toggle('error', !!error);
+    this.bar.classList.toggle('plan', !!this.plan && !error);
     this.bar.firstChild.style.width = frac === null ? '' : `${Math.round(frac * 100)}%`;
     if (this.bar.lastChild.textContent !== text) {
       this.bar.lastChild.textContent = text;
       this.log.push(text);
       if (this.log.length > 20) this.log.shift();
     }
+    if (!error) this._drawProgress(text, frac);
     if (error) this._errTimer = setTimeout(() => { this.bar.hidden = true; }, 8000);
   }
 
@@ -61,90 +73,61 @@ export class ModelLoadUI {
     this.progress(progressText(loaded, total), total ? Math.min(1, loaded / total) : null);
   }
 
-  // A model starts loading: the last snapshot of this view behind the canvas, controls held still.
-  async loading() {
-    const gen = ++this._gen;
+  // A model starts loading: the plan drawing over the stage.
+  loading() {
     this.readyAt = null;
-    const k = this.host.key();
-    if (!k) return;
-    const rec = await loadSnapshot(k.layout, k.view, k.mode).catch(() => null);
-    if (gen !== this._gen || !rec || !rec.blob) return;
-    this._showSnap(URL.createObjectURL(rec.blob));
+    this._removePlan();
+    const polys = (this.host.outline && this.host.outline()) || HOUSE_OUTLINE;
+    const fit = fitOutline(polys.length ? polys : HOUSE_OUTLINE);
+    const el = document.createElement('div');
+    el.className = 'fp-loadplan busy';
+    el.innerHTML = `<svg viewBox="${fit.viewBox}" aria-hidden="true"><path class="base" d="${fit.d}"/><path class="draw" d="${fit.d}"/></svg><div class="txt"></div>`;
+    this.plan = el;
+    this.fit = fit;
+    this.path = el.querySelector('.draw');
+    this.path.style.setProperty('--start', `${fit.length * 0.4}`);
+    this.path.style.setProperty('--end', `${-fit.length}`);
+    this.path.style.strokeDasharray = `${fit.length * 0.4} ${fit.length}`;
+    this.host.stage.prepend(el);
+    this.bar.classList.add('plan');
   }
 
-  _showSnap(url) {
-    this._dropUrl();
-    this._url = url;
-    this.img.src = url;
-    this.img.classList.remove('fading');
-    this.img.hidden = false;
-    this.snapShownAt = performance.now();
-    const c = this.host.view.controls;
-    if (c && this._controlsWere === undefined) { this._controlsWere = c.enabled; c.enabled = false; }
+  _drawProgress(text, frac) {
+    const el = this.plan;
+    if (!el) return;
+    el.querySelector('.txt').textContent = text;
+    const busy = frac === null;
+    el.classList.toggle('busy', busy);
+    const L = this.fit.length;
+    this.path.style.strokeDasharray = busy ? `${L * 0.4} ${L}` : `${L}`;
+    this.path.style.strokeDashoffset = busy ? '' : `${L * (1 - frac)}`;
   }
 
-  _dropUrl() {
-    if (this._url) URL.revokeObjectURL(this._url);
-    this._url = null;
+  _removePlan() {
+    clearTimeout(this._fadeTimer);
+    if (this.plan) this.plan.remove();
+    this.plan = null;
+    this.bar.classList.remove('plan');
   }
 
-  _restoreControls() {
-    const c = this.host.view.controls;
-    if (this._controlsWere !== undefined && c) c.enabled = this._controlsWere;
-    this._controlsWere = undefined;
-  }
-
-  // The model is ready (ok) or failed: cross-fade the snapshot away, hide the bar (or show the error).
+  // The model is ready (ok) or failed: fade the drawing out (then remove it), hide the bar (or show the error).
   done(ok, error = '') {
-    this._gen++;
     if (ok) {
       this.readyAt = performance.now();
       this.progress(null);
-      this.scheduler.notify();
-    } else if (error) this.progress(error, null, true);
-    else this.progress(null);
-    this._restoreControls();
-    if (this.img.hidden) return;
-    const img = this.img;
-    img.classList.add('fading'); // over the canvas, then transparent
+    } else if (error) {
+      this._removePlan();
+      this.progress(error, null, true);
+    } else this.progress(null);
+    const el = this.plan;
+    if (!el) return;
+    el.classList.add('fading');
     clearTimeout(this._fadeTimer);
-    this._fadeTimer = setTimeout(() => { img.hidden = true; img.classList.remove('fading'); this._dropUrl(); }, 320);
-  }
-
-  // Camera / view / mode changed: capture once things settle.
-  changed() {
-    if (this.readyAt !== null) this.scheduler.notify();
-  }
-
-  // JPEG of the current render -> IndexedDB. -> Promise<boolean>
-  async capture() {
-    const host = this.host, v = host.view, k = host.key();
-    if (!k || !v.model || !host.canCapture() || !this.img.hidden) return false;
-    if (v._tween) { this.scheduler.notify(); return false; } // still moving
-    const src = v.renderer.domElement;
-    if (!src.width || !src.height) return false;
-    const { w, h } = snapshotSize(src.width, src.height);
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const g = c.getContext('2d');
-    if (!g) return false;
-    g.fillStyle = getComputedStyle(host.stage).getPropertyValue('--card-background-color').trim() || '#ffffff';
-    g.fillRect(0, 0, w, h);
-    try {
-      v.renderer.render(v.scene, v.camera); // a fresh drawing buffer (it is not preserved between frames)
-      g.drawImage(src, 0, 0, w, h);
-    } catch (e) {
-      return false;
-    }
-    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', SNAPSHOT_QUALITY));
-    return saveSnapshot(k.layout, k.view, k.mode, blob).catch(() => false);
+    this._fadeTimer = setTimeout(() => { if (this.plan === el) this._removePlan(); }, 320);
   }
 
   dispose() {
-    this.scheduler.cancel();
     clearTimeout(this._fadeTimer);
     clearTimeout(this._errTimer);
-    this._dropUrl();
   }
 }

@@ -419,7 +419,6 @@ export class FloorplanView {
       this.dirty = true;
       this._camMovedAt = performance.now();
       this._scheduleOcclusion();
-      if (this.onCameraChange) this.onCameraChange();
     });
     c.addEventListener('start', () => { this._tween = null; });
     if (this.controls) c.enabled = this.controls.enabled;
