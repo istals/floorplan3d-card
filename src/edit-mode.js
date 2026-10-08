@@ -1513,9 +1513,13 @@ export class EditMode {
       if (msg) warn += `<div class="badge warn">${esc(label)}: ${esc(msg)}</div>`;
     }
     // Popup rows: Automatic (type / model list plus the light's capabilities) or only on / off
-    const only = Array.isArray((ui || {}).popup) && ui.popup.length === 1 && ui.popup[0] === 'toggle';
-    sels += `<label class="act">Popup<select data-field="obj-popup" data-id="${id}">
-      <option value="">Automatic</option><option value="toggle"${only ? ' selected' : ''}>Only on / off</option></select></label>`;
+    if (o.type === 'light' || o.type === 'light_strip') {
+      const pl = (ui || {}).popup;
+      const only = Array.isArray(pl) && pl.length === 1 && pl[0] === 'toggle';
+      const custom = Array.isArray(pl) && !only; // a list written in the layout / model: kept until changed
+      sels += `<label class="act">Popup<select data-field="obj-popup" data-id="${id}">
+        <option value="">Automatic</option><option value="toggle"${only ? ' selected' : ''}>Only on / off</option>${custom ? '<option value="custom" selected>Custom (from layout)</option>' : ''}</select></label>`;
+    }
     return `<div class="oacts">${sels}</div>${fields}${warn}`;
   }
 
@@ -2722,7 +2726,7 @@ export class EditMode {
       this.commit(E.setObject(this.layout, el.dataset.id, { entity: v === '' ? undefined : v.toLowerCase() === 'none' ? null : v }));
       this.render();
     } else if (f === 'obj-popup') {
-      this.commit(E.setObjectUi(this.layout, el.dataset.id, 'popup', el.value ? ['toggle'] : null));
+      if (el.value !== 'custom') this.commit(E.setObjectUi(this.layout, el.dataset.id, 'popup', el.value ? ['toggle'] : null));
       this.render();
     } else if (f === 'obj-act' || f === 'obj-act-field') {
       this._setObjAction(el);

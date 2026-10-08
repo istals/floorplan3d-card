@@ -621,12 +621,14 @@ class Floorplan3dCard extends HTMLElement {
     }
     const prevModel = this._view.model;
     const fresh = !!opts && !this._view.isModelLoaded(opts) && !this._view.isModelLoading(opts);
+    // a later load owns the drawing: an earlier one finishing must not fade it
+    const gen = fresh ? (this._loadGen = (this._loadGen || 0) + 1) : (this._loadGen || 0);
     if (fresh) {
       if (!prevModel) this._loadUI.loading(); // the plan drawing until the model is there
       this._loadUI.progress('Loading model…');
     }
     this._view.setModel(opts).then((err) => {
-      if (fresh || err || !opts) this._loadUI.done(!!this._view.model && !err, err || '');
+      if ((fresh || err || !opts) && gen === (this._loadGen || 0)) this._loadUI.done(!!this._view.model && !err, err || '');
       if (this._view.model !== prevModel && this._section) this._dropSection();
       if (this._view.model !== prevModel) { this._endGesture(); this._popup.close(); }
       this._objects.setModel(this._view.model);
@@ -931,6 +933,7 @@ class Floorplan3dCard extends HTMLElement {
     this._view = new FloorplanView(this._stage);
     this._loadUI = new ModelLoadUI({
       stage: this._stage,
+      controls: () => this._view && this._view.controls,
       // the last loaded model's rooms of this layout, else the drawn rooms (null: the house fallback)
       outline: () => {
         if (!this._config) return null;
@@ -2095,9 +2098,11 @@ class Floorplan3dCard extends HTMLElement {
     this._modelRooms = mb ? modelRooms(mb.manifest.rooms, mb.levels, mb.rooms, align) : [];
     // every model room / zone outline in card plan, for roomless markers (pins) by position
     if (this._view.model && this._outlineModel !== this._view.model) { // the next load draws these while it waits
-      this._outlineModel = this._view.model;
       const polys = pickOutline(this._modelRooms);
-      if (polys.length) saveOutline(this._config.layout_key, polys);
+      if (polys.length) {
+        saveOutline(this._config.layout_key, polys);
+        this._outlineModel = this._view.model;
+      }
     }
     this._zones = mb ? mb.manifest.rooms.filter((r) => Array.isArray(r.outline) && r.outline.length > 2)
       .map((r) => ({ id: r.id, level: r.level, polygon: r.outline.map((p) => transformPoint(p, align)) })) : [];

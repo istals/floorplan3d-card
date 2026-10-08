@@ -215,7 +215,7 @@ export class ObjectPopup {
       this.closedBy = e;
       this.close();
     };
-    this._onRelease = () => { this._sliding = false; };
+    this._onRelease = () => { setTimeout(() => { this._sliding = false; }, 0); }; // after the change event
     this._onKey = (e) => { if (e.key === 'Escape') this.close(); };
   }
 
@@ -298,10 +298,10 @@ export class ObjectPopup {
       } else if (r.kind === 'color_temp') {
         const input = row.querySelector('input');
         if (!this._sliding) input.value = String(r.value === null ? Math.round((r.min + r.max) / 2) : r.value);
-        row.querySelector('.fp-pop-value').textContent = r.value === null ? '' : `${r.value} K`;
+        if (!this._sliding) row.querySelector('.fp-pop-value').textContent = r.value === null ? '' : `${r.value} K`;
       } else if (r.kind === 'effect') {
         const sel = row.querySelector('select');
-        if (document.activeElement !== sel) sel.value = r.value && r.options.includes(r.value) ? r.value : '';
+        if (sel.getRootNode().activeElement !== sel) sel.value = r.value && r.options.includes(r.value) ? r.value : '';
       } else if (r.kind === 'reason') {
         row.textContent = r.label;
       } else if (r.kind !== 'start_dock' && r.kind !== 'link') {
@@ -360,7 +360,10 @@ export class ObjectPopup {
     const row = e.target.closest && e.target.closest('.fp-pop-row');
     const entity = row && row.dataset.entity;
     if (e.target.tagName === 'SELECT') {
-      if (entity && e.target.value) this.onAction('light', 'turn_on', { entity_id: entity, effect: e.target.value });
+      // arrow keys fire a change per step: the last value wins after a short pause
+      clearTimeout(this._effTimer);
+      const val = e.target.value;
+      if (entity && val) this._effTimer = setTimeout(() => this.onAction('light', 'turn_on', { entity_id: entity, effect: val }), 400);
       return;
     }
     if (e.target.type !== 'range') return;
@@ -409,6 +412,7 @@ export class ObjectPopup {
   _wheelUp(e) {
     const d = this._drag;
     if (!d) return;
+    if (!d.canvas.isConnected) { this._wheelEnd(); return; } // the rows were rebuilt mid-drag
     d.hs = this._hsAt(d.canvas, e);
     const row = d.canvas.closest('.fp-pop-row'), entity = row && row.dataset.entity;
     this._wheelEnd();
@@ -442,6 +446,7 @@ export class ObjectPopup {
     window.removeEventListener('pointerup', this._onRelease, true);
     window.removeEventListener('pointercancel', this._onRelease, true);
     window.removeEventListener('keydown', this._onKey);
+    clearTimeout(this._effTimer);
     this.el.remove();
     this.el = null;
     this._id = null;

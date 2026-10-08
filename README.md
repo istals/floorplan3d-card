@@ -381,11 +381,10 @@ levels become floors, tagged rooms and zones become the card's rooms, so the mod
 replace hand-drawn ones. Format and examples: [docs/model-builder-guide.md](docs/model-builder-guide.md).
 Untagged models still load and show whole.
 
-Loading: the plan (rooms, markers) shows at once, with a progress bar while the model downloads.
-The browser keeps the model file (Cache Storage, or IndexedDB when HA is served over plain http),
+Loading: the browser keeps the model file (Cache Storage, or IndexedDB when HA is served over plain http),
 so the next load skips the download until the model changes (a new upload, or new ETag /
-Last-Modified of a `/local/` file). While the model loads, the card draws the floor plan as a line
-drawing: the room outlines of the last loaded model (or your drawn rooms, or a simple house when
+Last-Modified of a `/local/` file). While the model loads, a line drawing of the floor plan replaces the stage (it blocks taps and
+camera input until the model is ready): the room outlines of the last loaded model (or your drawn rooms, or a simple house when
 nothing is known yet) are traced in step with the download, with the progress text under it, and
 fade out when the model is ready. A download that takes over 60 s stops with an error; a cached copy that fails to load is dropped and downloaded
 again once. Everything stays in this browser; clearing site data removes it.

@@ -15,7 +15,7 @@ export const LOAD_STYLE = `
     border: 1px solid var(--divider-color, rgba(0,0,0,.12)); }
   .fp-progress.plan span { display: none; }
   .fp-progress.error span { color: var(--error-color, #db4437); }
-  .fp-loadplan { position: absolute; inset: 0; z-index: 1; pointer-events: none; background: var(--card-background-color, #fff); display: flex; flex-direction: column;
+  .fp-loadplan { position: absolute; inset: 0; z-index: 1; pointer-events: auto; touch-action: none; background: var(--card-background-color, #fff); display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 10px; opacity: 1; transition: opacity .3s ease; }
   .fp-loadplan.fading { opacity: 0; }
   .fp-loadplan svg { width: 60%; height: 60%; min-height: 0; overflow: visible; fill: none; stroke-linejoin: round; stroke-linecap: round; }
@@ -89,8 +89,27 @@ export class ModelLoadUI {
     this.path.style.setProperty('--start', `${fit.length * 0.4}`);
     this.path.style.setProperty('--end', `${-fit.length}`);
     this.path.style.strokeDasharray = `${fit.length * 0.4} ${fit.length}`;
+    // opaque and inert: nothing below the drawing (markers, objects, orbit) reacts while the model loads
+    for (const t of ['pointerdown', 'pointerup', 'pointermove', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart', 'touchmove']) {
+      el.addEventListener(t, (e) => { e.stopPropagation(); if (t === 'wheel' || t.startsWith('touch')) e.preventDefault(); }, { passive: false });
+    }
     this.host.stage.prepend(el);
+    this._lock(true);
     this.bar.classList.add('plan');
+  }
+
+  // host.lock(true): the camera controls off while the drawing covers the stage; false: back as before
+  _lock(on) {
+    if (!this.host.controls) return;
+    const c = this.host.controls();
+    if (!c) return;
+    if (on) {
+      if (this._prevEnabled === undefined) this._prevEnabled = c.enabled;
+      c.enabled = false;
+    } else if (this._prevEnabled !== undefined) {
+      c.enabled = this._prevEnabled;
+      this._prevEnabled = undefined;
+    }
   }
 
   _drawProgress(text, frac) {
@@ -109,6 +128,7 @@ export class ModelLoadUI {
     clearTimeout(this._fadeTimer);
     if (this.plan) this.plan.remove();
     this.plan = null;
+    this._lock(false);
     this.bar.classList.remove('plan');
   }
 

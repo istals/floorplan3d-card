@@ -984,6 +984,7 @@ sections.add('light-popup', { group: 'objects', query: { model: '1', view: '3d' 
   await page.evaluate(`${sr}.querySelector('.fp-popup .fp-presets button[data-pct="30"]').click()`);
   check('preset 30 % sends brightness_pct', (await lastCall()) === JSON.stringify(['light', 'turn_on', { entity_id: lamp, brightness_pct: 30 }]), await lastCall());
   await page.evaluate(`(() => { const e = ${sr}.querySelector('.fp-popup .effect select'); e.value = 'Candle'; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await new Promise((r) => setTimeout(r, 600)); // the effect call is debounced (arrow keys)
   await idle(page);
   check('choosing an effect sends light.turn_on with effect', (await lastCall()) === JSON.stringify(['light', 'turn_on', { entity_id: lamp, effect: 'Candle' }]), await lastCall());
   check('the effect select shows the new effect', (await page.evaluate(`${sr}.querySelector('.fp-popup .effect select').value`)) === 'Candle');
@@ -3141,6 +3142,15 @@ sections.add('model-cache', { group: 'review', query: { model: '1', view: '3d' }
         requestAnimationFrame(tick);
       })()`);
       shown = await page.evaluate(`(() => { const e = ${card}.shadowRoot.querySelector('.fp-loadplan'); const d = e.querySelector('.draw').getAttribute('d'); return { d, vis: getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 50, text: e.querySelector('.txt').textContent, parent: e.parentElement.className }; })()`);
+      const lock = await page.evaluate(`(() => { const c = ${card}, e = c.shadowRoot.querySelector('.fp-loadplan'); let leaked = 0;
+        const f = () => { leaked++; };
+        c._stage.addEventListener('pointerdown', f); c._stage.addEventListener('click', f);
+        const r = e.getBoundingClientRect(), o = { bubbles: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+        e.dispatchEvent(new PointerEvent('pointerdown', o)); e.dispatchEvent(new MouseEvent('click', o));
+        c._stage.removeEventListener('pointerdown', f); c._stage.removeEventListener('click', f);
+        const top = c.shadowRoot.elementFromPoint(o.clientX, o.clientY);
+        return { leaked, controls: c._view.controls.enabled, onDrawing: !!top && !!top.closest('.fp-loadplan') }; })()`);
+      check('while loading: the drawing swallows pointer input and the orbit controls are off', lock.leaked === 0 && lock.controls === false && lock.onDrawing, JSON.stringify(lock));
       await page.waitForFunction(`!!${card}._view.model && ${card}._loadUI.readyAt !== null`, { timeout: 20000 });
     } finally {
       page.off('request', delay);
