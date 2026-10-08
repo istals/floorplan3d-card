@@ -103,7 +103,7 @@ export const polygonLength = (poly) => {
 };
 
 // Fit closed polygons into a box of `size` units (longest side), y flipped (north up). `pad` units around.
-// -> { viewBox, d, length, w, h }
+// -> { viewBox, d, length, w, h, parts: [{ d, end }] }
 export function fitOutline(polys, size = 100, pad = 2) {
   const pts = polys.flat();
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
@@ -116,5 +116,8 @@ export function fitOutline(polys, size = 100, pad = 2) {
   const scaled = polys.map((poly) => poly.map(sp));
   const d = scaled.map((poly) => `M${poly.map((p) => p.join(' ')).join('L')}Z`).join('');
   const length = scaled.reduce((n, poly) => n + polygonLength(poly), 0);
-  return { viewBox: `0 0 ${r(w)} ${r(h)}`, d, length: r(length), w: r(w), h: r(h) };
+  // each room's own path and where along the whole path it ends (for a fill once the stroke has reached it)
+  let at = 0;
+  const parts = scaled.map((poly) => ({ d: `M${poly.map((p) => p.join(' ')).join('L')}Z`, end: r((at += polygonLength(poly))) }));
+  return { viewBox: `0 0 ${r(w)} ${r(h)}`, d, length: r(length), w: r(w), h: r(h), parts };
 }

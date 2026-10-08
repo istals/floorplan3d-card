@@ -71,6 +71,7 @@ describe('fitOutline', () => {
     expect(f.viewBox).toBe('0 0 104 54');
     expect(f.d).toBe('M2 52L102 52L102 2L2 2Z');
     expect(f.length).toBe(300);
+    expect(f.parts).toEqual([{ d: 'M2 52L102 52L102 2L2 2Z', end: 300 }]);
   });
   it('scales every room by the same factor', () => {
     const f = fitOutline(HOUSE_OUTLINE, 100, 0);

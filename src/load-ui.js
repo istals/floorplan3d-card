@@ -15,11 +15,12 @@ export const LOAD_STYLE = `
     border: 1px solid var(--divider-color, rgba(0,0,0,.12)); }
   .fp-progress.plan span { display: none; }
   .fp-progress.error span { color: var(--error-color, #db4437); }
-  .fp-loadplan { position: absolute; inset: 0; z-index: 3; pointer-events: none;
-    background: color-mix(in srgb, var(--card-background-color, #fff) 88%, transparent); display: flex; flex-direction: column;
+  .fp-loadplan { position: absolute; inset: 0; z-index: 1; pointer-events: none; background: var(--card-background-color, #fff); display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 10px; opacity: 1; transition: opacity .3s ease; }
   .fp-loadplan.fading { opacity: 0; }
   .fp-loadplan svg { width: 60%; height: 60%; min-height: 0; overflow: visible; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .fp-loadplan .fill { stroke: none; fill: var(--primary-color, #03a9f4); opacity: 0; transition: opacity .3s ease; }
+  .fp-loadplan .fill.on { opacity: .08; }
   .fp-loadplan .base { stroke: var(--divider-color, rgba(0,0,0,.12)); stroke-width: .8; }
   .fp-loadplan .draw { stroke: var(--primary-color, #03a9f4); stroke-width: 1; transition: stroke-dashoffset .2s linear; }
   .fp-loadplan.busy .draw { animation: fp-trace 2.4s ease-in-out infinite; }
@@ -81,7 +82,7 @@ export class ModelLoadUI {
     const fit = fitOutline(polys.length ? polys : HOUSE_OUTLINE);
     const el = document.createElement('div');
     el.className = 'fp-loadplan busy';
-    el.innerHTML = `<svg viewBox="${fit.viewBox}" aria-hidden="true"><path class="base" d="${fit.d}"/><path class="draw" d="${fit.d}"/></svg><div class="txt"></div>`;
+    el.innerHTML = `<svg viewBox="${fit.viewBox}" aria-hidden="true">${fit.parts.map((q) => `<path class="fill" d="${q.d}"/>`).join('')}<path class="base" d="${fit.d}"/><path class="draw" d="${fit.d}"/></svg><div class="txt"></div>`;
     this.plan = el;
     this.fit = fit;
     this.path = el.querySelector('.draw');
@@ -101,6 +102,7 @@ export class ModelLoadUI {
     const L = this.fit.length;
     this.path.style.strokeDasharray = busy ? `${L * 0.4} ${L}` : `${L}`;
     this.path.style.strokeDashoffset = busy ? '' : `${L * (1 - frac)}`;
+    el.querySelectorAll('.fill').forEach((q, i) => q.classList.toggle('on', !busy && this.fit.parts[i].end <= L * frac + 0.01));
   }
 
   _removePlan() {
