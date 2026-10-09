@@ -118,8 +118,18 @@ export function placeWash(kind, anchor, size, { wall = null, floor = null, ceili
 }
 
 // Every wash quad of a lamp: 'both' = a down and an up wash (two quads, each with its own cone), 'none' = none.
+// An uplight's light comes back down off what it lights: a faint pool on the floor around it, at this share.
+export const BOUNCE = 0.3;
+
 export function placeWashes(kind, anchor, size, surfaces = {}) {
   if (kind === 'none') return [];
+  if (kind === 'spot') {
+    const main = placeWash('spot', anchor, size, surfaces);
+    const { aim, floor } = surfaces;
+    if (!main || !aim || !floor || toArr(aim.point)[1] <= anchor[1]) return main ? [main] : [];
+    const bounce = placeWash('down', anchor, size, { floor }); // no wall: a pool on the floor
+    return bounce ? [main, { ...bounce, surface: 'bounce', k: BOUNCE }] : [main];
+  }
   const kinds = kind === 'both' ? ['down', 'up'] : [kind];
   return kinds.map((k) => placeWash(k, anchor, size, surfaces)).filter(Boolean);
 }
@@ -131,6 +141,7 @@ export function placeWashes(kind, anchor, size, surfaces = {}) {
 export const POOL_MIN = 0.5;
 const PROBE_BACK = 0.3; // probes start this far before the surface (clear of posts and the lamp's mount)
 const PLANE_TOL = 0.08;
+const MAX_STEP = 0.2; // a moved pool stays within 20 cm (along the beam) of the surface it hit
 const MAX_SHIFT = 1; // a pool moves at most 1 m off the beam's axis
 export function fitPool(pool, fits) {
   const sizes = [1, 0.6, 0.35].map((k) => pool * k).filter((d) => d >= POOL_MIN);
@@ -255,6 +266,7 @@ export class WashLayer {
           const shift = Math.min(k * r, MAX_SHIFT);
           const h = o ? cast(back.clone().addScaledVector(o, shift), PROBE_BACK + 0.6) : hit;
           if (!h || (flat && Math.abs(h.normal[1]) <= FLAT_NY)) continue;
+          if (Math.abs(new THREE.Vector3(...h.point).sub(c0).dot(d)) > MAX_STEP) continue; // not a lower lawn / higher roof
           const c = new THREE.Vector3(...h.point), n = new THREE.Vector3(...h.normal);
           const start = c.clone().addScaledVector(d, -PROBE_BACK);
           if (sides.filter((_, j) => j % 2 === 0).every((s) => onPlane(cast(start.clone().addScaledVector(s, r), PROBE_BACK + 0.5), c, n))) {
@@ -282,7 +294,7 @@ export class WashLayer {
     const floor = () => WashLayer.poolHit(view, p, DOWN_DIR[0], DOWN_RANGE, pool, true);
     if (kind === 'spot') {
       if (aimDir) out.aim = WashLayer.poolHit(view, p, aimDir, AIM_RANGE, pool);
-      if (!out.aim) out.floor = floor();
+      if (!out.aim || aimDir[1] > 0.5) out.floor = floor(); // no aim: the floor instead; an uplight: its bounce
       return out;
     }
     out.wall = wall !== undefined ? wall : WashLayer.wall(view, a);

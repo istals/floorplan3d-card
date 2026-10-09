@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN } from '../src/objects/wash.js';
+import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN, placeWashes, BOUNCE } from '../src/objects/wash.js';
 
 const close = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 
@@ -128,5 +128,22 @@ describe('fitPool / bestCandidate', () => {
     expect(bestCandidate([at([0.5, -0.87, 0], 0), at([0, -1, 0], 0.5)]).normal).toEqual([0, -1, 0]);
     expect(bestCandidate([at([0, -1, 0], 1), null, at([0, -1, 0], 0.5)]).shift).toBe(0.5);
     expect(bestCandidate([null])).toBe(null);
+  });
+});
+
+describe('uplight bounce', () => {
+  const size = { width: 1.9, height: 2.6, pool: 2.5 };
+  const floor = { point: [0, 0, 0], normal: [0, 1, 0], pool: 1.5 };
+  it('an uplight lights what it aims at and, faintly, the floor around it', () => {
+    const aim = { point: [0, 2.4, 0], normal: [0, -1, 0], pool: 1.5 };
+    const [main, bounce] = placeWashes('spot', [0, 0.06, 0], size, { aim, floor });
+    expect(main).toMatchObject({ surface: 'aim', width: 1.5 });
+    expect(bounce).toMatchObject({ surface: 'bounce', variant: 'pool', k: BOUNCE, width: 1.5 });
+    expect(bounce.center[1]).toBeCloseTo(0.01);
+  });
+  it('a spot aimed down, or with no floor, gets one pool', () => {
+    const aim = { point: [0, 0, 1], normal: [0, 1, 0] };
+    expect(placeWashes('spot', [0, 2.4, 0], size, { aim, floor })).toHaveLength(1);
+    expect(placeWashes('spot', [0, 0.06, 0], size, { aim: { point: [0, 2.4, 0], normal: [0, -1, 0] } })).toHaveLength(1);
   });
 });

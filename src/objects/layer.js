@@ -436,7 +436,7 @@ export class ObjectLayer {
         p.wash = { meshes, sig: wsig, placements };
       }
       const opacity = washOpacity(p.result.level, this._slots.has(id));
-      p.wash.meshes.forEach((m, i) => this.washes.paint(m, p.result.color || [255, 255, 255], p.wash.placements[i] ? opacity : 0));
+      p.wash.meshes.forEach((m, i) => this.washes.paint(m, p.result.color || [255, 255, 255], p.wash.placements[i] ? opacity * (p.wash.placements[i].k ?? 1) : 0));
       changed = true;
     }
     this._washSig = pending ? null : sig;
