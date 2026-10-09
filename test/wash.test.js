@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH } from '../src/objects/wash.js';
+import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN } from '../src/objects/wash.js';
 
 const close = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 
@@ -105,5 +105,28 @@ describe('washTexels', () => {
     const pool = washTexels('pool', 32, 32), ap = (x, y) => pool[(y * 32 + x) * 4 + 3];
     expect(ap(16, 16)).toBeGreaterThan(200);
     expect(ap(0, 0)).toBe(0);
+  });
+});
+
+describe('fitPool / bestCandidate', () => {
+  const at = (normal, shift) => ({ point: [0, 2.4, 0], normal, shift });
+  it('keeps the full pool when it fits', () => {
+    expect(fitPool(2.5, () => at([0, -1, 0], 0))).toMatchObject({ pool: 2.5, shift: 0 });
+  });
+  it('shrinks to the largest size that fits a narrow surface', () => {
+    const fit = fitPool(2.5, (d) => (d <= 1 ? at([0, -1, 0], 0) : null));
+    expect(fit.pool).toBeCloseTo(0.875);
+    expect(fitPool(2.5, (d) => (d <= POOL_MIN ? at([0, -1, 0], 0) : null)).pool).toBe(POOL_MIN);
+  });
+  it('gives up on a beam narrower than the smallest pool, and never makes a pool below POOL_MIN', () => {
+    const sizes = [];
+    expect(fitPool(2.5, (d) => { sizes.push(d); return null; })).toBe(null);
+    expect(Math.min(...sizes)).toBe(POOL_MIN);
+    expect(fitPool(0.3, () => at([0, -1, 0], 0))).toBe(null);
+  });
+  it('prefers a flat surface over a slope, then the least shifted placement', () => {
+    expect(bestCandidate([at([0.5, -0.87, 0], 0), at([0, -1, 0], 0.5)]).normal).toEqual([0, -1, 0]);
+    expect(bestCandidate([at([0, -1, 0], 1), null, at([0, -1, 0], 0.5)]).shift).toBe(0.5);
+    expect(bestCandidate([null])).toBe(null);
   });
 });

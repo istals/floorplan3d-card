@@ -92,7 +92,8 @@ export function placeWash(kind, anchor, size, { wall = null, floor = null, ceili
   const off = (hit) => { const p = toArr(hit.point), n = facing(hit); return { c: p.map((v, i) => v + n[i] * OFFSET), n }; };
   const pool = (hit, surface) => {
     const { c, n } = off(hit);
-    return { surface, variant: 'pool', center: c, normal: n, width: size.pool, height: size.pool };
+    const d = fin(hit.pool) ? hit.pool : size.pool; // fitted to the surface (fitPool), else the full size
+    return { surface, variant: 'pool', center: c, normal: n, width: d, height: d };
   };
   if (kind === 'spot') {
     if (aim) return pool(aim, 'aim');
@@ -121,6 +122,34 @@ export function placeWashes(kind, anchor, size, surfaces = {}) {
   if (kind === 'none') return [];
   const kinds = kind === 'both' ? ['down', 'up'] : [kind];
   return kinds.map((k) => placeWash(k, anchor, size, surfaces)).filter(Boolean);
+}
+
+// Pool fitting: probes around a candidate centre must land on the centre's plane. fits(d) -> the best
+// placement for a pool of diameter d, or null. Tries the full size, 60 % and 35 % of `pool`, then POOL_MIN;
+// null when not even POOL_MIN fits (a narrow beam or post: the wash goes on the next surface instead of
+// hanging in the air).
+export const POOL_MIN = 0.5;
+const PROBE_BACK = 0.3; // probes start this far before the surface (clear of posts and the lamp's mount)
+const PLANE_TOL = 0.08;
+const MAX_SHIFT = 1; // a pool moves at most 1 m off the beam's axis
+export function fitPool(pool, fits) {
+  const sizes = [1, 0.6, 0.35].map((k) => pool * k).filter((d) => d >= POOL_MIN);
+  if (pool >= POOL_MIN) sizes.push(POOL_MIN);
+  for (const d of sizes) { const f = fits(d); if (f) return { ...f, pool: d }; }
+  return null;
+}
+
+// Of the candidate placements that fit, the flattest surface (|normal.y|), then the least shifted.
+export function bestCandidate(list) {
+  let best = null;
+  for (const c of list) {
+    if (!c) continue;
+    const ny = Math.abs(c.normal[1]);
+    if (!best || ny > best.ny + 0.05 || (Math.abs(ny - best.ny) <= 0.05 && c.shift < best.shift)) best = { ...c, ny };
+  }
+  if (!best) return null;
+  const { ny, ...rest } = best; // eslint-disable-line no-unused-vars
+  return rest;
 }
 
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -199,19 +228,68 @@ export class WashLayer {
     return chooseWall(view.surfaceRays([a.x, a.y, a.z], HORIZONTAL_DIRS, WALL_REACH));
   }
 
+  // The first surface along a ray from p (dir unit) that a pool of diameter `pool` fits on: the hit (centre
+  // moved up to the pool's radius sideways when the lamp stands at the surface's edge) + .pool, or null.
+  // Narrower surfaces (a beam, a post top) are passed through. flatOnly: a floor / ceiling, never a wall.
+  static poolHit(view, p, dir, range, pool, flatOnly = false) {
+    const d = new THREE.Vector3(...dir).normalize();
+    const u = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+    const w = new THREE.Vector3().crossVectors(d, u);
+    const sides = [];
+    for (let i = 0; i < 8; i++) {
+      const t = (i * Math.PI) / 4;
+      sides.push(u.clone().multiplyScalar(Math.cos(t)).addScaledVector(w, Math.sin(t)));
+    }
+    const cast = (q, len) => view.surfaceRays(q.toArray(), [d.toArray()], len)[0] || null;
+    const onPlane = (h, c, n) => !!h && Math.abs(new THREE.Vector3(...h.point).sub(c).dot(n)) < PLANE_TOL;
+    let from = new THREE.Vector3(...p), left = range;
+    for (let i = 0; i < 4 && left > 0; i++) {
+      const hit = cast(from, left);
+      if (!hit) return null;
+      const c0 = new THREE.Vector3(...hit.point);
+      const back = c0.clone().addScaledVector(d, -PROBE_BACK);
+      const fits = (dia, flat = flatOnly) => {
+        const r = dia / 2, found = [];
+        // centred first, then moved by one and two radii (at most MAX_SHIFT) towards each side
+        for (const [k, o] of [[0, null], ...sides.map((s) => [1, s]), ...sides.map((s) => [2, s])]) {
+          const shift = Math.min(k * r, MAX_SHIFT);
+          const h = o ? cast(back.clone().addScaledVector(o, shift), PROBE_BACK + 0.6) : hit;
+          if (!h || (flat && Math.abs(h.normal[1]) <= FLAT_NY)) continue;
+          const c = new THREE.Vector3(...h.point), n = new THREE.Vector3(...h.normal);
+          const start = c.clone().addScaledVector(d, -PROBE_BACK);
+          if (sides.filter((_, j) => j % 2 === 0).every((s) => onPlane(cast(start.clone().addScaledVector(s, r), PROBE_BACK + 0.5), c, n))) {
+            found.push({ ...h, shift });
+          }
+          if (found.length && found[0].shift === 0 && Math.abs(found[0].normal[1]) > FLAT_NY) break; // centred and flat: done
+        }
+        return bestCandidate(found);
+      };
+      // a flat soffit / floor beats a slope (a sloped eave would put the pool higher than its neighbours')
+      let fit = fitPool(pool, fits);
+      if (fit && Math.abs(fit.normal[1]) <= FLAT_NY) fit = fitPool(pool, (dia) => fits(dia, true)) || fit;
+      if (fit) { const { shift, ...rest } = fit; return rest; } // eslint-disable-line no-unused-vars
+      left -= hit.distance + 0.02;
+      from = c0.addScaledVector(d, 0.02);
+    }
+    return null;
+  }
+
   // aimDir: a spot's direction (world, unit) or null. wall: a cached wall hit (undefined: cast the rays).
-  static surfaces(view, a, kind, aimDir = null, wall = undefined) {
+  // pool: the pool diameter (washSize); floor / ceiling / aim pools only land on a surface wide enough for one.
+  static surfaces(view, a, kind, aimDir = null, wall = undefined, pool = 1) {
     const p = [a.x, a.y, a.z];
-    const flat = (hits) => { const h = hits[0]; return h && Math.abs(h.normal[1]) > FLAT_NY ? h : null; };
     const out = { wall: null, floor: null, ceiling: null, aim: null };
+    const floor = () => WashLayer.poolHit(view, p, DOWN_DIR[0], DOWN_RANGE, pool, true);
     if (kind === 'spot') {
-      if (aimDir) out.aim = view.surfaceRays(p, [aimDir], AIM_RANGE)[0] || null;
-      if (!out.aim) out.floor = flat(view.surfaceRays(p, DOWN_DIR, DOWN_RANGE));
+      if (aimDir) out.aim = WashLayer.poolHit(view, p, aimDir, AIM_RANGE, pool);
+      if (!out.aim) out.floor = floor();
       return out;
     }
     out.wall = wall !== undefined ? wall : WashLayer.wall(view, a);
-    if (kind !== 'up') out.floor = flat(view.surfaceRays(p, DOWN_DIR, DOWN_RANGE));
-    if ((kind === 'up' || kind === 'both') && !out.wall) out.ceiling = flat(view.surfaceRays(p, UP_DIR, UP_RANGE));
+    // on a wall the floor only cuts the down wash: the first floor below, however small
+    const cut = () => { const h = view.surfaceRays(p, DOWN_DIR, DOWN_RANGE)[0]; return h && Math.abs(h.normal[1]) > FLAT_NY ? h : null; };
+    if (kind !== 'up') out.floor = out.wall ? cut() : floor();
+    if ((kind === 'up' || kind === 'both') && !out.wall) out.ceiling = WashLayer.poolHit(view, p, UP_DIR[0], UP_RANGE, pool, true);
     return out;
   }
 

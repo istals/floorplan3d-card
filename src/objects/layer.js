@@ -426,8 +426,9 @@ export class ObjectLayer {
         let aimDir = null;
         if (kind === 'spot' && p.part.aim) aimDir = root.localToWorld(p.part.aim.clone()).sub(a).normalize().toArray();
         const wall = kind === 'spot' ? undefined : this._wallOf(p, a, placeSig);
-        const surf = this.view.surfaceRays ? WashLayer.surfaces(this.view, a, kind, aimDir, wall) : {};
-        const placements = placeWashes(kind, a.toArray(), washSize(p.part.hints), surf);
+        const size = washSize(p.part.hints);
+        const surf = this.view.surfaceRays ? WashLayer.surfaces(this.view, a, kind, aimDir, wall, size.pool) : {};
+        const placements = placeWashes(kind, a.toArray(), size, surf);
         // a mesh per quad (two for 'both'), made once and reused; spare ones stay hidden
         const meshes = p.wash ? p.wash.meshes.slice() : [];
         const n = Math.max(meshes.length, placements.length, 1);
