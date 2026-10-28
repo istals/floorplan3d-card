@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN, placeWashes, BOUNCE } from '../src/objects/wash.js';
+import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN, placeWashes, BOUNCE, wallWide } from '../src/objects/wash.js';
 
 const close = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 
@@ -145,5 +145,16 @@ describe('uplight bounce', () => {
     const aim = { point: [0, 0, 1], normal: [0, 1, 0] };
     expect(placeWashes('spot', [0, 2.4, 0], size, { aim, floor })).toHaveLength(1);
     expect(placeWashes('spot', [0, 0.06, 0], size, { aim: { point: [0, 2.4, 0], normal: [0, -1, 0] } })).toHaveLength(1);
+  });
+});
+
+describe('wallWide', () => {
+  it('a wall, also with a window on one side, takes a wash', () => {
+    expect(wallWide({ left: true, right: true, up: true, down: true })).toBe(true);
+    expect(wallWide({ left: false, right: true, up: true, down: true })).toBe(true);
+  });
+  it('a post (nothing left or right) or a beam (nothing above or below) does not', () => {
+    expect(wallWide({ left: false, right: false, up: true, down: true })).toBe(false);
+    expect(wallWide({ left: true, right: true, up: false, down: false })).toBe(false);
   });
 });

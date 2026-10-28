@@ -150,6 +150,11 @@ export function fitPool(pool, fits) {
   return null;
 }
 
+// A wall wash needs a wall: probes WALL_PROBE m to each side and up / down of the hit must land on its plane,
+// at least one per axis (a window on one side is fine; a post fails both sides, a beam both up and down).
+const WALL_PROBE = 0.4;
+export const wallWide = ({ left, right, up, down }) => (left || right) && (up || down);
+
 // Of the candidate placements that fit, the flattest surface (|normal.y|), then the least shifted.
 export function bestCandidate(list) {
   let best = null;
@@ -235,8 +240,22 @@ export class WashLayer {
 
   // The wash surfaces around a lamp at world point a: rays through the view's model surfaces.
   // The nearest wall around world point a (horizontal rays within WALL_REACH) or null.
+  // A beam or post beside the lamp is no wall (wallWide): the next nearest hit is tried.
   static wall(view, a) {
-    return chooseWall(view.surfaceRays([a.x, a.y, a.z], HORIZONTAL_DIRS, WALL_REACH));
+    const hits = view.surfaceRays([a.x, a.y, a.z], HORIZONTAL_DIRS, WALL_REACH)
+      .filter((h) => chooseWall([h])).sort((x, y) => x.distance - y.distance);
+    for (const h of hits) {
+      const c = new THREE.Vector3(...h.point), n = new THREE.Vector3(...h.normal), d = new THREE.Vector3(...h.dir);
+      const t = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n).normalize(), up = new THREE.Vector3(0, 1, 0);
+      const back = c.clone().addScaledVector(d, -PROBE_BACK);
+      const lands = (o, k) => {
+        const q = back.clone().addScaledVector(o, k * WALL_PROBE).toArray();
+        const g = view.surfaceRays(q, [h.dir], PROBE_BACK + 0.3)[0];
+        return !!g && Math.abs(new THREE.Vector3(...g.point).sub(c).dot(n)) < PLANE_TOL;
+      };
+      if (wallWide({ left: lands(t, -1), right: lands(t, 1), down: lands(up, -1), up: lands(up, 1) })) return chooseWall([h]);
+    }
+    return null;
   }
 
   // The first surface along a ray from p (dir unit) that a pool of diameter `pool` fits on: the hit (centre
