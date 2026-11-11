@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN, placeWashes, BOUNCE, wallWide } from '../src/objects/wash.js';
+import { washKind, washSize, chooseWall, placeWash, washOpacity, washTexels, WALL_REACH, fitPool, bestCandidate, POOL_MIN, placeWashes, BOUNCE, wallWide, SPILL } from '../src/objects/wash.js';
 
 const close = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 
@@ -57,15 +57,15 @@ describe('placeWash', () => {
     expect(close(p.normal, [0, 0, -1])).toBe(true);
     expect(p.center[2]).toBeCloseTo(-0.01);
     const top = p.center[1] + p.height / 2, bottom = p.center[1] - p.height / 2;
-    expect(top).toBeCloseTo(2.45);
+    expect(top).toBeCloseTo(2.33); // 3 cm above the lamp: the up beam barely overlaps it
     expect(bottom).toBeCloseTo(0);
-    expect(p.height).toBeCloseTo(2.45);
+    expect(p.height).toBeCloseTo(2.33);
     expect(p.width).toBeCloseTo(1.9);
   });
   it('up beam: above the lamp; point: centred on it', () => {
     const up = placeWash('up', [0, 0.1, -0.2], size, { wall: { point: [0, 0.1, 0], normal: [0, 0, -1] } });
     expect(up.variant).toBe('up');
-    expect(up.center[1] - up.height / 2).toBeCloseTo(-0.05);
+    expect(up.center[1] - up.height / 2).toBeCloseTo(0.07);
     const pt = placeWash('point', anchor, size, { wall });
     expect(pt.variant).toBe('oval');
     expect(pt.center[1]).toBeCloseTo(2.3);
@@ -156,5 +156,23 @@ describe('wallWide', () => {
   it('a post (nothing left or right) or a beam (nothing above or below) does not', () => {
     expect(wallWide({ left: false, right: false, up: true, down: true })).toBe(false);
     expect(wallWide({ left: true, right: true, up: false, down: false })).toBe(false);
+  });
+});
+
+describe('wall lamp spill', () => {
+  const size = { width: 1.9, height: 2.6, pool: 2 };
+  const wall = { point: [0, 1.5, 0], normal: [0, 0, -1] };
+  const ground = { point: [0, 0, -0.6], normal: [0, 1, 0], pool: 1.2 };
+  const soffit = { point: [0, 2.6, -0.6], normal: [0, -1, 0], pool: 1.2 };
+  it('a wall lamp also lights the ground in front (down / both) and an overhang above (up / both)', () => {
+    const both = placeWashes('both', [0, 1.5, -0.05], size, { wall, ground, soffit });
+    expect(both.map((p) => p.surface)).toEqual(['wall', 'wall', 'ground', 'soffit']);
+    expect(both[2]).toMatchObject({ variant: 'pool', k: SPILL, width: 1.2 });
+    expect(placeWashes('down', [0, 1.5, -0.05], size, { wall, ground, soffit }).map((p) => p.surface)).toEqual(['wall', 'ground']);
+    expect(placeWashes('up', [0, 1.5, -0.05], size, { wall, ground, soffit }).map((p) => p.surface)).toEqual(['wall', 'soffit']);
+  });
+  it('no spill without a wall, and none for "none"', () => {
+    expect(placeWashes('down', [0, 1.5, -0.05], size, { ground }).some((p) => p.surface === 'ground')).toBe(false);
+    expect(placeWashes('none', [0, 1.5, -0.05], size, { wall, ground, soffit })).toEqual([]);
   });
 });

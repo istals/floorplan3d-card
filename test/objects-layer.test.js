@@ -410,6 +410,15 @@ describe('ObjectLayer', () => {
       expect(on[0].position.z).toBeCloseTo(0.1);
     });
 
+    it('a model beam up / updown counts as a chosen wall light (the group is lit evenly); down does not', () => {
+      withSurfaces(view);
+      layer.setModel(model([{ id: 'a', x: 1, hints: { beam: 'updown', max: 5 } }, { id: 'b', x: 4, hints: { beam: 'down', max: 5 } },
+        { id: 'c', x: 7, hints: { beam: 'up', max: 5 } }]));
+      layer.setBindings(bind([['a', 'light.a'], ['b', 'light.a'], ['c', 'light.a']]), {}, { objects: {}, tags: {} });
+      expect(layer._setWash('a')).toBe(true);
+      expect(layer._setWash('c')).toBe(true);
+      expect(layer._setWash('b')).toBe(false);
+    });
     it('object > tag > model: tag both draws two quads (down + up), the object setting wins', () => {
       withSurfaces(view);
       const m = model([{ id: 'a', x: 1, group: 'facade', hints: { beam: 'down', max: 5 } }, { id: 'b', x: 4, group: 'facade', hints: { beam: 'down', max: 5 } }]);
@@ -419,11 +428,12 @@ describe('ObjectLayer', () => {
       layer.setBindings(b, {}, { objects: {}, tags: {} });
       const on = { 'light.a': st('on') };
       layer.update(on, ctx);
-      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down]);
+      const pool = layer.washes.materials.pool; // the ground in front of the wall (spill)
+      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down, pool]);
       layer.setBindings(new Map(b), {}, { objects: { b: { wash: 'none' } }, tags: { facade: { wash: 'both' } } });
       layer.update(on, ctx);
       expect(layer.washKindOf('a')).toBe('both');
-      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down, layer.washes.materials.up]);
+      expect(shownWashes(layer, 'a')).toEqual([layer.washes.materials.down, layer.washes.materials.up, pool]);
       expect(shownWashes(layer, 'b')).toEqual([]);
       const made = layer.washes.stats.created;
       layer.update({ 'light.a': st('off') }, ctx);

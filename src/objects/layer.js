@@ -10,7 +10,7 @@ import { chainState, lightBudget, controllersOf, budgetGroup } from './logic.js'
 import { typeOf } from './types.js';
 import { badTargets, aimPoint, aimsUp } from './aim.js';
 import { dockFrontAxis, dockPose } from '../mower-track.js';
-import { WashLayer, resolveWash, washSize, placeWashes, washOpacity, clearOfWall, washSetting } from './wash.js';
+import { WashLayer, resolveWash, washSize, placeWashes, washOpacity, clearOfWall, washSetting, washKind } from './wash.js';
 
 const WASH_TYPES = new Set(['light', 'light_strip']);
 const WASH_SLICE_MS = 8; // wash placements (ray casts) per pass; the rest follow in the next task
@@ -385,7 +385,10 @@ export class ObjectLayer {
     const cfg = this.washCfg || {}, b = this.bindings.get(id), tagCfg = cfg.tags || {};
     const own = cfg.objects && cfg.objects[id] ? cfg.objects[id].wash : undefined;
     const tags = b && Array.isArray(b.tags) ? b.tags : p.obj.group ? [p.obj.group] : [];
-    const set = !!washSetting(own) || tags.some((t) => Object.hasOwn(tagCfg, t) && !!tagCfg[t] && !!washSetting(tagCfg[t].wash));
+    // chosen: in the layout, or by a model that says the lamp lights its wall up (beam up / updown)
+    const beam = washKind(p.obj.hints);
+    const set = !!washSetting(own) || tags.some((t) => Object.hasOwn(tagCfg, t) && !!tagCfg[t] && !!washSetting(tagCfg[t].wash))
+      || (!!p.obj.hints && (beam === 'both' || beam === 'up'));
     return { kind: resolveWash(p.obj.hints, own, tags, tagCfg), set };
   }
 

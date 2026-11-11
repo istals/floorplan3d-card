@@ -10,6 +10,8 @@ export const WALL_REACH = 0.6; // a wall within this distance (m) of the lamp ge
 const WALL_NY = 0.3; // |n.y| below: a wall
 const FLAT_NY = 0.7; // |n.y| above: a floor / ceiling
 const OFFSET = 0.01; // decal 1 cm off the surface
+// up / down beams start this far behind the lamp's centre: the two barely overlap (no bright bar at the lamp)
+const BEAM_START = 0.03;
 const DOWN_RANGE = 6, UP_RANGE = 3, AIM_RANGE = 8;
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -82,6 +84,13 @@ export function chooseWall(hits, reach = WALL_REACH) {
   return best ? { point: toArr(best.point).slice(), normal: facing(best) } : null;
 }
 
+// A soft disc on a hit surface, 1 cm off it: fitted to the surface (hit.pool, fitPool), else the full size.
+export function poolAt(hit, surface, size) {
+  const p = toArr(hit.point), n = facing(hit);
+  const d = fin(hit.pool) ? hit.pool : size.pool;
+  return { surface, variant: 'pool', center: p.map((v, i) => v + n[i] * OFFSET), normal: n, width: d, height: d };
+}
+
 /**
  * Where a lamp's wash goes. anchor: lamp [x, y, z] (card world). surfaces: { wall, floor, ceiling, aim } hits
  * ({ point, normal facing the lamp }). Returns { surface, variant, center, normal, width, height } or null.
@@ -90,11 +99,7 @@ export function chooseWall(hits, reach = WALL_REACH) {
  */
 export function placeWash(kind, anchor, size, { wall = null, floor = null, ceiling = null, aim = null } = {}) {
   const off = (hit) => { const p = toArr(hit.point), n = facing(hit); return { c: p.map((v, i) => v + n[i] * OFFSET), n }; };
-  const pool = (hit, surface) => {
-    const { c, n } = off(hit);
-    const d = fin(hit.pool) ? hit.pool : size.pool; // fitted to the surface (fitPool), else the full size
-    return { surface, variant: 'pool', center: c, normal: n, width: d, height: d };
-  };
+  const pool = (hit, surface) => poolAt(hit, surface, size);
   if (kind === 'spot') {
     if (aim) return pool(aim, 'aim');
     return floor ? pool(floor, 'floor') : null;
@@ -103,10 +108,10 @@ export function placeWash(kind, anchor, size, { wall = null, floor = null, ceili
     const { c, n } = off(wall);
     const y = anchor[1];
     let height = size.height, cy;
-    if (kind === 'up') cy = y - 0.15 + height / 2;
+    if (kind === 'up') cy = y - BEAM_START + height / 2;
     else if (kind === 'point') cy = y;
     else {
-      const top = y + 0.15;
+      const top = y + BEAM_START;
       const fy = floor ? toArr(floor.point)[1] : -Infinity;
       if (top - height < fy) height = Math.max(0.2, top - fy);
       cy = top - height / 2;
@@ -120,6 +125,11 @@ export function placeWash(kind, anchor, size, { wall = null, floor = null, ceili
 // Every wash quad of a lamp: 'both' = a down and an up wash (two quads, each with its own cone), 'none' = none.
 // An uplight's light comes back down off what it lights: a faint pool on the floor around it, at this share.
 export const BOUNCE = 0.3;
+// A wall lamp's light on the ground in front of it / the overhang above it, at this share; searched from
+// SPILL_OUT m in front of the wall.
+export const SPILL = 0.45;
+const SPILL_OUT = 0.6;
+const SOFFIT_RANGE = 1.6, SOFFIT_MIN = 1; // an overhang within 1.6 m above the lamp, room for a 1 m pool
 
 export function placeWashes(kind, anchor, size, surfaces = {}) {
   if (kind === 'none') return [];
@@ -131,7 +141,12 @@ export function placeWashes(kind, anchor, size, surfaces = {}) {
     return bounce ? [main, { ...bounce, surface: 'bounce', k: BOUNCE }] : [main];
   }
   const kinds = kind === 'both' ? ['down', 'up'] : [kind];
-  return kinds.map((k) => placeWash(k, anchor, size, surfaces)).filter(Boolean);
+  const out = kinds.map((k) => placeWash(k, anchor, size, surfaces)).filter(Boolean);
+  // a wall lamp also lights what is in front of it: the ground below (down / point) and an overhang above (up)
+  const { wall, ground, soffit } = surfaces;
+  if (wall && ground && kind !== 'up') out.push({ ...poolAt(ground, 'ground', size), k: SPILL });
+  if (wall && soffit && (kind === 'up' || kind === 'both')) out.push({ ...poolAt(soffit, 'soffit', size), k: SPILL });
+  return out;
 }
 
 // Pool fitting: probes around a candidate centre must land on the centre's plane. fits(d) -> the best
@@ -183,10 +198,12 @@ export function washTexels(variant, w, h) {
         const r = Math.hypot(u, v * 2 - 1);
         a = r >= 1 ? 0 : Math.pow(1 - smooth(0, 1, r), 1.6);
       } else {
+        // a narrow cone like a facade up / down light: ~6 % of the width at the lamp, ~65 % at the far end,
+        // a soft but defined edge, fading along its length
         const t = variant === 'up' ? v : 1 - v; // 0 at the lamp end .. 1 at the far end
-        const spread = 0.18 + 0.82 * Math.sqrt(t);
-        const side = 1 - smooth(0.35 * spread, spread, Math.abs(u));
-        const along = Math.pow(1 - t, 1.4) * smooth(0, 0.08, t + 0.02);
+        const spread = 0.06 + 0.6 * t;
+        const side = 1 - smooth(0.55 * spread, spread, Math.abs(u));
+        const along = Math.pow(1 - t, 1.2) * smooth(0, 0.05, t);
         a = side * along;
       }
       const i = (y * w + x) * 4;
@@ -321,6 +338,14 @@ export class WashLayer {
     const cut = () => { const h = view.surfaceRays(p, DOWN_DIR, DOWN_RANGE)[0]; return h && Math.abs(h.normal[1]) > FLAT_NY ? h : null; };
     if (kind !== 'up') out.floor = out.wall ? cut() : floor();
     if ((kind === 'up' || kind === 'both') && !out.wall) out.ceiling = WashLayer.poolHit(view, p, UP_DIR[0], UP_RANGE, pool, true);
+    if (out.wall) { // spill (placeWashes): searched in front of the wall, not at its foot
+      const n = out.wall.normal, q = p.map((v, i) => v + n[i] * SPILL_OUT);
+      if (kind !== 'up' && kind !== 'none') out.ground = WashLayer.poolHit(view, q, DOWN_DIR[0], DOWN_RANGE, pool, true);
+      if (kind === 'up' || kind === 'both') {
+        const h = WashLayer.poolHit(view, q, UP_DIR[0], SOFFIT_RANGE, pool, true);
+        out.soffit = h && h.pool >= SOFFIT_MIN ? h : null; // a sliver of an eave edge looks like a stray spot
+      }
+    }
     return out;
   }
 

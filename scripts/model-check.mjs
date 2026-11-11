@@ -1494,7 +1494,8 @@ sections.add('washes', { group: 'lamps', query: { model: '1', view: '3d' }, view
   await sleep(800);
   const W = () => page.evaluate(`(() => { const c = ${card}, l = c._objects; return { shown: [...l.washes.meshes].filter((m) => m.visible).length,
     walls: [...l.parts].filter(([, p]) => p.wash && p.wash.placements.some((pl, i) => pl.surface === 'wall' && p.wash.meshes[i].visible)).map(([id]) => id),
-    quads: Object.fromEntries([...l.parts].filter(([, p]) => p.wash).map(([id, p]) => [id, p.wash.meshes.filter((m) => m.visible).length])),
+    quads: Object.fromEntries([...l.parts].filter(([, p]) => p.wash).map(([id, p]) => [id, p.wash.meshes.filter((m, i) => m.visible && (p.wash.placements[i] || {}).surface !== 'ground' && (p.wash.placements[i] || {}).surface !== 'soffit').length])),
+    spill: [...l.parts].filter(([, p]) => p.wash && p.wash.placements.some((pl, i) => pl.surface === 'ground' && p.wash.meshes[i].visible)).map(([id]) => id),
     made: l.washes.stats.created, programs: c._view.renderer.info.programs.length }; })()`);
   let w = await W();
   check('washes: lit facade lamps and uplights wash the south wall', ['facade_1', 'facade_3', 'wall_uplight_1', 'wall_uplight_2'].every((id) => w.walls.includes(id)), JSON.stringify(w));
@@ -1516,6 +1517,7 @@ sections.add('washes', { group: 'lamps', query: { model: '1', view: '3d' }, view
   await sleep(600);
   w = await W();
   // facade_2 has no wall within reach and nothing under it (no wash at all, as before)
+  check('Light on wall: a lit facade lamp also lights the ground in front of its wall', w.spill.includes('facade_1'), JSON.stringify(w.spill));
   check('Light on wall: tag facade = both -> 2 wash quads per lit facade lamp', ['facade_1', 'facade_3'].every((id) => w.quads[id] === 2), JSON.stringify(w.quads));
   const progsBoth = w.programs;
   for (let i = 0; i < 4; i++) {
