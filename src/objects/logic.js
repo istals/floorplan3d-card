@@ -150,8 +150,8 @@ export function lightLevel(s) {
 
 // Groups up to this size light each lamp (one real light per fixture) while the pool has room.
 // Group lights never take a shadow slot when a non-shadow one is free (`grouped` in the result).
-// A group of 2+ lamps that all have a chosen wall wash (fixture.wash: "Light on wall" set on the lamp or its
-// tag) is lit evenly or not at all: its washes carry the look, so one lamp with a real light (the middle
+// A group of 2+ lamps that all have a chosen wall wash (fixture.wash: "Light on wall" set on the lamp, its
+// tag or a model beam up / updown; up to the non-shadow point slots in size) is lit evenly or not at all: its washes carry the look, so one lamp with a real light (the middle
 // fixture) would stand out from the others.
 export const SMALL_GROUP = 6;
 export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {}) {
@@ -162,6 +162,7 @@ export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {
     if (f.group) { if (!groups.has(f.group)) groups.set(f.group, []); groups.get(f.group).push(f); } else cand.push({ f, factor: 1 });
   }
   const small = [];
+  const groupCap = points - shadows; // non-shadow point slots: the most lamps a group can light one by one
   const middle = (list) => {
     const sorted = list.slice().sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
     return sorted[Math.floor((sorted.length - 1) / 2)];
@@ -170,17 +171,16 @@ export function lightBudget(fixtures, { points = 8, spots = 4, shadows = 4 } = {
   const even = new Set(); // groups lit per lamp or not at all
   for (const list of groups.values()) {
     const washed = list.length > 1 && list.every((f) => f.wash);
-    if (washed && list.length > SMALL_GROUP) continue;
+    if (washed && list.length > groupCap) continue; // can never be lit lamp by lamp
     const c = { f: middle(list), factor: 1.5, grouped: true };
     if (washed) even.add(c.f.id);
-    if (list.length <= SMALL_GROUP) small.push({ list, mid: c.f, max: Math.max(...list.map((f) => f.max || 0)) });
+    if (list.length <= SMALL_GROUP || washed) small.push({ list, mid: c.f, max: Math.max(...list.map((f) => f.max || 0)) });
     cand.push(c);
   }
   const byMax = (a, b) => (b.max || 0) - (a.max || 0) || (a.id < b.id ? -1 : 1);
   cand.sort((a, b) => byMax(a.f, b.f));
   const real = new Map(), shadowSet = new Set();
   let p = 0, s = 0, gp = 0; // gp: grouped point lights, which belong in the non-shadow point slots
-  const groupCap = points - shadows;
   const kindOf = (f) => (f.beam === 'spot' ? 'spot' : 'point');
   const room = (kind) => (kind === 'spot' ? s < spots : p < points);
   const take = (kind) => { if (kind === 'spot') s++; else p++; };

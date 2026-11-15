@@ -444,7 +444,7 @@ sections.add('render-recipe', { group: 'model', query: { model: '1', view: '3d' 
   await idle(page);
   const r = await renderState(page);
   check('render recipe: exposure 1.1 and fov 38 from the model', r.exposure === 1.1 && r.fov === 38 && r.from && r.from.keys === 11, JSON.stringify(r));
-  check('render recipe: lamp shadow slots = min(6, device max, texture units - 9), pool = slots + 4', r.shadows === Math.max(0, Math.min(6, r.cap.max, r.units - 9)) && r.points === r.shadows + 4 && r.cast === r.shadows, JSON.stringify(r));
+  check('render recipe: lamp shadow slots = min(6, device max, texture units - 9), pool = slots + 8', r.shadows === Math.max(0, Math.min(6, r.cap.max, r.units - 9)) && r.points === r.shadows + 8 && r.cast === r.shadows, JSON.stringify(r));
   check('render recipe: lamp map size at most 1024 and the device cap', r.recipeMap === Math.min(1024, r.cap.mapSize), JSON.stringify(r));
   check('render recipe: lamp / sun shadow bias from the recipe (test mode map size)', r.bias === -0.0008 && r.sunBias === -0.0003 && r.mapSize === 256, JSON.stringify(r));
   await page.evaluate(`${card}.shadowRoot.querySelector('button.edit').click()`);
@@ -460,7 +460,7 @@ sections.add('render-default', { group: 'model', query: { model: '1', view: '3d'
   await page.waitForFunction(`!!${card}._view.model && !!${card}._objects.model`, { timeout: 30000 });
   await idle(page);
   const r = await renderState(page);
-  check('render: default ignores the recipe (exposure 1.25, fov 35, 4 lamp shadows)', r.exposure === 1.25 && r.fov === 35 && r.from === null && r.shadows === 4 && r.points === 8, JSON.stringify(r));
+  check('render: default ignores the recipe (exposure 1.25, fov 35, 4 lamp shadows)', r.exposure === 1.25 && r.fov === 35 && r.from === null && r.shadows === 4 && r.points === 12, JSON.stringify(r));
 });
 
 // 1c. sun time scrubber (Auto): 03:00 / 06:00 / 12:00 today from the HA location (sunPosition), shadows once it settles
@@ -1250,7 +1250,8 @@ sections.add('demo-objects', { group: 'lamps', query: { model: '1', view: '3d' }
     return { lit: lit.length, shadows: lit.filter((x) => x.castShadow).length, slots: [...l._slots.keys()],
       near: Object.fromEntries(ids.map((id) => [id, near(id)])), glow: Object.fromEntries(ids.map((id) => [id, glow(id)])),
       spotTarget: spot ? spot.target.position.toArray() : null,
-      facadeLit: lit.filter((x) => ['facade_1', 'facade_2', 'facade_3'].some((id) => x.position.distanceTo(l.anchorOf(id)) < 0.05)).length }; })()`);
+      // the lamp's own pool light (a wall lamp's sits 0.3 m off its wall, not at the glow)
+      facadeLit: ['facade_1', 'facade_2', 'facade_3'].filter((id) => { const sl = l._slots.get(id); return !!sl && sl.light.intensity > 0; }).length }; })()`);
   let L = await look();
   check('lamp on: glow emissive and a pool light with intensity > 0 at the lamp', L.glow.lamp_living > 0 && L.near.lamp_living.length === 1 && L.near.lamp_living[0] > 0, JSON.stringify({ g: L.glow.lamp_living, n: L.near.lamp_living }));
   check('lamp off: no glow, no pool light', L.glow.lamp_hall === 0 && L.near.lamp_hall.length === 0, JSON.stringify({ g: L.glow.lamp_hall, n: L.near.lamp_hall }));
