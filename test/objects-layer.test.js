@@ -44,16 +44,16 @@ describe('ObjectLayer', () => {
     layer = new ObjectLayer(view);
   });
 
-  it('creates a fixed pool: 12 points (first 4 cast shadows) and 4 spots, all dark, hidden without a model', () => {
-    expect(points(layer)).toHaveLength(12);
+  it('creates a fixed pool: 8 points (first 4 cast shadows) and 4 spots, all dark, hidden without a model', () => {
+    expect(points(layer)).toHaveLength(8);
     expect(layer.pool.spots).toHaveLength(4);
-    expect(points(layer).map((l) => l.castShadow)).toEqual([true, true, true, true, ...Array(8).fill(false)]);
+    expect(points(layer).map((l) => l.castShadow)).toEqual([true, true, true, true, false, false, false, false]);
     expect(layer.pool.spots.every((l) => !l.castShadow)).toBe(true);
     expect(points(layer)[0].shadow.mapSize.x).toBe(512);
     expect(points(layer)[0].shadow.bias).toBeCloseTo(-0.004);
     expect(points(layer)[0].shadow.camera.near).toBeCloseTo(0.15);
     expect([...points(layer), ...layer.pool.spots].every((l) => l.intensity === 0)).toBe(true);
-    expect(layer.lights.children.filter((o) => o.isLight)).toHaveLength(16);
+    expect(layer.lights.children.filter((o) => o.isLight)).toHaveLength(12);
     expect(layer.lights.parent).toBe(view.objectsGroup);
     expect(view.objectsGroup.visible).toBe(false);
     expect(points(layer).slice(0, 4).every((l) => l.shadow.autoUpdate === false)).toBe(true);
@@ -112,8 +112,8 @@ describe('ObjectLayer', () => {
     expect(points(layer).indexOf(on[0])).toBeGreaterThanOrEqual(4); // groups never cast shadows
   });
 
-  it('non-shadow picks fill slots 4..11 first; more lit fixtures than the pool stay emissive only', () => {
-    const lamps = Array.from({ length: 16 }, (_, i) => ({ id: `l${i}`, x: i, hints: { max: 16 - i, castShadow: i >= 2 ? false : true } }));
+  it('non-shadow picks fill slots 4..7 first; more lit fixtures than the pool stay emissive only', () => {
+    const lamps = Array.from({ length: 12 }, (_, i) => ({ id: `l${i}`, x: i, hints: { max: 12 - i, castShadow: i >= 2 ? false : true } }));
     layer.setModel(model(lamps));
     layer.setBindings(bind(lamps.map((l) => [l.id, 'light.x'])), {});
     layer.update({ 'light.x': st('on') }, ctx);
@@ -121,19 +121,19 @@ describe('ObjectLayer', () => {
     expect(p.every((l) => l.intensity > 0)).toBe(true);
     expect(p[0].position.x).toBe(0);
     expect(p[1].position.x).toBe(1);
-    expect(p.slice(4).map((l) => l.position.x)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(p.slice(4).map((l) => l.position.x)).toEqual([2, 3, 4, 5]);
   });
 
-  it('group lamps take non-shadow slots, singles spill into shadow slots instead (I2)', () => {
-    const singles = Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, x: 10 + i, hints: { max: 20, castShadow: i === 0 } }));
+  it('group lamps take the non-shadow slots 4..7, singles spill into shadow slots instead (I2)', () => {
+    const singles = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, x: 10 + i, hints: { max: 20, castShadow: i === 0 } }));
     const facade = Array.from({ length: 4 }, (_, i) => ({ id: `f${i + 1}`, x: i, group: 'facade', hints: { max: 5 } }));
     layer.setModel(model([...singles, ...facade]));
     layer.setBindings(bind([...singles.map((l) => [l.id, 'light.s']), ...facade.map((l) => [l.id, 'light.f'])]), {});
     layer.update({ 'light.s': st('on'), 'light.f': st('on') }, ctx);
     const p = points(layer);
     expect(p.every((l) => l.intensity > 0)).toBe(true);
-    expect([0, 1, 2, 3].every((x) => p.slice(4).some((l) => l.position.x === x))).toBe(true);
-    expect(p.slice(0, 4).every((l) => l.position.x >= 10)).toBe(true);
+    expect(p.slice(4).map((l) => l.position.x).sort()).toEqual([0, 1, 2, 3]);
+    expect(p.slice(0, 4).map((l) => l.position.x).sort()).toEqual([10, 11, 12, 13]);
   });
   it('spot fixtures use a spot slot aimed at hints.target (model frame -> card world)', () => {
     const m = model([{ id: 's', x: 1, hints: { beam: 'spot', target: [1, 0, 0], angle: 30, max: 8 } }]);
@@ -399,7 +399,7 @@ describe('ObjectLayer', () => {
     });
     const shownWashes = (l, id) => l.parts.get(id).wash.meshes.filter((m) => m.visible).map((m) => m.material);
 
-    it('a point light is kept 0.3 m off the wall it faces (lights the ground in front, no hot spot)', () => {
+    it('a point light is kept 0.15 m off the wall it faces', () => {
       withSurfaces(view);
       const m = model([{ id: 'a', x: 3, hints: { beam: 'down', max: 5 } }]);
       layer.setModel(m);
@@ -407,26 +407,21 @@ describe('ObjectLayer', () => {
       layer.update({ 'light.a': st('on') }, ctx);
       const on = lit(points(layer));
       expect(on[0].position.x).toBeCloseTo(3);
-      expect(on[0].position.z).toBeCloseTo(0.25);
+      expect(on[0].position.z).toBeCloseTo(0.1);
     });
 
-    it('a facade of 8 wall lamps gets a real light each (evenly), 9 get none', () => {
+    it('wall lamps with up / down beams get no real light: the washes and spill light the wall and ground', () => {
       withSurfaces(view);
-      const row = (n) => Array.from({ length: n }, (_, i) => ({ id: `w${i + 1}`, x: i, group: 'facade', hints: { beam: 'updown', max: 5 } }));
-      layer.setModel(model(row(8)));
-      layer.setBindings(bind(row(8).map((l) => [l.id, 'light.f'])), {}, { objects: {}, tags: {} });
+      const row = Array.from({ length: 4 }, (_, i) => ({ id: `w${i + 1}`, x: i, group: 'facade', hints: { beam: 'updown', max: 5 } }));
+      layer.setModel(model([...row, { id: 'd', x: 8, hints: { beam: 'down', max: 5 } }]));
+      layer.setBindings(bind([...row.map((l) => [l.id, 'light.f']), ['d', 'light.f']]), {}, { objects: {}, tags: {} });
       layer.update({ 'light.f': st('on') }, ctx);
       const on = lit(points(layer));
-      expect(on).toHaveLength(8);
-      expect(new Set(on.map((l) => l.intensity.toFixed(3))).size).toBe(1);
-      expect(points(layer).slice(0, 4).every((l) => l.intensity === 0)).toBe(true); // never in shadow slots
-      layer.setModel(model(row(9)));
-      layer.setBindings(bind(row(9).map((l) => [l.id, 'light.f'])), {}, { objects: {}, tags: {} });
-      layer.update({ 'light.f': st('on') }, ctx);
-      expect(lit(points(layer))).toHaveLength(0);
+      expect(on.map((l) => l.position.x)).toEqual([8]);
+      expect(row.every((l) => layer.parts.get(l.id).wash.meshes.some((m) => m.visible))).toBe(true);
     });
 
-    it('a model beam up / updown counts as a chosen wall light (the group is lit evenly); down does not', () => {
+    it('a model beam up / updown counts as a chosen wall light (no real light); down does not', () => {
       withSurfaces(view);
       layer.setModel(model([{ id: 'a', x: 1, hints: { beam: 'updown', max: 5 } }, { id: 'b', x: 4, hints: { beam: 'down', max: 5 } },
         { id: 'c', x: 7, hints: { beam: 'up', max: 5 } }]));

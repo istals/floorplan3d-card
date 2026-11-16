@@ -15,9 +15,7 @@ import { WashLayer, resolveWash, washSize, placeWashes, washOpacity, clearOfWall
 const WASH_TYPES = new Set(['light', 'light_strip']);
 const WASH_SLICE_MS = 8; // wash placements (ray casts) per pass; the rest follow in the next task
 
-// a wall lamp's real light this far out from its wall: it lights the paving in front, no hot spot on the wall
-const WALL_CLEAR = 0.3;
-const FREE_POINTS = 8, SPOTS = 4; // 8: a facade of up to 8 wall lamps can get a real light each
+const FREE_POINTS = 4, SPOTS = 4;
 const DEG = Math.PI / 180;
 
 const shown = (node) => { for (let n = node; n; n = n.parent) if (!n.visible) return false; return true; };
@@ -373,8 +371,8 @@ export class ObjectLayer {
     return r ? r.kind : null;
   }
 
-  // A "Light on wall" chosen for the lamp or its tags (not the model's default beam): the budget lights such a
-  // group evenly (lightBudget, fixture.wash).
+  // A "Light on wall" chosen for the lamp, its tags or a model beam up / updown: the budget gives such a lamp
+  // no real light (lightBudget, fixture.wash).
   _setWash(id) {
     const r = this._washOf(id);
     return !!r && r.set && r.kind !== 'none';
@@ -505,7 +503,7 @@ export class ObjectLayer {
       const h = p.part.hints, l = slot.light;
       l.position.copy(root.localToWorld(p.part.anchor.clone()));
       // a point light right on a wall (or door) burns a hot spot into it: kept 0.15 m off the wall it faces
-      if (!l.isSpotLight) l.position.fromArray(clearOfWall(l.position.toArray(), this._wallOf(p, l.position.clone(), placeSig), WALL_CLEAR));
+      if (!l.isSpotLight) l.position.fromArray(clearOfWall(l.position.toArray(), this._wallOf(p, l.position.clone(), placeSig)));
       l.distance = h.distance;
       l.decay = h.decay;
       if (l.isSpotLight) {

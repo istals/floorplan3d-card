@@ -142,19 +142,12 @@ describe('lightBudget', () => {
     expect([...r.real.values()].every((v) => v.factor === 1)).toBe(true);
     expect(r.shadows.size).toBe(0);
   });
-  it('a group whose lamps all wash a wall is lit evenly or not at all', () => {
-    const big = Array.from({ length: 9 }, (_, i) => f('w' + i, { group: 'facade', wash: true }));
-    expect([...lightBudget(big).real.keys()]).toEqual([]); // > 6 lamps: washes only, no lamp stands out
-    const small = ['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 50, wash: true }));
-    expect([...lightBudget(small).real.keys()].sort()).toEqual(['g1', 'g2', 'g3', 'g4']);
-    // short pool: the middle alone would stand out, so none
-    const r = lightBudget([f('s1', { max: 1 }), f('s2', { max: 1 })].concat(small), { points: 5 });
-    expect([...r.real.keys()].sort()).toEqual(['s1', 's2']);
-    // a group of one lamp is just that lamp
-    expect([...lightBudget([f('solo', { group: 'g', wash: true })]).real.keys()]).toEqual(['solo']);
-    // one lamp without a wash: the old rule (middle at 1.5)
-    const mixed = small.map((x, i) => (i ? x : { ...x, wash: false }));
-    expect(lightBudget([f('s1', { max: 1 }), f('s2', { max: 1 })].concat(mixed), { points: 5 }).real.get('g2').factor).toBe(1.5);
+  it('a lamp that washes a wall gets no real light, single or grouped', () => {
+    const row = ['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 50, wash: true }));
+    expect([...lightBudget([...row, f('solo', { wash: true }), f('s1', { max: 1 })]).real.keys()]).toEqual(['s1']);
+    // one lamp without a wash: only that one competes
+    const mixed = row.map((x, i) => (i ? x : { ...x, wash: false }));
+    expect([...lightBudget(mixed).real.keys()]).toEqual(['g1']);
   });
   it('a short non-shadow pool gives a small group one light (middle, 1.5), never part', () => {
     const fx = [f('s1', { max: 1 }), f('s2', { max: 1 })].concat(['g1', 'g2', 'g3', 'g4'].map((id) => f(id, { group: 'facade', max: 50 })));
